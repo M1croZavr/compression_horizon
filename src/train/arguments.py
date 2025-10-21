@@ -3,6 +3,7 @@ from typing import Optional
 
 from transformers import TrainingArguments
 
+
 @dataclass
 class MyTrainingArguments(TrainingArguments):
 
@@ -18,7 +19,7 @@ class MyTrainingArguments(TrainingArguments):
     per_device_train_batch_size: int = field(default=32)
 
     lr_scheduler_type: str = field(default="cosine_with_min_lr")
-    lr_scheduler_kwargs: Optional[dict] = field(default_factory=lambda: {'min_lr': 5e-5})
+    lr_scheduler_kwargs: Optional[dict] = field(default_factory=lambda: {"min_lr": 5e-5})
 
     average_tokens_across_devices: bool = field(default=True)
 
@@ -46,4 +47,3 @@ class MyTrainingArguments(TrainingArguments):
     torch_compile: bool = field(default=False)
 
     # dataset: str = field(default="fineweb_edu")  # fineweb_edu | dclm | my_recall
-

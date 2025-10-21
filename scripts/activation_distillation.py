@@ -1,15 +1,12 @@
 import os
-import shutil
-from pathlib import Path
 
-import torch
 import transformers
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 
 from train.arguments import MyTrainingArguments
 from train.trainer import MyTrainer
 
-from transformers import DataCollatorForLanguageModeling, TrainerCallback, AutoModelForCausalLM, AutoTokenizer
+from transformers import DataCollatorForLanguageModeling, AutoModelForCausalLM, AutoTokenizer
 from transformers.loss.loss_utils import ForCausalLMLoss
 
 if __name__ == "__main__":
@@ -24,7 +21,7 @@ if __name__ == "__main__":
     model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
 
-    fw_dataset = load_dataset('HuggingFaceFW/fineweb-edu', 'sample-10BT', split='train', num_proc=4)
+    fw_dataset = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", split="train", num_proc=4)
     train_dataset = fw_dataset.select(range(10))
     eval_dataset = fw_dataset.select(range(10, 20))
 

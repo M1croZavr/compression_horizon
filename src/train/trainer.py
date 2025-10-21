@@ -1,11 +1,4 @@
-import time
-from typing import Any, Dict, List, Optional, Tuple, Union
-
-import numpy as np
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from transformers import GenerationConfig, Trainer
+from transformers import Trainer
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 from transformers.trainer import _is_peft_model
 
@@ -89,4 +82,3 @@ class MyTrainer(Trainer):
         outputs.loss = loss
 
         return (loss, outputs) if return_outputs else loss
-
