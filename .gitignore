@@ -1,1 +1,4 @@
 .github/actions-runner
+
+__pycache__
+*.pyc
