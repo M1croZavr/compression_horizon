@@ -1,7 +1,11 @@
+from tqdm.auto import tqdm
+
 import torch.nn.functional as F
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
+
+from transformers import get_scheduler
 
 
 class MyTrainer:
@@ -56,18 +60,23 @@ class MyTrainer:
 
         loss_type = getattr(self.args, "loss_type", "l2").lower()
 
-        for i in layer_indices:
-            tgt = outputs.hidden_states[i]
-            pred = compression_outputs.hidden_states[i][:, num_compression_tokens:]
-            if loss_type == "l2":
-                loss = loss + F.mse_loss(tgt, pred, reduction="mean")
-            elif loss_type == "l1":
-                loss = loss + F.l1_loss(tgt, pred, reduction="mean")
-            elif loss_type == "cosine":
-                cos = F.cosine_similarity(tgt, pred, dim=-1)
-                loss = loss + (1.0 - cos).mean()
-            else:
-                raise ValueError(f"Unsupported loss_type: {self.args.loss_type}")
+        if loss_type == "cross_entropy":
+            labels = input_ids.clone()
+            labels[attention_mask == 0] = -100
+            loss = F.cross_entropy(compression_outputs.logits[:, 1:].flatten(0, 1), labels.flatten(), reduction="mean")
+        else:
+            for i in layer_indices:
+                tgt = outputs.hidden_states[i]
+                pred = compression_outputs.hidden_states[i][:, num_compression_tokens:]
+                if loss_type == "l2":
+                    loss = loss + F.mse_loss(tgt, pred, reduction="mean")
+                elif loss_type == "l1":
+                    loss = loss + F.l1_loss(tgt, pred, reduction="mean")
+                elif loss_type == "cosine":
+                    cos = F.cosine_similarity(tgt, pred, dim=-1)
+                    loss = loss + (1.0 - cos).mean()
+                else:
+                    raise ValueError(f"Unsupported loss_type: {self.args.loss_type}")
 
         convergece_per_sample = (compression_outputs.logits[:, 1:-1].argmax(dim=-1) == input_ids[:, 1:]).sum(
             dim=-1
@@ -110,9 +119,17 @@ class MyTrainer:
                 batch_size, num_compression_tokens
             )
 
-            optimizer = AdamW([compression_tokens], lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+            optimizer = AdamW([compression_tokens], lr=self.args.learning_rate, weight_decay=0.01)
+            lr_scheduler = get_scheduler(
+                name=self.args.lr_scheduler_type,
+                optimizer=optimizer,
+                num_warmup_steps=self.args.warmup_steps,
+                num_training_steps=self.args.max_optimization_steps_per_sample,
+            )
 
-            for _ in range(self.args.max_optimization_steps_per_sample):
+            pbar = tqdm(range(self.args.max_optimization_steps_per_sample), total=self.args.max_optimization_steps_per_sample)
+            pbar.set_description("Training")
+            for i in pbar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
                 model_tokens_with_compression_tokens = torch.cat([model_token_embeddings, compression_tokens], dim=1)
                 attention_mask_with_compression_tokens = torch.cat([attention_mask, compression_tokens_attention_mask], dim=1)
@@ -126,14 +143,19 @@ class MyTrainer:
                     num_compression_tokens,
                 )
                 loss.backward()
-                print(
-                    "loss",
-                    loss.item(),
-                    "convergece_per_sample",
-                    convergece_per_sample.mean().item(),
-                    "grand",
-                    compression_tokens.grad.norm(2).item(),
+                pbar.update(1)
+                pbar.set_postfix(
+                    loss=loss.item(),
+                    convergece_per_sample=convergece_per_sample.mean().item(),
+                    compression_tokens_mean=compression_tokens.mean().item(),
+                    compression_tokens_std=compression_tokens.std().item(),
+                    grad=compression_tokens.grad.norm(2).item(),
+                    lr=lr_scheduler.get_last_lr()[0],
                 )
 
+                # if i == 100:
+                #     breakpoint()
+
                 optimizer.step()
+                lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)

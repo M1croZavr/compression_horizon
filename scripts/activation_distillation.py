@@ -1,3 +1,4 @@
+import torch
 import transformers
 from datasets import load_dataset
 
@@ -15,7 +16,7 @@ if __name__ == "__main__":
     hf_parser = transformers.HfArgumentParser(MyTrainingArguments)
     (training_args,) = hf_parser.parse_args_into_dataclasses()
 
-    model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint)
+    model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch.float32)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
 
     raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
@@ -24,7 +25,9 @@ if __name__ == "__main__":
 
     tokenizer.pad_token = tokenizer.eos_token
     train_dataset = train_dataset.map(
-        lambda x: tokenizer(x["text"], truncation=True, padding="max_length", max_length=2048, return_tensors="pt"),
+        lambda x: tokenizer(
+            x["text"], truncation=True, padding="max_length", max_length=training_args.max_sequence_length, return_tensors="pt"
+        ),
         remove_columns=train_dataset.column_names,
     )
 
