@@ -66,6 +66,9 @@ class MyTrainer:
         torch.set_default_device(device)
 
         model = self.model.to(device)
+        # Freeze model parameters; we only optimize the compression tokens
+        for p in model.parameters():
+            p.requires_grad_(False)
 
         dataloader = DataLoader(
             self.train_dataset,
@@ -79,18 +82,25 @@ class MyTrainer:
         for batch in dataloader:
             batch_size = batch["input_ids"].shape[0]
             input_ids = batch.input_ids.squeeze(1)
-            model_token_embeddings = model.model.embed_tokens(input_ids)
+            # Do not track graph for token embeddings; the model is frozen
+            with torch.no_grad():
+                model_token_embeddings = model.model.embed_tokens(input_ids)
             attention_mask = batch.attention_mask.squeeze(1)
 
-            compression_tokens = torch.rand([batch_size, num_compression_tokens, model_token_embeddings.shape[-1]])
-            compression_tokens_attention_mask = torch.tensor([[1]]).repeat(batch_size, num_compression_tokens)
-
-            model_tokens_with_compression_tokens = torch.cat([model_token_embeddings, compression_tokens], dim=1)
-            attention_mask_with_compression_tokens = torch.cat([attention_mask, compression_tokens_attention_mask], dim=1)
+            # Trainable compression tokens per sample
+            compression_tokens = torch.nn.Parameter(
+                torch.rand([batch_size, num_compression_tokens, model_token_embeddings.shape[-1]])
+            )
+            compression_tokens_attention_mask = torch.tensor([[1]], dtype=attention_mask.dtype).repeat(
+                batch_size, num_compression_tokens
+            )
 
             optimizer = AdamW([compression_tokens], lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
 
             for _ in range(self.args.max_optimization_steps_per_sample):
+                # Rebuild concatenations each step to avoid reusing the same autograd graph
+                model_tokens_with_compression_tokens = torch.cat([model_token_embeddings, compression_tokens], dim=1)
+                attention_mask_with_compression_tokens = torch.cat([attention_mask, compression_tokens_attention_mask], dim=1)
                 loss, convergece_per_sample = self.compute_loss(
                     model,
                     input_ids,
@@ -100,8 +110,15 @@ class MyTrainer:
                     attention_mask_with_compression_tokens,
                     num_compression_tokens,
                 )
-                print("loss", loss.item(), "convergece_per_sample", convergece_per_sample.mean().item())
-
                 loss.backward()
+                print(
+                    "loss",
+                    loss.item(),
+                    "convergece_per_sample",
+                    convergece_per_sample.mean().item(),
+                    "grand",
+                    compression_tokens.grad.norm(2).item(),
+                )
+
                 optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
