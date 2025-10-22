@@ -1,0 +1,66 @@
+---
+alwaysApply: true
+---
+
+## Project overview: compression_horizon
+
+- **Goal**: Explore activation distillation via learnable per-sample compression tokens for causal LMs. The model is frozen; only the inserted compression tokens are optimized to align hidden states or logits.
+
+### Repository layout
+- **`scripts/activation_distillation.py`**: Entry point. Loads a small slice of the `mrsndmn/pg19` dataset, tokenizes, instantiates `MyTrainer`, and runs training.
+- **`src/train/arguments.py`**: Defines `MyTrainingArguments` (extends `transformers.TrainingArguments`) with extra knobs for this project.
+- **`src/train/trainer.py`**: Implements `MyTrainer` with the core optimization loop and loss computation.
+- **`artifacts/experiments/`**: TensorBoard event files (example runs).
+- **`tests/dummy_test.py`**: Sanity test scaffold.
+- **`requirements.txt`**: Runtime and dev dependencies.
+
+### Key components
+- **`MyTrainingArguments`** (`src/train/arguments.py`)
+  - Extends HF `TrainingArguments` and adds:
+    - `model_checkpoint` (default `HuggingFaceTB/SmolLM2-135M`)
+    - `max_optimization_steps_per_sample` (default `10000`)
+    - `max_sequence_length` (default `128`)
+    - `loss_type` in {`l2`, `l1`, `cosine`, `cross_entropy`} (default `l2`)
+    - `num_alignment_layers` (0 = all layers)
+    - Standard optim params: `learning_rate`, `max_grad_norm`, `lr_scheduler_type`, `weight_decay`
+    - Dataloader: `per_device_train_batch_size`, `dataloader_drop_last`, `dataloader_num_workers`
+    - Any inherited `TrainingArguments` fields (e.g., `logging_dir`, `warmup_steps`) are accepted via CLI.
+
+- **`MyTrainer`** (`src/train/trainer.py`)
+  - Freezes the base LM; creates trainable `compression_tokens` per batch sample.
+  - Concatenates `compression_tokens` before the input token embeddings each step, and optimizes only those parameters.
+  - Loss via `compute_loss`:
+    - Hidden-state alignment across selected layers with `l2`/`l1`/`cosine` or next-token `cross_entropy` on logits.
+    - Layer selection controlled by `num_alignment_layers` (0 = all layers).
+  - Tracks a simple convergence proxy (token-level argmax match rate) and logs metrics to TensorBoard if `logging_dir` is set.
+  - Optimizer: `AdamW`; scheduler via HF `get_scheduler` using `lr_scheduler_type`, `warmup_steps`, and `max_optimization_steps_per_sample`.
+  - Uses `number_of_eos_tokens` from args if provided; defaults to `1` if absent.
+
+- **`activation_distillation.py`**
+  - Parses CLI into `MyTrainingArguments` with `HfArgumentParser`.
+  - Loads `mrsndmn/pg19` (test split), selects 10 examples, tokenizes to fixed `max_sequence_length` with `pad_token = eos_token`.
+  - Builds `DataCollatorForLanguageModeling(mlm=False)` and runs `trainer.train()`.
+
+
+### How to run
+```bash
+python -m scripts.activation_distillation \
+  --model_checkpoint HuggingFaceTB/SmolLM2-135M \
+  --per_device_train_batch_size 1 \
+  --max_sequence_length 128 \
+  --loss_type l2 \
+  --num_alignment_layers 0 \
+  --learning_rate 1e-3 \
+  --lr_scheduler_type cosine \
+  --max_optimization_steps_per_sample 1000 \
+  --logging_dir artifacts/experiments
+```
+- GPU is recommended; the script probes availability via `nvidia-smi`.
+- Adjust dataset size or switch splits in `scripts/activation_distillation.py` for longer runs.
+
+### Outputs
+- Training metrics and gradients logged to TensorBoard when `logging_dir` is set (see `artifacts/experiments/`).
+
+### Notes
+- The base model weights remain frozen; only the prepended compression tokens are optimized per-sample.
+- `loss_type` and `num_alignment_layers` significantly influence behavior; start with `l2` and `0` respectively, then ablate.
