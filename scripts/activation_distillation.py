@@ -1,5 +1,7 @@
+import torch
 import os
-
+import random
+import string
 import transformers
 from datasets import load_dataset
 
@@ -7,7 +9,6 @@ from train.arguments import MyTrainingArguments
 from train.trainer import MyTrainer
 
 from transformers import DataCollatorForLanguageModeling, AutoModelForCausalLM, AutoTokenizer
-from transformers.loss.loss_utils import ForCausalLMLoss
 
 if __name__ == "__main__":
 
@@ -18,17 +19,38 @@ if __name__ == "__main__":
     hf_parser = transformers.HfArgumentParser(MyTrainingArguments)
     (training_args,) = hf_parser.parse_args_into_dataclasses()
 
-    model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint)
+    # Build output directory: ch_{loss_type}_{6random_letters}
+    def _rand_suffix(n=6):
+        return "".join(random.choice(string.ascii_lowercase) for _ in range(n))
+
+    run_dir_name = f"artifacts/experiments/ch_{getattr(training_args, 'loss_type', 'l2')}_{_rand_suffix(6)}"
+    # Place at repo root with exact template
+    output_dir = run_dir_name
+    os.makedirs(output_dir, exist_ok=True)
+    # Attach to args so trainer can save artifacts there
+    training_args.output_dir = output_dir
+    training_args.logging_dir = output_dir
+
+    model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch.float32)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
 
-    fw_dataset = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", split="train", num_proc=4)
-    train_dataset = fw_dataset.select(range(10))
-    eval_dataset = fw_dataset.select(range(10, 20))
+    raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
+    train_dataset = raw_dataset.select(range(1))
+    # eval_dataset = raw_dataset.select(range(10, 20))
+
+    tokenizer.pad_token = tokenizer.eos_token
+    train_dataset = train_dataset.map(
+        lambda x: tokenizer(
+            x["text"], truncation=True, padding="max_length", max_length=training_args.max_sequence_length, return_tensors="pt"
+        ),
+        remove_columns=train_dataset.column_names,
+    )
+
+    print("train_dataset", len(train_dataset))
+    print("train_dataset", train_dataset)
+    # print("eval_dataset", len(eval_dataset))
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-    trackers_project_name = os.path.basename(training_args.output_dir)
-    training_args.run_name = trackers_project_name
 
     transformers.logging.set_verbosity_info()
 
@@ -37,13 +59,11 @@ if __name__ == "__main__":
         processing_class=tokenizer,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
         data_collator=data_collator,
-        compute_loss_func=ForCausalLMLoss,
     )
 
-    trainer.accelerator.init_trackers(
-        project_name=trackers_project_name,
-    )
-
-    trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+    if training_args.progressive_train:
+        training_artifacts = trainer.progressive_train()
+    else:
+        training_artifacts = trainer.train()
+    print(f"Saved compressed prefixes to: {training_artifacts}")

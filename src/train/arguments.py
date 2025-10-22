@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from typing import Optional
 
 from transformers import TrainingArguments
 
@@ -7,43 +6,54 @@ from transformers import TrainingArguments
 @dataclass
 class MyTrainingArguments(TrainingArguments):
 
+    model_checkpoint: str = field(default="HuggingFaceTB/SmolLM2-135M")
+    max_optimization_steps_per_sample: int = field(default=10_000)
+
     ddp_find_unused_parameters: bool = field(default=False)
     load_best_model_at_end: bool = field(default=False)
 
-    number_of_eos_tokens: int = field(default=1)
+    max_sequence_length: int = field(default=128, metadata={"help": "Max sequence length for training"})
+    random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)"})
+    embedding_init_method: str = field(
+        default="random",
+        metadata={"help": "Initialization method for compression embeddings: random or mvnormal"},
+    )
 
-    learning_rate: float = field(default=1e-4)
+    # Loss across hidden states: one of {"l2", "l1", "cosine"}
+    loss_type: str = field(default="l2", metadata={"help": "Loss type for activation alignment: l2, l1, or cosine"})
+    # If > 0, align only the last N hidden-sta,te layers; 0 means all layers
+    num_alignment_layers: int = field(default=0, metadata={"help": "Number of last layers to align (0 = all)"})
+
+    learning_rate: float = field(default=1e-3)
     max_grad_norm: float = field(default=1.0)
+    lr_scheduler_type: str = field(default="cosine")
 
-    warmup_steps: int = field(default=100)
-    per_device_train_batch_size: int = field(default=32)
-
-    lr_scheduler_type: str = field(default="cosine_with_min_lr")
-    lr_scheduler_kwargs: Optional[dict] = field(default_factory=lambda: {"min_lr": 5e-5})
-
-    average_tokens_across_devices: bool = field(default=True)
-
-    model_checkpoint: str = field(default="HuggingFaceTB/SmolLM2-135M")
+    per_device_train_batch_size: int = field(default=1)
 
     weight_decay: float = field(default=0.0)
-    eval_strategy: str = field(default="no")
-
-    save_strategy: str = field(default="no")
-
-    save_total_limit: Optional[int] = field(default=1)
-    save_only_model: bool = field(default=True)
-
-    push_to_hub: bool = field(default=False)
-
-    optim: str = field(default="adamw_torch_fused")
-
-    report_to: str = field(default="tensorboard")  # clearml | wandb | none | tensorboard
-    logging_steps: int = field(default=1)
 
     dataloader_drop_last: bool = field(default=True)
     dataloader_num_workers: int = field(default=0)
-    bf16: bool = field(default=False)
 
-    torch_compile: bool = field(default=False)
-
-    # dataset: str = field(default="fineweb_edu")  # fineweb_edu | dclm | my_recall
+    # Progressive training controls
+    progressive_train: bool = field(default=False, metadata={"help": "Whether to use progressive training"})
+    progressive_min_seq_len: int = field(
+        default=1,
+        metadata={"help": "Starting effective sequence length for progressive_train"},
+    )
+    progressive_step: int = field(
+        default=1,
+        metadata={"help": "Step size to increase effective sequence length between stages"},
+    )
+    progressive_convergence_threshold: float = field(
+        default=0.99,
+        metadata={"help": "Mean token-level match ratio required to mark a stage as converged"},
+    )
+    progressive_max_stages: int = field(
+        default=0,
+        metadata={"help": "Optional cap on number of progressive stages (0 = no cap)"},
+    )
+    save_progressive_artifacts: bool = field(
+        default=True,
+        metadata={"help": "Whether to persist intermediate compression tokens for each stage"},
+    )
