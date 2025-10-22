@@ -1,3 +1,4 @@
+from tqdm.auto import tqdm
 import argparse
 import csv
 import math
@@ -98,7 +99,7 @@ def compute_convergence_for_points(
     perturbations: torch.Tensor,
     text: str,
     max_sequence_length: int,
-    batch_size: int = 32,
+    batch_size: int = 64,
 ) -> np.ndarray:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
@@ -132,7 +133,7 @@ def compute_convergence_for_points(
     num_points = perturbations.shape[0]
     results: List[float] = []
 
-    for start in range(0, num_points, batch_size):
+    for start in tqdm(range(0, num_points, batch_size)):
         end = min(start + batch_size, num_points)
         batch_delta = perturbations[start:end].to(device)
         comp_batch = comp.unsqueeze(0).expand(end - start, -1, -1) + batch_delta
@@ -229,13 +230,18 @@ def make_plots(
     if pert_np.shape[1] >= 2:
         pca = PCA(n_components=2, random_state=42)
         xy = pca.fit_transform(pert_np)
-        plt.figure(figsize=(6, 5))
-        sc = plt.scatter(xy[:, 0], xy[:, 1], c=convergence, cmap="viridis", s=10)
-        plt.colorbar(sc, label="convergence")
-        plt.title("PCA of perturbations")
-        plt.tight_layout()
-        plt.savefig(os.path.join(save_dir, "pca_convergence.png"), dpi=150)
-        plt.close()
+        for scale in [0.01, 0.1, 0.5, 1.5, 2.5]:
+            plt.figure(figsize=(6, 5))
+            sc = plt.scatter(xy[:, 0], xy[:, 1], c=convergence, cmap="jet", s=10, alpha=0.2)
+            plt.xlim(-scale, scale)
+            plt.ylim(-scale, scale)
+            plt.colorbar(sc, label="convergence")
+            plt.title("PCA of perturbations")
+            plt.tight_layout()
+            figure_file = os.path.join(save_dir, f"pca_convergence_scale_{scale}.png")
+            plt.savefig(figure_file, dpi=150)
+            print("Saved to", figure_file)
+            plt.close()
 
 
 def main():
@@ -246,7 +252,7 @@ def main():
     parser.add_argument("--max_sequence_length", type=int, default=128)
     parser.add_argument("--num_points", type=int, default=1000)
     parser.add_argument("--norm_types", type=str, nargs="+", default=["l2", "linf", "l1"], help="List of norms: l2 linf l1")
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
 
