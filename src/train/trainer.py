@@ -68,7 +68,7 @@ class MyTrainer:
         if loss_type == "cross_entropy":
             labels = input_ids.clone()
             labels[attention_mask == 0] = -100
-            loss = F.cross_entropy(compression_outputs.logits[:, 1:].flatten(0, 1), labels.flatten(), reduction="mean")
+            loss = F.cross_entropy(compression_outputs.logits[:, :-1].flatten(0, 1), labels.flatten(), reduction="mean")
         else:
             for i in layer_indices:
                 tgt = outputs.hidden_states[i]
@@ -83,9 +83,8 @@ class MyTrainer:
                 else:
                     raise ValueError(f"Unsupported loss_type: {self.args.loss_type}")
 
-        convergece_per_sample = (compression_outputs.logits[:, 1:-1].argmax(dim=-1) == input_ids[:, 1:]).sum(
-            dim=-1
-        ) / attention_mask.sum(dim=-1)
+        conv_numerator = (compression_outputs.logits[:, 0:-1].argmax(dim=-1) == input_ids[:, :]).sum(dim=-1)
+        convergece_per_sample = conv_numerator / attention_mask.sum(dim=-1)
 
         return loss, convergece_per_sample.detach().clone()
 
@@ -111,6 +110,7 @@ class MyTrainer:
         for batch in dataloader:
             batch_size = batch["input_ids"].shape[0]
             input_ids = batch.input_ids.squeeze(1)
+            # print("input_ids", input_ids.shape)
             # Do not track graph for token embeddings; the model is frozen
             with torch.no_grad():
                 model_token_embeddings = model.model.embed_tokens(input_ids)
@@ -136,8 +136,8 @@ class MyTrainer:
             pbar.set_description("Training")
             for i in pbar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
-                model_tokens_with_compression_tokens = torch.cat([model_token_embeddings, compression_tokens], dim=1)
-                attention_mask_with_compression_tokens = torch.cat([attention_mask, compression_tokens_attention_mask], dim=1)
+                model_tokens_with_compression_tokens = torch.cat([compression_tokens, model_token_embeddings], dim=1)
+                attention_mask_with_compression_tokens = torch.cat([compression_tokens_attention_mask, attention_mask], dim=1)
                 loss, convergece_per_sample = self.compute_loss(
                     model,
                     input_ids,
