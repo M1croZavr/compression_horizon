@@ -34,3 +34,25 @@ class MyTrainingArguments(TrainingArguments):
 
     dataloader_drop_last: bool = field(default=True)
     dataloader_num_workers: int = field(default=0)
+
+    # Progressive training controls
+    progressive_min_seq_len: int = field(
+        default=16,
+        metadata={"help": "Starting effective sequence length for progressive_train"},
+    )
+    progressive_step: int = field(
+        default=16,
+        metadata={"help": "Step size to increase effective sequence length between stages"},
+    )
+    progressive_convergence_threshold: float = field(
+        default=0.99,
+        metadata={"help": "Mean token-level match ratio required to mark a stage as converged"},
+    )
+    progressive_max_stages: int = field(
+        default=0,
+        metadata={"help": "Optional cap on number of progressive stages (0 = no cap)"},
+    )
+    save_progressive_artifacts: bool = field(
+        default=True,
+        metadata={"help": "Whether to persist intermediate compression tokens for each stage"},
+    )
