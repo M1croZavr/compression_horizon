@@ -62,5 +62,8 @@ if __name__ == "__main__":
         data_collator=data_collator,
     )
 
-    training_artifacts = trainer.train()
+    if training_args.progressive_train:
+        training_artifacts = trainer.progressive_train()
+    else:
+        training_artifacts = trainer.train()
     print(f"Saved compressed prefixes to: {training_artifacts}")

@@ -36,12 +36,13 @@ class MyTrainingArguments(TrainingArguments):
     dataloader_num_workers: int = field(default=0)
 
     # Progressive training controls
+    progressive_train: bool = field(default=False, metadata={"help": "Whether to use progressive training"})
     progressive_min_seq_len: int = field(
-        default=16,
+        default=1,
         metadata={"help": "Starting effective sequence length for progressive_train"},
     )
     progressive_step: int = field(
-        default=16,
+        default=1,
         metadata={"help": "Step size to increase effective sequence length between stages"},
     )
     progressive_convergence_threshold: float = field(
