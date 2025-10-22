@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 
 from transformers import get_scheduler
+from torch.utils.tensorboard import SummaryWriter
 
 
 class MyTrainer:
@@ -25,6 +26,10 @@ class MyTrainer:
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
         self.data_collator = data_collator
+        # TensorBoard
+        log_dir = getattr(self.args, "logging_dir", None)
+        self.writer = SummaryWriter(log_dir=log_dir) if log_dir is not False else None
+        self.global_step = 0
 
     def compute_loss(
         self,
@@ -153,9 +158,29 @@ class MyTrainer:
                     lr=lr_scheduler.get_last_lr()[0],
                 )
 
+                # TensorBoard logging
+                if self.writer is not None:
+                    grad_norm = compression_tokens.grad.norm(2).item()
+                    lr_val = lr_scheduler.get_last_lr()[0]
+                    self.writer.add_scalar("train/loss", loss.item(), self.global_step)
+                    self.writer.add_scalar("train/convergence", convergece_per_sample.mean().item(), self.global_step)
+                    self.writer.add_scalar("compression_tokens/mean", compression_tokens.mean().item(), self.global_step)
+                    self.writer.add_scalar("compression_tokens/std", compression_tokens.std().item(), self.global_step)
+                    self.writer.add_scalar("train/grad_norm", grad_norm, self.global_step)
+                    self.writer.add_scalar("train/lr", lr_val, self.global_step)
+                    flush_steps = getattr(self.args, "logging_flush_steps", 50)
+                    if flush_steps and self.global_step % flush_steps == 0:
+                        self.writer.flush()
+                    self.global_step += 1
+
                 # if i == 100:
                 #     breakpoint()
 
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+        # Close TensorBoard writer
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
