@@ -5,8 +5,10 @@ import torch
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 
-from transformers import get_scheduler
+from transformers import get_scheduler, set_seed
 from torch.utils.tensorboard import SummaryWriter
+from datasets import Dataset
+import os
 
 
 class MyTrainer:
@@ -93,10 +95,55 @@ class MyTrainer:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         torch.set_default_device(device)
 
+        # Set random seed for reproducibility if provided
+        seed = getattr(self.args, "random_seed", 42)
+        if seed is not None:
+            set_seed(int(seed))
+
         model = self.model.to(device)
         # Freeze model parameters; we only optimize the compression tokens
         for p in model.parameters():
             p.requires_grad_(False)
+
+        # Prepare embedding initialization strategy
+        init_method = getattr(self.args, "embedding_init_method", "random").lower()
+        mvn_dist = None
+        mvn_mu = None
+        if init_method == "mvnormal":
+            with torch.no_grad():
+                emb_weight = None
+                # Prefer common HF architectures
+                try:
+                    emb_weight = model.model.embed_tokens.weight
+                except Exception:
+                    sd = model.state_dict()
+                    if "transformer.wte.weight" in sd:
+                        emb_weight = sd["transformer.wte.weight"].to(device)
+                    else:
+                        # Fallback: try to find an embedding weight key heuristically
+                        for k in sd.keys():
+                            if k.endswith("embed_tokens.weight") or k.endswith("wte.weight"):
+                                emb_weight = sd[k].to(device)
+                                break
+                if emb_weight is None:
+                    # Fallback to random if embedding weight not found
+                    init_method = "random"
+                else:
+                    pre_expansion_embeddings = emb_weight[:-3, :] if emb_weight.shape[0] > 3 else emb_weight
+                    mvn_mu = pre_expansion_embeddings.mean(dim=0)
+                    n = pre_expansion_embeddings.size(0)
+                    centered = pre_expansion_embeddings - mvn_mu
+                    sigma = (centered.T @ centered) / max(n, 1)
+                    # Small jitter and scaling to ensure PSD and reasonable variance
+                    eps = 1e-6
+                    sigma = sigma + eps * torch.eye(sigma.shape[0], device=sigma.device, dtype=sigma.dtype)
+                    covariance = 1e-5 * sigma
+                    try:
+                        mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=covariance)
+                    except Exception:
+                        # In case covariance is still not valid, downgrade to diagonal approx
+                        diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
+                        mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=torch.diag(diag_cov))
 
         dataloader = DataLoader(
             self.train_dataset,
@@ -106,6 +153,10 @@ class MyTrainer:
         )
 
         num_compression_tokens = getattr(self.args, "number_of_eos_tokens", 1)
+
+        # Collect per-sample artifacts for optional saving
+        collected_rows = []
+        sample_id_counter = 0
 
         for batch in dataloader:
             batch_size = batch["input_ids"].shape[0]
@@ -117,9 +168,17 @@ class MyTrainer:
             attention_mask = batch.attention_mask.squeeze(1)
 
             # Trainable compression tokens per sample
-            compression_tokens = torch.nn.Parameter(
-                torch.rand([batch_size, num_compression_tokens, model_token_embeddings.shape[-1]])
-            )
+            hidden_size = model_token_embeddings.shape[-1]
+            if init_method == "mvnormal" and mvn_dist is not None:
+                try:
+                    samples = mvn_dist.sample((batch_size, num_compression_tokens))
+                except Exception:
+                    # Fallback sampling: small normal around mean
+                    mean = mvn_mu if mvn_mu is not None else torch.zeros(hidden_size, device=model_token_embeddings.device)
+                    samples = mean + 0.01 * torch.randn(batch_size, num_compression_tokens, hidden_size)
+                compression_tokens = torch.nn.Parameter(samples)
+            else:
+                compression_tokens = torch.nn.Parameter(torch.rand([batch_size, num_compression_tokens, hidden_size]))
             compression_tokens_attention_mask = torch.tensor([[1]], dtype=attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
             )
@@ -180,7 +239,53 @@ class MyTrainer:
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
+            # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
+            with torch.no_grad():
+                tokenizer = self.processing_class
+                last_loss_val = float(loss.item())
+                last_conv = convergece_per_sample.detach().cpu()
+                comp_tokens_cpu = compression_tokens.detach().cpu()
+
+                for j in range(batch_size):
+                    attn = attention_mask[j].bool()
+                    ids = input_ids[j][attn]
+                    text = tokenizer.decode(ids.tolist(), skip_special_tokens=True) if tokenizer is not None else ""
+
+                    embedding = comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
+                    comp_mean = float(comp_tokens_cpu[j].mean().item())
+                    comp_std = float(comp_tokens_cpu[j].std().item())
+
+                    collected_rows.append(
+                        {
+                            "sample_id": int(sample_id_counter),
+                            "text": text,
+                            "embedding": embedding,  # shape: [num_compression_tokens, hidden_size]
+                            "final_loss": last_loss_val,
+                            "final_convergence": float(last_conv[j].item()),
+                            "compression_tokens_mean": comp_mean,
+                            "compression_tokens_std": comp_std,
+                            "num_input_tokens": int(attn.sum().item()),
+                            "num_compression_tokens": int(num_compression_tokens),
+                            "hidden_size": int(comp_tokens_cpu.shape[-1]),
+                            "loss_type": getattr(self.args, "loss_type", "l2"),
+                            "model_checkpoint": getattr(self.args, "model_checkpoint", ""),
+                            "max_optimization_steps_per_sample": int(
+                                getattr(self.args, "max_optimization_steps_per_sample", 0)
+                            ),
+                        }
+                    )
+                    sample_id_counter += 1
+
         # Close TensorBoard writer
         if self.writer is not None:
             self.writer.flush()
             self.writer.close()
+
+        # Optionally persist artifacts as a Hugging Face dataset under output_dir/compressed_prefixes
+        output_dir = getattr(self.args, "output_dir", None)
+        if output_dir and len(collected_rows) > 0:
+            os.makedirs(output_dir, exist_ok=True)
+            save_path = os.path.join(output_dir, "compressed_prefixes")
+            ds = Dataset.from_list(collected_rows)
+            ds.save_to_disk(save_path)
+            return save_path

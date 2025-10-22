@@ -8,4 +8,8 @@ transformers
 datasets
 torch
 
-tensorboardX
+tensorboard
+
+matplotlib
+seaborn
+scikit-learn

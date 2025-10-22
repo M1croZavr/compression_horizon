@@ -5,6 +5,7 @@ from transformers import TrainingArguments
 
 @dataclass
 class MyTrainingArguments(TrainingArguments):
+
     model_checkpoint: str = field(default="HuggingFaceTB/SmolLM2-135M")
     max_optimization_steps_per_sample: int = field(default=10_000)
 
@@ -12,6 +13,11 @@ class MyTrainingArguments(TrainingArguments):
     load_best_model_at_end: bool = field(default=False)
 
     max_sequence_length: int = field(default=128, metadata={"help": "Max sequence length for training"})
+    random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)"})
+    embedding_init_method: str = field(
+        default="random",
+        metadata={"help": "Initialization method for compression embeddings: random or mvnormal"},
+    )
 
     # Loss across hidden states: one of {"l2", "l1", "cosine"}
     loss_type: str = field(default="l2", metadata={"help": "Loss type for activation alignment: l2, l1, or cosine"})
