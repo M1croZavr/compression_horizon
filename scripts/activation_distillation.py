@@ -1,5 +1,3 @@
-import os
-
 import transformers
 from datasets import load_dataset
 
@@ -7,7 +5,6 @@ from train.arguments import MyTrainingArguments
 from train.trainer import MyTrainer
 
 from transformers import DataCollatorForLanguageModeling, AutoModelForCausalLM, AutoTokenizer
-from transformers.loss.loss_utils import ForCausalLMLoss
 
 if __name__ == "__main__":
 
@@ -21,14 +18,21 @@ if __name__ == "__main__":
     model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
 
-    fw_dataset = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", split="train", num_proc=4)
-    train_dataset = fw_dataset.select(range(10))
-    eval_dataset = fw_dataset.select(range(10, 20))
+    raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
+    train_dataset = raw_dataset.select(range(10))
+    # eval_dataset = raw_dataset.select(range(10, 20))
+
+    tokenizer.pad_token = tokenizer.eos_token
+    train_dataset = train_dataset.map(
+        lambda x: tokenizer(x["text"], truncation=True, padding="max_length", max_length=2048, return_tensors="pt"),
+        remove_columns=train_dataset.column_names,
+    )
+
+    print("train_dataset", len(train_dataset))
+    print("train_dataset", train_dataset)
+    # print("eval_dataset", len(eval_dataset))
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-    trackers_project_name = os.path.basename(training_args.output_dir)
-    training_args.run_name = trackers_project_name
 
     transformers.logging.set_verbosity_info()
 
@@ -37,13 +41,7 @@ if __name__ == "__main__":
         processing_class=tokenizer,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
         data_collator=data_collator,
-        compute_loss_func=ForCausalLMLoss,
     )
 
-    trainer.accelerator.init_trackers(
-        project_name=trackers_project_name,
-    )
-
-    trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+    training_artifacts = trainer.train()

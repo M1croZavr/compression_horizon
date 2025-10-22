@@ -1,84 +1,107 @@
-from transformers import Trainer
-from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
-from transformers.trainer import _is_peft_model
+import torch.nn.functional as F
+import torch
+from torch.utils.data import DataLoader
+from torch.optim import AdamW
 
 
-class MyTrainer(Trainer):
+class MyTrainer:
+
+    def __init__(
+        self,
+        model=None,
+        processing_class=None,
+        args=None,
+        train_dataset=None,
+        eval_dataset=None,
+        data_collator=None,
+    ):
+        self.model = model
+        self.processing_class = processing_class
+        self.args = args
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.data_collator = data_collator
 
     def compute_loss(
         self,
         model,
-        inputs,
-        return_outputs=False,
-        num_items_in_batch=None,
-        log_metrics=True,
-        log_prefix="debug",
-        force_log=False,
+        input_ids,
+        inputs_embeds,
+        attention_mask,
+        model_tokens_with_compression_tokens,
+        attention_mask_with_compression_tokens,
+        num_compression_tokens,
     ):
-        """
-        How the loss is computed by Trainer. By default, all models return the loss in the first element.
 
-        Subclass and override for custom behavior.
-        """
+        with torch.no_grad():
+            outputs = model(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+            )
 
-        # if (self.label_smoother is not None or self.compute_loss_func is not None) and "labels" in inputs:
+        compression_outputs = model(
+            inputs_embeds=model_tokens_with_compression_tokens,
+            attention_mask=attention_mask_with_compression_tokens,
+            output_hidden_states=True,
+        )
 
-        labels = inputs.pop("labels")
-        # print("labels", (labels != -100).sum())
-        # breakpoint()
+        loss = 0
+        for i in range(len(outputs.hidden_states)):
+            loss += F.mse_loss(
+                outputs.hidden_states[i],
+                compression_outputs.hidden_states[i][:, num_compression_tokens:],
+                reduction="mean",
+            )
 
-        unwrapped_model = self.accelerator.unwrap_model(model)
+        convergece_per_sample = (compression_outputs.logits[:, 1:-1].argmax(dim=-1) == input_ids[:, 1:]).sum(
+            dim=-1
+        ) / attention_mask.sum(dim=-1)
 
-        # Optionally disable loss on EOS tokens when using multiple EOS tokens
+        return loss, convergece_per_sample.detach().clone()
 
-        attention_mask = inputs["attention_mask"]
-        # token_frequency = inputs.get('token_frequency', None)
-        model_kwargs = {
-            "input_ids": inputs["input_ids"],
-            "attention_mask": attention_mask,
-            "use_cache": False,
-            "output_attentions": False,
-        }
+    def train(self):
 
-        if self.model_accepts_loss_kwargs:
-            loss_kwargs = {}
-            if num_items_in_batch is not None:
-                loss_kwargs["num_items_in_batch"] = num_items_in_batch
-            model_kwargs = {**model_kwargs, **loss_kwargs}
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        torch.set_default_device(device)
 
-        outputs = model(**model_kwargs)
-        # [ bs, seq_len, 2 ]
+        model = self.model.to(device)
 
-        if self.args.past_index >= 0:
-            self._past = outputs[self.args.past_index]
+        dataloader = DataLoader(
+            self.train_dataset,
+            batch_size=self.args.per_device_train_batch_size,
+            shuffle=False,
+            collate_fn=self.data_collator,
+        )
 
-        if labels is not None and self.label_smoother is not None or self.compute_loss_func is not None:
-            if _is_peft_model(unwrapped_model):
-                model_name = unwrapped_model.base_model.model._get_name()
-            else:
-                model_name = unwrapped_model._get_name()
+        num_compression_tokens = 1
 
-            # User-defined compute_loss function
-            if self.compute_loss_func is not None:
-                loss = self.compute_loss_func(
-                    outputs.logits, labels, vocab_size=unwrapped_model.config.vocab_size, num_items_in_batch=num_items_in_batch
+        for batch in dataloader:
+            batch_size = batch["input_ids"].shape[0]
+            input_ids = batch.input_ids.squeeze(1)
+            model_token_embeddings = model.model.embed_tokens(input_ids)
+            attention_mask = batch.attention_mask.squeeze(1)
+
+            compression_tokens = torch.rand([batch_size, num_compression_tokens, model_token_embeddings.shape[-1]])
+            compression_tokens_attention_mask = torch.tensor([[1]]).repeat(batch_size, num_compression_tokens)
+
+            model_tokens_with_compression_tokens = torch.cat([model_token_embeddings, compression_tokens], dim=1)
+            attention_mask_with_compression_tokens = torch.cat([attention_mask, compression_tokens_attention_mask], dim=1)
+
+            optimizer = AdamW([compression_tokens], lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+
+            for _ in range(self.args.max_optimization_steps_per_sample):
+                loss, convergece_per_sample = self.compute_loss(
+                    model,
+                    input_ids,
+                    model_token_embeddings,
+                    attention_mask,
+                    model_tokens_with_compression_tokens,
+                    attention_mask_with_compression_tokens,
+                    num_compression_tokens,
                 )
-            elif model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
-                loss = self.label_smoother(outputs, labels, shift_labels=True)
-            else:
-                loss = self.label_smoother(outputs, labels)
-        else:
-            if isinstance(outputs, dict) and "loss" not in outputs:
-                raise ValueError(
-                    "The model did not return a loss from the inputs, only the following keys: "
-                    f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
-                )
-            # We don't use .loss here since the model may return tuples instead of ModelOutput.
-            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+                print("loss", loss.item(), "convergece_per_sample", convergece_per_sample.mean().item())
 
-        if self.args.average_tokens_across_devices and (self.model_accepts_loss_kwargs or self.compute_loss_func):
-            loss *= self.accelerator.num_processes
-
-        outputs.loss = loss
-
-        return (loss, outputs) if return_outputs else loss
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
