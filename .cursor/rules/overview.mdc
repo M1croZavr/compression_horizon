@@ -34,7 +34,6 @@ alwaysApply: true
     - Layer selection controlled by `num_alignment_layers` (0 = all layers).
   - Tracks a simple convergence proxy (token-level argmax match rate) and logs metrics to TensorBoard if `logging_dir` is set.
   - Optimizer: `AdamW`; scheduler via HF `get_scheduler` using `lr_scheduler_type`, `warmup_steps`, and `max_optimization_steps_per_sample`.
-  - Uses `number_of_eos_tokens` from args if provided; defaults to `1` if absent.
 
 - **`activation_distillation.py`**
   - Parses CLI into `MyTrainingArguments` with `HfArgumentParser`.
