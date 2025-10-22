@@ -47,12 +47,27 @@ class MyTrainer:
         )
 
         loss = 0
-        for i in range(len(outputs.hidden_states)):
-            loss += F.mse_loss(
-                outputs.hidden_states[i],
-                compression_outputs.hidden_states[i][:, num_compression_tokens:],
-                reduction="mean",
-            )
+        total_layers = len(outputs.hidden_states)
+        if getattr(self.args, "num_alignment_layers", 0) and self.args.num_alignment_layers > 0:
+            num_layers = min(self.args.num_alignment_layers, total_layers)
+            layer_indices = range(total_layers - num_layers, total_layers)
+        else:
+            layer_indices = range(total_layers)
+
+        loss_type = getattr(self.args, "loss_type", "l2").lower()
+
+        for i in layer_indices:
+            tgt = outputs.hidden_states[i]
+            pred = compression_outputs.hidden_states[i][:, num_compression_tokens:]
+            if loss_type == "l2":
+                loss = loss + F.mse_loss(tgt, pred, reduction="mean")
+            elif loss_type == "l1":
+                loss = loss + F.l1_loss(tgt, pred, reduction="mean")
+            elif loss_type == "cosine":
+                cos = F.cosine_similarity(tgt, pred, dim=-1)
+                loss = loss + (1.0 - cos).mean()
+            else:
+                raise ValueError(f"Unsupported loss_type: {self.args.loss_type}")
 
         convergece_per_sample = (compression_outputs.logits[:, 1:-1].argmax(dim=-1) == input_ids[:, 1:]).sum(
             dim=-1
@@ -77,7 +92,7 @@ class MyTrainer:
             collate_fn=self.data_collator,
         )
 
-        num_compression_tokens = 1
+        num_compression_tokens = getattr(self.args, "number_of_eos_tokens", 1)
 
         for batch in dataloader:
             batch_size = batch["input_ids"].shape[0]
