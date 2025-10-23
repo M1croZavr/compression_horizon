@@ -19,7 +19,7 @@ class MyTrainingArguments(TrainingArguments):
         metadata={"help": "Initialization method for compression embeddings: random or mvnormal"},
     )
 
-    # Loss across hidden states: one of {"l2", "l1", "cosine"}
+    # Loss across hidden states: one of {"l2", "l1", "cosine", "cross_entropy"}
     loss_type: str = field(default="l2", metadata={"help": "Loss type for activation alignment: l2, l1, or cosine"})
     # If > 0, align only the last N hidden-sta,te layers; 0 means all layers
     num_alignment_layers: int = field(default=0, metadata={"help": "Number of last layers to align (0 = all)"})
