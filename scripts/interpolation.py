@@ -3,6 +3,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import math
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
@@ -121,6 +122,7 @@ def learn_bezier_and_evaluate(
     attention_mask: torch.Tensor,  # [1, T]
     input_ids: torch.Tensor,  # [1, T]
     num_points: int,
+    bezier_order: int = 2,
     weight_decay: float = 0.0,
     steps: int = 1000,
     lr: float = 1e-2,
@@ -131,14 +133,38 @@ def learn_bezier_and_evaluate(
     torch.manual_seed(int(seed))
     device = e0.device
     C, D = e0.shape
-    c = torch.nn.Parameter(0.5 * (e0 + e1) + 0.01 * torch.randn(C, D, device=device))
-    opt = torch.optim.AdamW([c], lr=lr, weight_decay=weight_decay)
+    n = max(2, int(bezier_order))
+    # Learn internal control points P1..P(n-1); endpoints P0=e0, Pn=e1 are fixed
+    control_params = torch.nn.ParameterList()
+    for k in range(1, n):
+        if k == n:
+            break
+        alpha = k / n
+        init_k = (1.0 - alpha) * e0 + alpha * e1 + 0.01 * torch.randn(C, D, device=device)
+        control_params.append(torch.nn.Parameter(init_k))
+    opt = torch.optim.AdamW(control_params.parameters(), lr=lr, weight_decay=weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
 
-    def run_step(ts: torch.Tensor) -> torch.Tensor:
+    def _bezier_points(ts: torch.Tensor) -> torch.Tensor:
         t = ts.view(-1, 1, 1)
-        omt = 1.0 - t
-        ct = (omt * omt) * e0.unsqueeze(0) + (2.0 * omt * t) * c.unsqueeze(0) + (t * t) * e1.unsqueeze(0)  # [B, C, D]
+        # Build control point list P0..Pn
+        points: List[torch.Tensor] = [e0] + [p for p in control_params] + [e1]
+        P = torch.stack(points, dim=0)  # [n+1, C, D]
+        B = t.shape[0]
+        # Compute Bernstein coefficients for each i=0..n
+        # coeffs[b, i] = comb(n,i) * (1-t_b)^{n-i} * t_b^{i}
+        ts_flat = ts.view(-1)
+        one_minus_t = 1.0 - ts_flat
+        coeffs = []
+        for i in range(n + 1):
+            binom = float(math.comb(n, i))
+            coeffs.append(binom * (one_minus_t ** (n - i)) * (ts_flat**i))
+        coeffs_t = torch.stack(coeffs, dim=1).to(device)  # [B, n+1]
+        ct = (coeffs_t.view(B, n + 1, 1, 1) * P.view(1, n + 1, C, D)).sum(dim=1)  # [B, C, D]
+        return ct
+
+    def run_step(ts: torch.Tensor) -> torch.Tensor:
+        ct = _bezier_points(ts)
         B = ct.shape[0]
         inputs_b = inputs_embeds.expand(B, -1, -1)
         attn_b = attention_mask.expand(B, -1)
@@ -161,10 +187,9 @@ def learn_bezier_and_evaluate(
             ts_np = np.linspace(0.0, 1.0, num_points, dtype=np.float32)
             accs: List[float] = []
             with torch.no_grad():
-                for t in tqdm(ts_np, desc="Evaluating Bezier curve"):
-                    t_t = torch.tensor([t], device=device, dtype=torch.float32)
-                    omt = 1.0 - t_t
-                    ct = (omt * omt) * e0.unsqueeze(0) + (2.0 * omt * t_t) * c.unsqueeze(0) + (t_t * t_t) * e1.unsqueeze(0)
+                for tval in tqdm(ts_np, desc="Evaluating Bezier curve"):
+                    t_t = torch.tensor([tval], device=device, dtype=torch.float32)
+                    ct = _bezier_points(t_t)
                     acc = compute_convergence(model, ct, inputs_embeds, attention_mask, input_ids)
                     accs.append(acc)
             print(f"Iteration {iter_i}, mean accuracy: {torch.tensor(accs).mean().item()}")
@@ -172,13 +197,16 @@ def learn_bezier_and_evaluate(
     ts_np = np.linspace(0.0, 1.0, num_points, dtype=np.float32)
     accs: List[float] = []
     with torch.no_grad():
-        for t in tqdm(ts_np, desc="Evaluating Bezier curve"):
-            t_t = torch.tensor([t], device=device, dtype=torch.float32)
-            omt = 1.0 - t_t
-            ct = (omt * omt) * e0.unsqueeze(0) + (2.0 * omt * t_t) * c.unsqueeze(0) + (t_t * t_t) * e1.unsqueeze(0)
+        for tval in tqdm(ts_np, desc="Evaluating Bezier curve"):
+            t_t = torch.tensor([tval], device=device, dtype=torch.float32)
+            ct = _bezier_points(t_t)
             acc = compute_convergence(model, ct, inputs_embeds, attention_mask, input_ids)
             accs.append(acc)
-    return c.detach().clone(), ts_np, np.array(accs, dtype=np.float32)
+    # Stack learned control points into [n-1, C, D]
+    learned = (
+        torch.stack([p.detach().clone() for p in control_params], dim=0) if len(control_params) > 0 else torch.empty(0, C, D)
+    )
+    return learned, ts_np, np.array(accs, dtype=np.float32)
 
 
 def pick_model_name(rows: List[Dict[str, Any]]) -> Optional[str]:
@@ -202,6 +230,7 @@ def main():
     parser.add_argument("--bezier_steps", type=int, default=200, help="Optimization steps for Bezier control point")
     parser.add_argument("--bezier_lr", type=float, default=1e-2, help="Learning rate for Bezier control point")
     parser.add_argument("--bezier_batch_t", type=int, default=32, help="Number of t samples per optimization step")
+    parser.add_argument("--bezier_order", type=int, default=2, help="Bezier curve order (>=2)")
     parser.add_argument("--bezier_weight_decay", type=float, default=0.0, help="Weight decay for Bezier control point")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="/tmp", help="Where to save plots and parameters")
@@ -262,13 +291,14 @@ def main():
             model, e0, e1, inputs_embeds, attention_mask, input_ids, num_points=int(args.num_points)
         )
 
-        c_param, ts_bez, accs_bez = learn_bezier_and_evaluate(
+        learned_ctrl, ts_bez, accs_bez = learn_bezier_and_evaluate(
             model,
             e0,
             e1,
             inputs_embeds,
             attention_mask,
             input_ids,
+            bezier_order=int(args.bezier_order),
             weight_decay=float(args.bezier_weight_decay),
             num_points=int(args.num_points),
             steps=int(args.bezier_steps),
@@ -294,7 +324,9 @@ def main():
         params_path = os.path.join(args.output_dir, f"bezier_params_sid{sid}.pt")
         torch.save(
             {
-                "control_point": c_param.cpu(),
+                "bezier_order": int(args.bezier_order),
+                "control_points": learned_ctrl.cpu(),  # [order-1, C, D]
+                "control_point": learned_ctrl.cpu()[0] if learned_ctrl.numel() > 0 else None,
                 "num_compression_tokens": int(e0.shape[0]),
                 "hidden_size": int(e0.shape[1]),
                 "endpoints": {
