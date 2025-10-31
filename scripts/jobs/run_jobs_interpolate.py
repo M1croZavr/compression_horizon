@@ -13,14 +13,22 @@ if __name__ == "__main__":
     author_name = "d.tarasov"
 
     checkpoints = [
-        ["random", "ch_cross_entropy_init_random_fmivdb", "ch_cross_entropy_init_random_qjabzg"],
-        ["mvnormal", "ch_cross_entropy_init_mvnormal_qghjjl", "ch_cross_entropy_init_mvnormal_kgkutv"],
+        # ["random_128", "ch_cross_entropy_init_random_fmivdb", "ch_cross_entropy_init_random_qjabzg"],
+        # ["mvnormal_128", "ch_cross_entropy_init_mvnormal_qghjjl", "ch_cross_entropy_init_mvnormal_kgkutv"],
+        ["mvnormal_4", "ch_cross_entropy_init_mvnormal_seq_len_4_dldqpt", "ch_cross_entropy_init_mvnormal_seq_len_4_lvectf"],
+        ["mvnormal_4", "ch_cross_entropy_init_mvnormal_seq_len_4_dldqpt", "ch_cross_entropy_init_mvnormal_seq_len_4_jygdfi"],
+        ["mvnormal_4", "ch_cross_entropy_init_mvnormal_seq_len_4_dldqpt", "ch_cross_entropy_init_mvnormal_seq_len_4_vxzytl"],
+        ["mvnormal_4", "ch_cross_entropy_init_mvnormal_seq_len_4_lvectf", "ch_cross_entropy_init_mvnormal_seq_len_4_jygdfi"],
+        ["mvnormal_4", "ch_cross_entropy_init_mvnormal_seq_len_4_lvectf", "ch_cross_entropy_init_mvnormal_seq_len_4_vxzytl"],
+        ["mvnormal_4", "ch_cross_entropy_init_mvnormal_seq_len_4_jygdfi", "ch_cross_entropy_init_mvnormal_seq_len_4_vxzytl"],
     ]
 
     for exp_type, checkpoint1, checkpoint2 in checkpoints:
+        out_dir_name = f"{exp_type}_{checkpoint1}_{checkpoint2}"
+
         result = client.run_job(
             payload={
-                "script": f" cd {workdir} && {python_path} scripts/interpolation.py --dataset_path1 artifacts/experiments/{checkpoint1}/compressed_prefixes --dataset_path2 artifacts/experiments/{checkpoint2}/compressed_prefixes --bezier_steps 1000 --bezier_batch_t 100 --bezier_lr 0.1 --bezier_weight_decay 0.0 --bezier_order 2 --output_dir artifacts/interpolations/{exp_type}",
+                "script": f" cd {workdir} && {python_path} scripts/interpolation.py --dataset_path1 artifacts/experiments/{checkpoint1}/compressed_prefixes --dataset_path2 artifacts/experiments/{checkpoint2}/compressed_prefixes --bezier_steps 1000 --bezier_batch_t 100 --bezier_lr 0.1 --bezier_weight_decay 0.0 --bezier_order 2 --output_dir artifacts/interpolations/{out_dir_name}",
                 "job_desc": f"CH: interpolate {checkpoint1} {checkpoint2} #{author_name} #multimodal @mrsndmn",
                 "env_variables": {
                     "PYTHONPATH": "./src",
