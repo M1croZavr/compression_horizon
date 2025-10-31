@@ -180,7 +180,7 @@ def learn_bezier_and_evaluate(
     for iter_i in tqdm(range(int(steps)), desc="Optimizing Bezier control point"):
         ts = torch.rand(min(batch_t, num_points), device=device)
         # beta-distribution with alpha=0.5 and beta=0.5
-        ts = torch.sqrt(ts) * torch.sqrt(1 - ts) / 3.1415
+        # ts = torch.sqrt(ts) * torch.sqrt(1 - ts) / 3.1415
         loss = run_step(ts)
         opt.zero_grad(set_to_none=True)
         loss.backward()
