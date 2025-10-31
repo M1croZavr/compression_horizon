@@ -11,6 +11,8 @@ from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
+import matplotlib.pyplot as plt
+
 
 def load_progressive_dataset(dataset_path: str) -> Dataset:
     return Dataset.load_from_disk(dataset_path)
@@ -177,6 +179,8 @@ def learn_bezier_and_evaluate(
 
     for iter_i in tqdm(range(int(steps)), desc="Optimizing Bezier control point"):
         ts = torch.rand(min(batch_t, num_points), device=device)
+        # beta-distribution with alpha=0.5 and beta=0.5
+        # ts = torch.sqrt(ts) * torch.sqrt(1 - ts) / 3.1415
         loss = run_step(ts)
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -192,7 +196,18 @@ def learn_bezier_and_evaluate(
                     ct = _bezier_points(t_t)
                     acc = compute_convergence(model, ct, inputs_embeds, attention_mask, input_ids)
                     accs.append(acc)
-            print(f"Iteration {iter_i}, mean accuracy: {torch.tensor(accs).mean().item()}")
+            print(
+                f"Iteration {iter_i}, mean accuracy: {torch.tensor(accs).mean().item()}, min accuracy: {torch.tensor(accs).min().item()}, max accuracy: {torch.tensor(accs).max().item()}"
+            )
+            plt.plot(ts_np, accs, label="Bezier (learned)", linewidth=2)
+            plt.xlabel("t")
+            plt.ylabel("convergence accuracy")
+            plt.title(f"Interpolation Accuracy (iteration {iter_i})")
+            plt.legend()
+            plt.tight_layout()
+            plot_path = os.path.join(f"/tmp/interpolation_accuracy_iteration{iter_i}.png")
+            plt.savefig(plot_path, dpi=150)
+            plt.close()
 
     ts_np = np.linspace(0.0, 1.0, num_points, dtype=np.float32)
     accs: List[float] = []

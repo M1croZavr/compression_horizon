@@ -23,7 +23,7 @@ if __name__ == "__main__":
     def _rand_suffix(n=6):
         return "".join(random.choice(string.ascii_lowercase) for _ in range(n))
 
-    run_dir_name = f"artifacts/experiments/ch_{getattr(training_args, 'loss_type', 'l2')}_{_rand_suffix(6)}"
+    run_dir_name = f"artifacts/experiments/ch_{getattr(training_args, 'loss_type', 'l2')}_init_{training_args.embedding_init_method}_{_rand_suffix(6)}"
     # Place at repo root with exact template
     output_dir = run_dir_name
     os.makedirs(output_dir, exist_ok=True)
