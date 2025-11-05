@@ -14,9 +14,14 @@ if __name__ == "__main__":
 
     # for embedding_init_method in ["random", "mvnormal"]:
     for embedding_init_method in ["mvnormal"]:
-        # for random_seed in [42, 533]:
-        for random_seed in [100, 200]:
-            for max_sequence_length in [4]:
+        # for random_seed in [42, 533, 100, 200]:
+        for random_seed in [
+            42,
+            533,
+        ]:
+            # for random_seed in [100, 200]:
+            for max_sequence_length in [32]:
+                # for max_sequence_length in [8, 16, 32, 64]:
                 result = client.run_job(
                     payload={
                         "script": f" cd {workdir} && {python_path} scripts/activation_distillation.py  --remove_unused_columns False  --num_alignment_layers 1 --loss_type cross_entropy --max_sequence_length {max_sequence_length} --warmup_steps 100 --model_checkpoint HuggingFaceTB/SmolLM2-1.7B --per_device_train_batch_size 1 --max_optimization_steps_per_sample 1000 --learning_rate 0.01  --random_seed {random_seed} --embedding_init_method {embedding_init_method} ",

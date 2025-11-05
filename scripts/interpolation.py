@@ -192,9 +192,10 @@ def learn_bezier_and_evaluate(
         return cross_entropy_loss_for_batch(out.logits, ids_b, attn_b)
 
     for iter_i in tqdm(range(int(steps)), desc="Optimizing Bezier control point"):
-        ts = torch.rand(min(batch_t, num_points), device=device)
         # beta-distribution with alpha=0.5 and beta=0.5
-        # ts = torch.sqrt(ts) * torch.sqrt(1 - ts) / 3.1415
+        ts = torch.rand(min(batch_t, num_points), device=device)
+        # ts = distributions.Beta(0.5, 0.5).sample(sample_shape=torch.Size([min(batch_t, num_points)])).to(device)
+
         loss = run_step(ts)
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -259,8 +260,8 @@ def main():
     parser.add_argument("--dataset_path2", type=str, required=True, help="Path to progressive_prefixes dataset")
     parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
     parser.add_argument("--model_checkpoint", type=str, default=None, help="HF model name; inferred if omitted")
-    parser.add_argument("--num_points", type=int, default=100, help="Number of evaluation points along t  [0,1]")
-    parser.add_argument("--bezier_steps", type=int, default=200, help="Optimization steps for Bezier control point")
+    parser.add_argument("--num_points", type=int, default=300, help="Number of evaluation points along t  [0,1]")
+    parser.add_argument("--bezier_steps", type=int, default=5000, help="Optimization steps for Bezier control point")
     parser.add_argument("--bezier_lr", type=float, default=1e-2, help="Learning rate for Bezier control point")
     parser.add_argument("--bezier_batch_t", type=int, default=32, help="Number of t samples per optimization step")
     parser.add_argument("--bezier_order", type=int, default=2, help="Bezier curve order (>=2)")
@@ -361,6 +362,7 @@ def main():
         params_path = os.path.join(args.output_dir, f"bezier_params_sid{sid}.pt")
         torch.save(
             {
+                "text_eval": text_eval,
                 "bezier_order": int(args.bezier_order),
                 "control_points": learned_ctrl.cpu(),  # [order-1, C, D]
                 "control_point": learned_ctrl.cpu()[0] if learned_ctrl.numel() > 0 else None,
