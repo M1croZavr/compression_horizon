@@ -12,7 +12,6 @@ import os
 
 
 class MyTrainer:
-
     def __init__(
         self,
         model=None,
@@ -30,65 +29,120 @@ class MyTrainer:
         self.data_collator = data_collator
         # TensorBoard
         log_dir = getattr(self.args, "logging_dir", None)
-        self.writer = SummaryWriter(log_dir=log_dir) if log_dir is not False else None
+        self.writer = SummaryWriter(log_dir=log_dir) or None
         self.global_step = 0
 
     def compute_loss(
         self,
         model,
         input_ids,
-        inputs_embeds,
+        token_embeddings,
         attention_mask,
-        model_tokens_with_compression_tokens,
-        attention_mask_with_compression_tokens,
+        united_token_embeddings,
+        united_attention_mask,
         num_compression_tokens,
     ):
-
         with torch.no_grad():
+            # Hidden state: [batch, sequence, hidden]
+            # Number of hidden states: embedder + number of transformer decoder layers
             outputs = model(
-                inputs_embeds=inputs_embeds,
+                inputs_embeds=token_embeddings,
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
-
+        # Hidden state: [batch, mem + sequence, hidden]
+        # Number of hidden states: embedder + number of transformer decoder layers
         compression_outputs = model(
-            inputs_embeds=model_tokens_with_compression_tokens,
-            attention_mask=attention_mask_with_compression_tokens,
+            inputs_embeds=united_token_embeddings,
+            attention_mask=united_attention_mask,
             output_hidden_states=True,
         )
 
-        loss = 0
+        # TODO: Optionally take first layers hidden states?
         total_layers = len(outputs.hidden_states)
         if getattr(self.args, "num_alignment_layers", 0) and self.args.num_alignment_layers > 0:
             num_layers = min(self.args.num_alignment_layers, total_layers)
-            layer_indices = range(total_layers - num_layers, total_layers)
+            if self.args.inverted_alignment:
+                layer_indices = range(num_layers)
+            else:
+                layer_indices = range(total_layers - num_layers, total_layers)
         else:
             layer_indices = range(total_layers)
 
         loss_type = getattr(self.args, "loss_type", "l2").lower()
+        hybrid_alpha = getattr(self.args, "hybrid_alpha")
 
-        if loss_type == "cross_entropy":
+        if hybrid_alpha is not None:
             labels = input_ids.clone()
             labels[attention_mask == 0] = -100
-            loss = F.cross_entropy(compression_outputs.logits[:, :-1].flatten(0, 1), labels.flatten(), reduction="mean")
-        else:
+            # TODO: How to correctly slice compression_outputs?
+            ce_loss = F.cross_entropy(
+                compression_outputs.logits[:, num_compression_tokens - 1:-1].flatten(0, 1),
+                labels.flatten(),
+                reduction="mean",
+            )
             for i in layer_indices:
-                tgt = outputs.hidden_states[i]
-                pred = compression_outputs.hidden_states[i][:, num_compression_tokens:]
+                target_hidden_states = outputs.hidden_states[i]  # [batch, sequence, hidden]
+                compression_hidden_states = compression_outputs.hidden_states[i][:, :num_compression_tokens]  # [batch, mem, hidden]
                 if loss_type == "l2":
-                    loss = loss + F.mse_loss(tgt, pred, reduction="mean")
+                    l2_loss = torch.mean(
+                        torch.mean(
+                            torch.sqrt(
+                                torch.sum(
+                                    (
+                                        target_hidden_states.unsqueeze(dim=0) - compression_hidden_states.unsqueeze(dim=2)
+                                    ) ** 2,
+                                    dim=-1,
+                                )
+                            ),
+                            dim=-1,
+                        )
+                    )
+                    loss = ce_loss + hybrid_alpha * l2_loss
                 elif loss_type == "l1":
-                    loss = loss + F.l1_loss(tgt, pred, reduction="mean")
+                    l1_loss = torch.mean(
+                        torch.mean(
+                            torch.sum(
+                                (
+                                    torch.abs(
+                                        target_hidden_states.unsqueeze(dim=0) - compression_hidden_states.unsqueeze(dim=2)
+                                    )
+                                ),
+                                dim=-1,
+                            ),
+                            dim=-1,
+                        )
+                    )
+                    loss = ce_loss + hybrid_alpha * l1_loss
                 elif loss_type == "cosine":
-                    cos = F.cosine_similarity(tgt, pred, dim=-1)
-                    loss = loss + (1.0 - cos).mean()
+                    # TODO: Cosine distance
+                    cosine = ...
+                    loss = ce_loss + hybrid_alpha * (1.0 - cosine)
                 else:
                     raise ValueError(f"Unsupported loss_type: {self.args.loss_type}")
+        else:
+            if loss_type == "cross_entropy":
+                labels = input_ids.clone()
+                labels[attention_mask == 0] = -100
+                loss = F.cross_entropy(compression_outputs.logits[:, :-1].flatten(0, 1), labels.flatten(), reduction="mean")
+            else:
+                for i in layer_indices:
+                    tgt = outputs.hidden_states[i]
+                    pred = compression_outputs.hidden_states[i][:, num_compression_tokens:]
+                    if loss_type == "l2":
+                        loss = F.mse_loss(tgt, pred, reduction="mean")
+                    elif loss_type == "l1":
+                        loss = F.l1_loss(tgt, pred, reduction="mean")
+                    elif loss_type == "cosine":
+                        cos = F.cosine_similarity(tgt, pred, dim=-1)
+                        loss = (1.0 - cos).mean()
+                    else:
+                        raise ValueError(f"Unsupported loss_type: {self.args.loss_type}")
 
         conv_numerator = (compression_outputs.logits[:, 0:-1].argmax(dim=-1) == input_ids[:, :]).sum(dim=-1)
-        convergece_per_sample = conv_numerator / attention_mask.sum(dim=-1)
+        convergence_per_sample = conv_numerator / attention_mask.sum(dim=-1)
 
-        return loss, convergece_per_sample.detach().clone()
+        return loss, convergence_per_sample.detach().clone()
 
     # -------------------- Helper methods (refactor for reuse) --------------------
     def _get_device(self):
@@ -192,80 +246,78 @@ class MyTrainer:
 
     def train(self):
         device = self._get_device()
-        self._set_seed_if_any()
         model = self.model.to(device)
+        self._set_seed_if_any()
         self._freeze_model_params(model)
         init_method, mvn_dist = self._prepare_embedding_init(model)
-
-        dataloader = self._create_dataloader()
-
-        num_compression_tokens = getattr(self.args, "number_of_eos_tokens", 1)
+        num_compression_tokens = getattr(self.args, "number_of_mem_tokens", 1)
 
         # Collect per-sample artifacts for optional saving
         collected_rows = []
         sample_id_counter = 0
 
+        dataloader = self._create_dataloader()
         for batch in dataloader:
             batch_size = batch["input_ids"].shape[0]
-            input_ids = batch.input_ids.squeeze(1)
-            # print("input_ids", input_ids.shape)
-            # Do not track graph for token embeddings; the model is frozen
+            input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
             with torch.no_grad():
-                model_token_embeddings = model.model.embed_tokens(input_ids)
-            attention_mask = batch.attention_mask.squeeze(1)
+                token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+                hidden_size = token_embeddings.shape[-1]
+            attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
 
             # Trainable compression tokens per sample
-            hidden_size = model_token_embeddings.shape[-1]
-            compression_tokens = self._init_compression_tokens(
+            compression_token_embeddings = self._init_compression_tokens(
                 batch_size, num_compression_tokens, hidden_size, init_method, mvn_dist
-            )
-            compression_tokens_attention_mask = torch.tensor([[1]], dtype=attention_mask.dtype).repeat(
+            )  # [batch, mem, hidden]
+            compression_attention_mask = torch.tensor([[1]], dtype=attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
-            )
+            )  # [batch, mem]
 
-            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_tokens)
+            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
 
             pbar = tqdm(range(self.args.max_optimization_steps_per_sample), total=self.args.max_optimization_steps_per_sample)
             pbar.set_description("Training")
-            for i in pbar:
+            for _ in pbar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
-                model_tokens_with_compression_tokens = torch.cat([compression_tokens, model_token_embeddings], dim=1)
-                attention_mask_with_compression_tokens = torch.cat([compression_tokens_attention_mask, attention_mask], dim=1)
-                loss, convergece_per_sample = self.compute_loss(
+                united_token_embeddings = torch.cat(
+                    [compression_token_embeddings, token_embeddings],
+                    dim=1,
+                )  # [batch, mem + sequence, hidden]
+                united_attention_mask = torch.cat(
+                    [compression_attention_mask, attention_mask],
+                    dim=1,
+                )  # [batch, mem + sequence]
+                loss, convergence_per_sample = self.compute_loss(
                     model,
                     input_ids,
-                    model_token_embeddings,
+                    token_embeddings,
                     attention_mask,
-                    model_tokens_with_compression_tokens,
-                    attention_mask_with_compression_tokens,
+                    united_token_embeddings,
+                    united_attention_mask,
                     num_compression_tokens,
                 )
                 loss.backward()
-                pbar.update(1)
-                pbar.set_postfix(
-                    loss=loss.item(),
-                    convergece_per_sample=convergece_per_sample.mean().item(),
-                    compression_tokens_mean=compression_tokens.mean().item(),
-                    compression_tokens_std=compression_tokens.std().item(),
-                    grad=compression_tokens.grad.norm(2).item(),
-                    lr=lr_scheduler.get_last_lr()[0],
-                )
-
-                self._log_step(loss, convergece_per_sample, compression_tokens, lr_scheduler)
-
-                # if i == 100:
-                #     breakpoint()
-
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+                pbar.update(1)
+                pbar.set_postfix(
+                    loss=loss.item(),
+                    convergece_per_sample=convergence_per_sample.mean().item(),
+                    compression_tokens_mean=compression_token_embeddings.mean().item(),
+                    compression_tokens_std=compression_token_embeddings.std().item(),
+                    grad=compression_token_embeddings.grad.norm(2).item(),
+                    lr=lr_scheduler.get_last_lr()[0],
+                )
+                self._log_step(loss, convergence_per_sample, compression_token_embeddings, lr_scheduler)
 
             # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
             with torch.no_grad():
                 tokenizer = self.processing_class
                 last_loss_val = float(loss.item())
-                last_conv = convergece_per_sample.detach().cpu()
-                comp_tokens_cpu = compression_tokens.detach().cpu()
+                last_conv = convergence_per_sample.detach().cpu()
+                comp_tokens_cpu = compression_token_embeddings.detach().cpu()
 
                 for j in range(batch_size):
                     attn = attention_mask[j].bool()
@@ -280,7 +332,7 @@ class MyTrainer:
                         {
                             "sample_id": int(sample_id_counter),
                             "text": text,
-                            "embedding": embedding,  # shape: [num_compression_tokens, hidden_size]
+                            "embedding": embedding,  # [mem, hidden]
                             "final_loss": last_loss_val,
                             "final_convergence": float(last_conv[j].item()),
                             "compression_tokens_mean": comp_mean,
@@ -306,6 +358,7 @@ class MyTrainer:
         save_path = self._save_artifacts(collected_rows, "compressed_prefixes")
         if save_path is not None:
             return save_path
+        return None
 
     def progressive_train(self):
         device = self._get_device()
@@ -316,7 +369,7 @@ class MyTrainer:
 
         dataloader = self._create_dataloader()
 
-        num_compression_tokens = getattr(self.args, "number_of_eos_tokens", 1)
+        num_compression_tokens = getattr(self.args, "number_of_mem_tokens", 1)
         threshold = getattr(self.args, "progressive_convergence_threshold", 0.99)
         step_increment = getattr(self.args, "progressive_step", 16)
         min_len = getattr(self.args, "progressive_min_seq_len", 16)
@@ -449,3 +502,4 @@ class MyTrainer:
         save_path = self._save_artifacts(collected_rows, "progressive_prefixes")
         if save_path is not None:
             return save_path
+        return None
