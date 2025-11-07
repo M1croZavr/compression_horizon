@@ -8,6 +8,7 @@ from transformers import TrainingArguments
 @dataclass
 class MyTrainingArguments(TrainingArguments):
     """Training arguments for tokens compression experiments."""
+
     model_checkpoint: str = field(default="HuggingFaceTB/SmolLM2-135M")
     loss_type: str = field(default="l2", metadata={"help": "Loss type for activation alignment: l2, l1, or cosine"})
     max_sequence_length: int = field(default=128, metadata={"help": "Max sequence length for training"})
@@ -22,13 +23,14 @@ class MyTrainingArguments(TrainingArguments):
     lr_scheduler_type: str = field(default="cosine")
     max_optimization_steps_per_sample: int = field(default=10_000)
     num_alignment_layers: int = field(
-        default=0,
-        metadata={"help": "Number of last layers hidden states to align (0 = all)"}
+        default=0, metadata={"help": "Number of last layers hidden states to align (0 = all)"}
     )
     inverted_alignment: bool = field(default=False)
     hybrid_alpha: float | None = field(
         default=None,
-        metadata={"help": "Multiplier in the loss function for l2, l1, or cosine, hybrid loss applied in training when specified"},
+        metadata={
+            "help": "Multiplier in the loss function for l2, l1, or cosine, hybrid loss applied in training when specified"
+        },
     )
 
     ddp_find_unused_parameters: bool = field(default=False)

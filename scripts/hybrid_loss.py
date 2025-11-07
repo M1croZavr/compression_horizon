@@ -1,18 +1,19 @@
+import os
+import subprocess
 import uuid
 
 import torch
-import os
-import subprocess
 import transformers
 from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
 
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer
 
-from transformers import DataCollatorForLanguageModeling, AutoModelForCausalLM, AutoTokenizer
 
 class NvidiaSMIError(Exception):
     """A custom exception for validating nvidia-smi availability."""
+
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
@@ -27,7 +28,7 @@ if __name__ == "__main__":
 
     # Parse arguments
     hf_parser = transformers.HfArgumentParser(MyTrainingArguments)
-    training_args, = hf_parser.parse_args_into_dataclasses()
+    (training_args,) = hf_parser.parse_args_into_dataclasses()
 
     # Make output/logging directory
     output_dir = f"artifacts/experiments/hl_{getattr(training_args, 'loss_type', 'l2')}_{training_args.embedding_init_method}_{uuid.uuid4()}"
@@ -45,7 +46,11 @@ if __name__ == "__main__":
     train_dataset = raw_dataset.select(range(1))
     train_dataset = train_dataset.map(
         lambda x: tokenizer(
-            x["text"], truncation=True, padding="max_length", max_length=training_args.max_sequence_length, return_tensors="pt"
+            x["text"],
+            truncation=True,
+            padding="max_length",
+            max_length=training_args.max_sequence_length,
+            return_tensors="pt",
         ),
         remove_columns=train_dataset.column_names,
     )

@@ -1,14 +1,13 @@
-from tqdm.auto import tqdm
-
-import torch.nn.functional as F
-import torch
-from torch.utils.data import DataLoader
-from torch.optim import AdamW
-
-from transformers import get_scheduler, set_seed
-from torch.utils.tensorboard import SummaryWriter
-from datasets import Dataset
 import os
+
+import torch
+import torch.nn.functional as F
+from datasets import Dataset
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from tqdm.auto import tqdm
+from transformers import get_scheduler, set_seed
 
 
 class MyTrainer:
@@ -77,21 +76,22 @@ class MyTrainer:
             labels[attention_mask == 0] = -100
             # TODO: How to correctly slice compression_outputs?
             ce_loss = F.cross_entropy(
-                compression_outputs.logits[:, num_compression_tokens - 1:-1].flatten(0, 1),
+                compression_outputs.logits[:, num_compression_tokens - 1 : -1].flatten(0, 1),
                 labels.flatten(),
                 reduction="mean",
             )
             for i in layer_indices:
                 target_hidden_states = outputs.hidden_states[i]  # [batch, sequence, hidden]
-                compression_hidden_states = compression_outputs.hidden_states[i][:, :num_compression_tokens]  # [batch, mem, hidden]
+                compression_hidden_states = compression_outputs.hidden_states[i][
+                    :, :num_compression_tokens
+                ]  # [batch, mem, hidden]
                 if loss_type == "l2":
                     l2_loss = torch.mean(
                         torch.mean(
                             torch.sqrt(
                                 torch.sum(
-                                    (
-                                        target_hidden_states.unsqueeze(dim=0) - compression_hidden_states.unsqueeze(dim=2)
-                                    ) ** 2,
+                                    (target_hidden_states.unsqueeze(dim=0) - compression_hidden_states.unsqueeze(dim=2))
+                                    ** 2,
                                     dim=-1,
                                 )
                             ),
@@ -105,7 +105,8 @@ class MyTrainer:
                             torch.sum(
                                 (
                                     torch.abs(
-                                        target_hidden_states.unsqueeze(dim=0) - compression_hidden_states.unsqueeze(dim=2)
+                                        target_hidden_states.unsqueeze(dim=0)
+                                        - compression_hidden_states.unsqueeze(dim=2)
                                     )
                                 ),
                                 dim=-1,
@@ -124,7 +125,9 @@ class MyTrainer:
             if loss_type == "cross_entropy":
                 labels = input_ids.clone()
                 labels[attention_mask == 0] = -100
-                loss = F.cross_entropy(compression_outputs.logits[:, :-1].flatten(0, 1), labels.flatten(), reduction="mean")
+                loss = F.cross_entropy(
+                    compression_outputs.logits[:, :-1].flatten(0, 1), labels.flatten(), reduction="mean"
+                )
             else:
                 for i in layer_indices:
                     tgt = outputs.hidden_states[i]
@@ -189,7 +192,9 @@ class MyTrainer:
                         mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=covariance)
                     except Exception:
                         diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
-                        mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=torch.diag(diag_cov))
+                        mvn_dist = torch.distributions.MultivariateNormal(
+                            mvn_mu, covariance_matrix=torch.diag(diag_cov)
+                        )
                 else:
                     init_method = "random"
         return init_method, mvn_dist
@@ -275,7 +280,9 @@ class MyTrainer:
 
             optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
 
-            pbar = tqdm(range(self.args.max_optimization_steps_per_sample), total=self.args.max_optimization_steps_per_sample)
+            pbar = tqdm(
+                range(self.args.max_optimization_steps_per_sample), total=self.args.max_optimization_steps_per_sample
+            )
             pbar.set_description("Training")
             for _ in pbar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
@@ -408,7 +415,8 @@ class MyTrainer:
                 attention_mask = full_attention_mask[:, :seq_len]
 
                 pbar = tqdm(
-                    range(self.args.max_optimization_steps_per_sample), total=self.args.max_optimization_steps_per_sample
+                    range(self.args.max_optimization_steps_per_sample),
+                    total=self.args.max_optimization_steps_per_sample,
                 )
                 pbar.set_description(f"Stage L={seq_len}")
                 last_loss_val = None
