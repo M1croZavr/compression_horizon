@@ -3,13 +3,12 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import torch
 from datasets import Dataset
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
-import seaborn as sns
-
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -159,7 +158,9 @@ def main():
         default=None,
         help="HF model name to compute token-level perplexity of sample texts",
     )
-    parser.add_argument("--perplexity_max_samples", type=int, default=64, help="Max rows to use for perplexity estimation")
+    parser.add_argument(
+        "--perplexity_max_samples", type=int, default=64, help="Max rows to use for perplexity estimation"
+    )
 
     args = parser.parse_args()
 

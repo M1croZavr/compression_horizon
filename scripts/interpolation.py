@@ -1,17 +1,15 @@
 import argparse
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
-import math
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
-
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
-
-import matplotlib.pyplot as plt
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def load_progressive_dataset(dataset_path: str) -> Dataset:
@@ -66,7 +64,9 @@ def compute_convergence(
     input_ids: torch.Tensor,  # [B, T]
 ) -> float:
     attn_ct = torch.ones(
-        (compression_tokens.size(0), compression_tokens.size(1)), dtype=attention_mask.dtype, device=attention_mask.device
+        (compression_tokens.size(0), compression_tokens.size(1)),
+        dtype=attention_mask.dtype,
+        device=attention_mask.device,
     )
     inputs_embeds_with_ct = torch.cat([compression_tokens, inputs_embeds], dim=1)
     attention_mask_with_ct = torch.cat([attn_ct, attention_mask], dim=1)
@@ -219,7 +219,9 @@ def learn_bezier_and_evaluate(
             accs.append(acc)
     # Stack learned control points into [n-1, C, D]
     learned = (
-        torch.stack([p.detach().clone() for p in control_params], dim=0) if len(control_params) > 0 else torch.empty(0, C, D)
+        torch.stack([p.detach().clone() for p in control_params], dim=0)
+        if len(control_params) > 0
+        else torch.empty(0, C, D)
     )
     return learned, ts_np, np.array(accs, dtype=np.float32)
 

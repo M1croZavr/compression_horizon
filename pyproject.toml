@@ -8,7 +8,12 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "accelerate>=0.26.0",
     "datasets>=4.3.0",
+    "matplotlib>=3.10.7",
+    "pytest>=8.4.2",
+    "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
     "tensorboard>=2.20.0",
     "torch>=2.9.0",
     "tqdm>=4.67.1",

@@ -1,4 +1,3 @@
-from tqdm.auto import tqdm
 import argparse
 import csv
 import math
@@ -7,14 +6,14 @@ import random
 import string
 from typing import List, Tuple
 
-import numpy as np
-import torch
-from sklearn.decomposition import PCA
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
-
+import torch
 from datasets import Dataset
+from sklearn.decomposition import PCA
+from tqdm.auto import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def _rand_suffix(n: int = 6) -> str:
@@ -251,7 +250,9 @@ def main():
     parser.add_argument("--text_file", type=str, default=None, help="Path to a text file to evaluate")
     parser.add_argument("--max_sequence_length", type=int, default=128)
     parser.add_argument("--num_points", type=int, default=1000)
-    parser.add_argument("--norm_types", type=str, nargs="+", default=["l2", "linf", "l1"], help="List of norms: l2 linf l1")
+    parser.add_argument(
+        "--norm_types", type=str, nargs="+", default=["l2", "linf", "l1"], help="List of norms: l2 linf l1"
+    )
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -334,7 +335,9 @@ def main():
             writer.writerow([i, n, r, c])
 
     # Save plots
-    make_plots(save_dir=out_dir, radii=radii, norm_types=norm_types, convergence=convergence, perturbations=perturbations)
+    make_plots(
+        save_dir=out_dir, radii=radii, norm_types=norm_types, convergence=convergence, perturbations=perturbations
+    )
 
     print(f"Saved results and plots to: {out_dir}")
 

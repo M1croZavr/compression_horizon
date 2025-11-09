@@ -1,18 +1,20 @@
-import torch
 import os
 import random
-import subprocess
 import string
+import subprocess
+
+import torch
 import transformers
 from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
 
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer
 
-from transformers import DataCollatorForLanguageModeling, AutoModelForCausalLM, AutoTokenizer
 
 class NvidiaSMIError(Exception):
     """A custom exception for validating nvidia-smi availability."""
+
     def __init__(self, message: str):
         self.message = message
         super().__init__(self.message)
@@ -49,7 +51,11 @@ if __name__ == "__main__":
     tokenizer.pad_token = tokenizer.eos_token
     train_dataset = train_dataset.map(
         lambda x: tokenizer(
-            x["text"], truncation=True, padding="max_length", max_length=training_args.max_sequence_length, return_tensors="pt"
+            x["text"],
+            truncation=True,
+            padding="max_length",
+            max_length=training_args.max_sequence_length,
+            return_tensors="pt",
         ),
         remove_columns=train_dataset.column_names,
     )

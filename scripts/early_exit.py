@@ -3,12 +3,12 @@ import csv
 import os
 from typing import List, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import torch
 from datasets import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 
 @torch.inference_mode()
@@ -124,7 +124,9 @@ def evaluate_early_exit(
 
     for logits in layer_logits:
         # logits: [1, comp_len + seq_len, V]
-        pos_logits = logits[:, comp_len : comp_len + seq_len - 1, :]  # [1, seq_len-1, V], positions predicting next tokens
+        pos_logits = logits[
+            :, comp_len : comp_len + seq_len - 1, :
+        ]  # [1, seq_len-1, V], positions predicting next tokens
         pos_logits = pos_logits.squeeze(0)[valid_next_mask]  # [N, V]
         preds = pos_logits.argmax(dim=-1)  # [N]
         correct = (preds == target_labels.to(preds.device)).detach().cpu().numpy().astype(np.bool_)
@@ -257,7 +259,10 @@ def save_outputs(
 def main():
     parser = argparse.ArgumentParser(description="Early-exit analysis via LM head over intermediate hidden states")
     parser.add_argument(
-        "--embedding_path", type=str, required=True, help="Path to compressed embedding dataset (HF Dataset.load_from_disk)"
+        "--embedding_path",
+        type=str,
+        required=True,
+        help="Path to compressed embedding dataset (HF Dataset.load_from_disk)",
     )
     parser.add_argument("--max_sequence_length", type=int, default=128)
     parser.add_argument("--batch_size", type=int, default=64)
@@ -325,7 +330,7 @@ def main():
 
     # Prepare layer names (embedding + each block)
     num_layers = len(layer_logits) - 1
-    layer_names = ["embeddings"] + [f"layer_{i+1}" for i in range(num_layers)]
+    layer_names = ["embeddings"] + [f"layer_{i + 1}" for i in range(num_layers)]
 
     out_dir = args.output_dir or "/tmp/early_exit_analysis"
     # Build filtered target token ids corresponding to valid positions (returned by evaluate_early_exit)

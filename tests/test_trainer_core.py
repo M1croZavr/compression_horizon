@@ -8,7 +8,6 @@ from torch.utils.data import Dataset
 # Ensure we can import from src/
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 from train.trainer import MyTrainer  # noqa: E402
-
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -58,7 +57,9 @@ def test_compute_ce_loss():
 
     compression_tokens = torch.randn(batch_size, num_comp, H)
     model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
-    attention_mask_with_comp = torch.cat([torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1)
+    attention_mask_with_comp = torch.cat(
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1
+    )
 
     loss, _ = trainer.compute_loss(
         model,
@@ -95,7 +96,9 @@ def test_compute_l2_loss_num_alignment_layers():
 
     compression_tokens = torch.randn(batch_size, num_comp, H)
     model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
-    attention_mask_with_comp = torch.cat([torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1)
+    attention_mask_with_comp = torch.cat(
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1
+    )
 
     loss_all_layers, _ = trainer.compute_loss(
         model,
@@ -209,7 +212,9 @@ def test_compute_loss_convergence_metric_shape_and_range():
 
     compression_tokens = torch.randn(batch_size, num_comp, H)
     model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
-    attention_mask_with_comp = torch.cat([torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1)
+    attention_mask_with_comp = torch.cat(
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1
+    )
 
     _, conv = trainer.compute_loss(
         model,
