@@ -7,6 +7,7 @@ print(compression_attention_mask)
 a, b = torch.randint(1, 10, (1, 5, 32), dtype=float), torch.randint(1, 10, (1, 5, 32), dtype=float)
 print(a, b)
 print(F.cosine_similarity(a, b, dim=-1).mean())
+print(torch.tensor([[1]]).repeat(2, 4))
 
 # if hybrid_alpha is not None:
 #     labels = input_ids.clone()

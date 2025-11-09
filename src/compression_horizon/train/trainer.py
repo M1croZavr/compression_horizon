@@ -111,23 +111,24 @@ class MyTrainer:
 
         model.eval()
         with torch.no_grad():
-            # Accuracy by calculated logits
-            convergence_numerator = torch.sum(
-                compression_outputs.logits[:, num_compression_tokens - 1 : -1].argmax(dim=-1) == input_ids[:, :],
-                dim=-1,
-            )
+            # Accuracy by logits
+            convergence_numerator = (
+                compression_outputs.logits[:, num_compression_tokens - 1 : -1].argmax(dim=-1) == input_ids
+            ).sum(dim=-1)
             convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
 
-            # Accuracy by autoregressive generation
-            # Generate tokens from compressed trained embedding
-            attention_mask = torch.IntTensor([[1]])
-            generated_output = model.generate(
-                inputs_embeds=united_token_embeddings[:, :num_compression_tokens],
-                attention_mask=attention_mask,
-                max_new_tokens=self.args.max_sequence_length,
-                pad_token_id=model.config.eos_token_id,
-            )  # [:, num_compression_tokens:]  # [batch, max_sequence_length]
-            print(self.global_step, self.processing_class.decode(generated_output[0]))
+            if self.global_step % 100:
+                # Accuracy by autoregressive generation
+                # Generate tokens from compressed trained embedding
+                attention_mask = torch.tensor([[1]]).repeat(united_token_embeddings.shape[0], num_compression_tokens)
+                generated_output = model.generate(
+                    inputs_embeds=united_token_embeddings[:, :num_compression_tokens],
+                    attention_mask=attention_mask,
+                    max_new_tokens=self.args.max_sequence_length,
+                    pad_token_id=model.config.eos_token_id,
+                )  # [batch, max_sequence_length]
+                print("Generated from compressed:", generated_output)
+                print("Ground truth:", input_ids)
         model.train()
 
         return loss, convergence_per_sample.detach().clone()
@@ -242,9 +243,10 @@ class MyTrainer:
 
         dataloader = self._create_dataloader()
         for batch in dataloader:
-            batch_size = batch["input_ids"].shape[0]
+            model.train()
             input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
+            batch_size = input_ids.shape[0]
             with torch.no_grad():
                 token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
                 hidden_size = token_embeddings.shape[-1]
@@ -259,6 +261,7 @@ class MyTrainer:
 
             optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
 
+            loss, convergence_per_sample = None, None
             progress_bar = tqdm(
                 range(self.args.max_optimization_steps_per_sample), total=self.args.max_optimization_steps_per_sample
             )
@@ -273,7 +276,6 @@ class MyTrainer:
                     [compression_attention_mask, attention_mask],
                     dim=1,
                 )  # [batch, mem + sequence]
-                model.train()
                 loss, convergence_per_sample = self.compute_loss(
                     model,
                     input_ids,
@@ -284,6 +286,8 @@ class MyTrainer:
                     num_compression_tokens,
                 )
                 loss.backward()
+
+                # Log current step progress
                 with torch.no_grad():
                     progress_bar.update(1)
                     progress_bar.set_postfix(
@@ -295,6 +299,8 @@ class MyTrainer:
                         lr=lr_scheduler.get_last_lr()[0],
                     )
                     self._log_step(loss, convergence_per_sample, compression_token_embeddings, lr_scheduler)
+
+                # Update compression embeddings and learning rate
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 lr_scheduler.step()
@@ -305,26 +311,23 @@ class MyTrainer:
                 last_loss = float(loss.item())
                 last_convergence = convergence_per_sample.detach().cpu()
                 compression_token_embeddings_cpu = compression_token_embeddings.detach().cpu()
-
                 for j in range(batch_size):
-                    attn = attention_mask[j].bool()
-                    ids = input_ids[j][attn]
-                    text = tokenizer.decode(ids.tolist(), skip_special_tokens=True) if tokenizer is not None else ""
-
+                    sample_attention_mask = attention_mask[j].bool()
+                    sample_input_ids = input_ids[j][sample_attention_mask]
+                    sample_text = tokenizer.decode(sample_input_ids, skip_special_tokens=True)
                     embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
                     compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
                     compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
-
                     collected_rows.append(
                         {
                             "sample_id": int(sample_id_counter),
-                            "text": text,
+                            "text": sample_text,
                             "embedding": embedding,  # [mem, hidden]
                             "final_loss": last_loss,
                             "final_convergence": float(last_convergence[j].item()),
                             "compression_tokens_mean": compression_token_embeddings_mean,
                             "compression_tokens_std": compression_token_embeddings_std,
-                            "num_input_tokens": int(attn.sum().item()),
+                            "num_input_tokens": int(sample_attention_mask.sum().item()),
                             "num_compression_tokens": int(num_compression_tokens),
                             "hidden_size": hidden_size,
                             "loss_type": self.args.loss_type,
