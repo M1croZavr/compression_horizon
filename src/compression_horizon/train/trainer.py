@@ -103,7 +103,7 @@ class MyTrainer:
                     cosine = F.cosine_similarity(compression_hidden_states, target_hidden_states, dim=-1)
                     layer_alignment_loss = (1.0 - cosine).mean()
                 else:
-                    raise ValueError(f"Unsupported loss_type: {self.args.loss_type}")
+                    raise ValueError(f"Unsupported loss_type: {loss_type}")
                 alignment_loss = alignment_loss + layer_alignment_loss
             loss = (1 - hybrid_alpha) * loss + hybrid_alpha * alignment_loss
 
@@ -131,14 +131,6 @@ class MyTrainer:
                 ground_truth_text: Optional[list] = self.processing_class.batch_decode(
                     input_ids, skip_special_tokens=True
                 )
-                # print(
-                #     "Generated from compressed:",
-                #     generated_text,
-                # )
-                # print(
-                #     "Ground truth:",
-                #     ground_truth_text,
-                # )
             else:
                 generated_text = None
                 ground_truth_text = None
@@ -310,7 +302,9 @@ class MyTrainer:
                     united_attention_mask,
                     num_compression_tokens,
                 )
+                # Calculate gradients and update compression embeddings
                 loss.backward()
+                optimizer.step()
 
                 # Log current step progress
                 with torch.no_grad():
@@ -332,8 +326,7 @@ class MyTrainer:
                         ground_truth_text,
                     )
 
-                # Update compression embeddings and learning rate
-                optimizer.step()
+                # Update learning rate
                 optimizer.zero_grad(set_to_none=True)
                 lr_scheduler.step()
 
