@@ -131,14 +131,14 @@ class MyTrainer:
                 ground_truth_text: Optional[list] = self.processing_class.batch_decode(
                     input_ids, skip_special_tokens=True
                 )
-                print(
-                    "Generated from compressed:",
-                    generated_text,
-                )
-                print(
-                    "Ground truth:",
-                    ground_truth_text,
-                )
+                # print(
+                #     "Generated from compressed:",
+                #     generated_text,
+                # )
+                # print(
+                #     "Ground truth:",
+                #     ground_truth_text,
+                # )
             else:
                 generated_text = None
                 ground_truth_text = None
