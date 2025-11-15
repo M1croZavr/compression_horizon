@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -57,10 +58,10 @@ class MyTrainer:
             output_hidden_states=True,
         )
 
-        # Number of hidden states: embedder + number of transformer decoder layers
+        # Number of hidden states: 1 (embedder) + number of transformer decoder layers
         total_layers = len(outputs.hidden_states)
         if self.args.num_alignment_layers > 0:
-            num_layers = min(self.args.num_alignment_layers, total_layers)
+            num_layers = max(0, min(self.args.num_alignment_layers, total_layers))
             if self.args.inverted_alignment:
                 alignment_layer_indices = range(total_layers - num_layers, total_layers)
             else:
@@ -81,33 +82,30 @@ class MyTrainer:
         loss_type = self.args.loss_type.lower()
         hybrid_alpha = self.args.hybrid_alpha
         if hybrid_alpha is not None:
-            total_alignment_loss = 0
+            alignment_loss = 0
             for i in alignment_layer_indices:
                 compression_hidden_states = compression_outputs.hidden_states[i][
                     :, num_compression_tokens:
                 ]  # [batch, sequence, hidden]
                 target_hidden_states = outputs.hidden_states[i]  # [batch, sequence, hidden]
                 if loss_type == "l2":
-                    alignment_loss = (
+                    layer_alignment_loss = (
                         F.mse_loss(compression_hidden_states, target_hidden_states, reduction="none")
                         .sum(dim=-1)
                         .sqrt()
                         .mean()
                     )
                 elif loss_type == "l1":
-                    alignment_loss = (
-                        F.l1_loss(compression_hidden_states, target_hidden_states, reduction="none")
-                        .sum(dim=-1)
-                        .sqrt()
-                        .mean()
+                    layer_alignment_loss = (
+                        F.l1_loss(compression_hidden_states, target_hidden_states, reduction="none").sum(dim=-1).mean()
                     )
                 elif loss_type == "cosine":
                     cosine = F.cosine_similarity(compression_hidden_states, target_hidden_states, dim=-1)
-                    alignment_loss = (1.0 - cosine).mean()
+                    layer_alignment_loss = (1.0 - cosine).mean()
                 else:
                     raise ValueError(f"Unsupported loss_type: {self.args.loss_type}")
-                total_alignment_loss = total_alignment_loss + alignment_loss
-            loss = (1 - hybrid_alpha) * loss + hybrid_alpha * total_alignment_loss
+                alignment_loss = alignment_loss + layer_alignment_loss
+            loss = (1 - hybrid_alpha) * loss + hybrid_alpha * alignment_loss
 
         model.eval()
         with torch.no_grad():
@@ -117,21 +115,36 @@ class MyTrainer:
             ).sum(dim=-1)
             convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
 
-            if self.global_step % 100:
+            if self.global_step % 100 == 0:
                 # Accuracy by autoregressive generation
                 # Generate tokens from compressed trained embedding
-                attention_mask = torch.tensor([[1]]).repeat(united_token_embeddings.shape[0], num_compression_tokens)
+                attention_mask = torch.tensor([[1]]).repeat(input_ids.shape[0], num_compression_tokens)
                 generated_output = model.generate(
                     inputs_embeds=united_token_embeddings[:, :num_compression_tokens],
                     attention_mask=attention_mask,
                     max_new_tokens=self.args.max_sequence_length,
                     pad_token_id=model.config.eos_token_id,
                 )  # [batch, max_sequence_length]
-                print("Generated from compressed:", generated_output)
-                print("Ground truth:", input_ids)
+                generated_text: Optional[list] = self.processing_class.batch_decode(
+                    generated_output, skip_special_tokens=True
+                )
+                ground_truth_text: Optional[list] = self.processing_class.batch_decode(
+                    input_ids, skip_special_tokens=True
+                )
+                print(
+                    "Generated from compressed:",
+                    generated_text,
+                )
+                print(
+                    "Ground truth:",
+                    ground_truth_text,
+                )
+            else:
+                generated_text = None
+                ground_truth_text = None
         model.train()
 
-        return loss, convergence_per_sample.detach().clone()
+        return loss, convergence_per_sample, generated_text, ground_truth_text
 
     def _prepare_embedding_init(self, model):
         init_method = self.args.embedding_init_method
@@ -197,13 +210,17 @@ class MyTrainer:
         )
         return optimizer, lr_scheduler
 
-    def _log_step(self, loss, convergence_per_sample, compression_token_embeddings, lr_scheduler):
+    def _log_step(
+        self,
+        loss,
+        convergence_per_sample,
+        compression_token_embeddings,
+        lr_scheduler,
+        generated_text: Optional[list[str]],
+        ground_truth_text: Optional[list[str]],
+    ):
         if self.writer is None:
             return
-        grad_norm = (
-            compression_token_embeddings.grad.norm(2).item() if compression_token_embeddings.grad is not None else 0.0
-        )
-        lr_val = lr_scheduler.get_last_lr()[0]
         self.writer.add_scalar("train/loss", loss.item(), self.global_step)
         self.writer.add_scalar("train/convergence", convergence_per_sample.mean().item(), self.global_step)
         self.writer.add_scalar(
@@ -212,9 +229,17 @@ class MyTrainer:
         self.writer.add_scalar(
             "compression_token_embeddings/std", compression_token_embeddings.std().item(), self.global_step
         )
+        grad_norm = (
+            compression_token_embeddings.grad.norm(2).item() if compression_token_embeddings.grad is not None else 0.0
+        )
         self.writer.add_scalar("train/grad_norm", grad_norm, self.global_step)
+        lr_val = lr_scheduler.get_last_lr()[0]
         self.writer.add_scalar("train/lr", lr_val, self.global_step)
-        flush_steps = getattr(self.args, "logging_flush_steps", 50)
+        if generated_text:
+            self.writer.add_text("train/generated_text", " | ".join(generated_text), self.global_step)
+        if ground_truth_text:
+            self.writer.add_text("train/ground_truth_text", " | ".join(ground_truth_text), self.global_step)
+        flush_steps = getattr(self.args, "logging_flush_steps", 100)
         if flush_steps and self.global_step % flush_steps == 0:
             self.writer.flush()
         self.global_step += 1
@@ -261,7 +286,7 @@ class MyTrainer:
 
             optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
 
-            loss, convergence_per_sample = None, None
+            loss, convergence_per_sample, generated_text, ground_truth_text = None, None, None, None
             progress_bar = tqdm(
                 range(self.args.max_optimization_steps_per_sample), total=self.args.max_optimization_steps_per_sample
             )
@@ -276,7 +301,7 @@ class MyTrainer:
                     [compression_attention_mask, attention_mask],
                     dim=1,
                 )  # [batch, mem + sequence]
-                loss, convergence_per_sample = self.compute_loss(
+                loss, convergence_per_sample, generated_text, ground_truth_text = self.compute_loss(
                     model,
                     input_ids,
                     token_embeddings,
@@ -298,7 +323,14 @@ class MyTrainer:
                         grad=compression_token_embeddings.grad.norm(2).item(),
                         lr=lr_scheduler.get_last_lr()[0],
                     )
-                    self._log_step(loss, convergence_per_sample, compression_token_embeddings, lr_scheduler)
+                    self._log_step(
+                        loss,
+                        convergence_per_sample,
+                        compression_token_embeddings,
+                        lr_scheduler,
+                        generated_text,
+                        ground_truth_text,
+                    )
 
                 # Update compression embeddings and learning rate
                 optimizer.step()
@@ -309,7 +341,7 @@ class MyTrainer:
             with torch.no_grad():
                 tokenizer = self.processing_class
                 last_loss = float(loss.item())
-                last_convergence = convergence_per_sample.detach().cpu()
+                last_convergence = convergence_per_sample.cpu()
                 compression_token_embeddings_cpu = compression_token_embeddings.detach().cpu()
                 for j in range(batch_size):
                     sample_attention_mask = attention_mask[j].bool()
@@ -318,6 +350,7 @@ class MyTrainer:
                     embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
                     compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
                     compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
+                    # TODO: Add more description data
                     collected_rows.append(
                         {
                             "sample_id": int(sample_id_counter),

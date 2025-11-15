@@ -8,6 +8,8 @@ a, b = torch.randint(1, 10, (1, 5, 32), dtype=float), torch.randint(1, 10, (1, 5
 print(a, b)
 print(F.cosine_similarity(a, b, dim=-1).mean())
 print(torch.tensor([[1]]).repeat(2, 4))
+print(torch.nn.functional.l1_loss(a, b, reduction="none"))
+print(1e-2)
 
 # if hybrid_alpha is not None:
 #     labels = input_ids.clone()

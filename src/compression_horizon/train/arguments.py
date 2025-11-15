@@ -15,7 +15,7 @@ class MyTrainingArguments(TrainingArguments):
     )
     embedding_init_method: str = field(
         default="random",
-        metadata={"help": "Initialization method for compression embeddings: random or mvnormal."},
+        metadata={"help": 'Initialization method for compression embeddings: "random" or "mvnormal".'},
     )
     number_of_mem_tokens: int = field(default=1, metadata={"help": "Number of trainable [mem] tokens for each sample."})
     loss_type: str = field(default="l2", metadata={"help": "Loss type for activation alignment: l2, l1, or cosine."})
