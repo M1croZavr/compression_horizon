@@ -23,15 +23,15 @@ if __name__ == "__main__":
     (training_args,) = hf_parser.parse_args_into_dataclasses()
 
     # Make output/logging directory
-    if training_args.hybrid_alpha:
+    if training_args.hybrid_alpha is None:
         output_dir = (
             f"artifacts/experiments/common_loss/"
-            f"{training_args.model_checkpoint}_{training_args.max_sequence_length}_{training_args.number_of_mem_tokens}_{training_args.learning_rate}_{uuid.uuid4()}"
+            f"{training_args.model_checkpoint}|{training_args.max_sequence_length}|{training_args.number_of_mem_tokens}|{uuid.uuid4()}"
         )
     else:
         output_dir = (
             f"artifacts/experiments/hybrid_loss/"
-            f"{training_args.model_checkpoint}_{training_args.max_sequence_length}_{training_args.number_of_mem_tokens}_{training_args.learning_rate}_{training_args.loss_type}_{training_args.hybrid_alpha}_{training_args.num_alignment_layers}_{uuid.uuid4()}"
+            f"{training_args.model_checkpoint}|{training_args.max_sequence_length}|{training_args.number_of_mem_tokens}|{training_args.learning_rate}|{training_args.loss_type}|{training_args.hybrid_alpha}|{training_args.num_alignment_layers}|{uuid.uuid4()}"
         )
     os.makedirs(output_dir, exist_ok=True)
     training_args.output_dir = output_dir

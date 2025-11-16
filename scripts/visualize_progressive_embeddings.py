@@ -158,9 +158,7 @@ def main():
         default=None,
         help="HF model name to compute token-level perplexity of sample texts",
     )
-    parser.add_argument(
-        "--perplexity_max_samples", type=int, default=64, help="Max rows to use for perplexity estimation"
-    )
+    parser.add_argument("--perplexity_max_samples", type=int, default=64, help="Max rows to use for perplexity estimation")
 
     args = parser.parse_args()
 

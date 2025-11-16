@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 a, b = torch.nn.Parameter(torch.ones((2, 3))), torch.ones((2, 3))
 optimizer = torch.optim.Adam([a])

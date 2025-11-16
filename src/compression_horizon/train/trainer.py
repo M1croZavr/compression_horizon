@@ -10,6 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 from transformers import get_scheduler
 
+from compression_horizon.inference.generation import generate_from_compression
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 
@@ -90,10 +91,7 @@ class MyTrainer:
                 target_hidden_states = outputs.hidden_states[i]  # [batch, sequence, hidden]
                 if loss_type == "l2":
                     layer_alignment_loss = (
-                        F.mse_loss(compression_hidden_states, target_hidden_states, reduction="none")
-                        .sum(dim=-1)
-                        .sqrt()
-                        .mean()
+                        F.mse_loss(compression_hidden_states, target_hidden_states, reduction="none").sum(dim=-1).sqrt().mean()
                     )
                 elif loss_type == "l1":
                     layer_alignment_loss = (
@@ -118,19 +116,14 @@ class MyTrainer:
             if self.global_step % 100 == 0:
                 # Accuracy by autoregressive generation
                 # Generate tokens from compressed trained embedding
-                attention_mask = torch.tensor([[1]]).repeat(input_ids.shape[0], num_compression_tokens)
-                generated_output = model.generate(
-                    inputs_embeds=united_token_embeddings[:, :num_compression_tokens],
-                    attention_mask=attention_mask,
+                generated_text: Optional[list] = generate_from_compression(
+                    model,
+                    self.processing_class,
+                    united_token_embeddings[:, :num_compression_tokens],
                     max_new_tokens=self.args.max_sequence_length,
-                    pad_token_id=model.config.eos_token_id,
-                )  # [batch, max_sequence_length]
-                generated_text: Optional[list] = self.processing_class.batch_decode(
-                    generated_output, skip_special_tokens=True
+                    num_return_sequences=1,
                 )
-                ground_truth_text: Optional[list] = self.processing_class.batch_decode(
-                    input_ids, skip_special_tokens=True
-                )
+                ground_truth_text: Optional[list] = self.processing_class.batch_decode(input_ids, skip_special_tokens=True)
             else:
                 generated_text = None
                 ground_truth_text = None
@@ -168,9 +161,7 @@ class MyTrainer:
                         mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=covariance)
                     except Exception:
                         diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
-                        mvn_dist = torch.distributions.MultivariateNormal(
-                            mvn_mu, covariance_matrix=torch.diag(diag_cov)
-                        )
+                        mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=torch.diag(diag_cov))
                 else:
                     init_method = "random"
         return init_method, mvn_dist
@@ -218,12 +209,8 @@ class MyTrainer:
         self.writer.add_scalar(
             "compression_token_embeddings/mean", compression_token_embeddings.mean().item(), self.global_step
         )
-        self.writer.add_scalar(
-            "compression_token_embeddings/std", compression_token_embeddings.std().item(), self.global_step
-        )
-        grad_norm = (
-            compression_token_embeddings.grad.norm(2).item() if compression_token_embeddings.grad is not None else 0.0
-        )
+        self.writer.add_scalar("compression_token_embeddings/std", compression_token_embeddings.std().item(), self.global_step)
+        grad_norm = compression_token_embeddings.grad.norm(2).item() if compression_token_embeddings.grad is not None else 0.0
         self.writer.add_scalar("train/grad_norm", grad_norm, self.global_step)
         lr_val = lr_scheduler.get_last_lr()[0]
         self.writer.add_scalar("train/lr", lr_val, self.global_step)

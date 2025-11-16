@@ -88,9 +88,7 @@ def main():
         correct_reconstruction_positions = preds == input_ids[:, :]
         print("Accuracy with interpolated prefix:", correct_reconstruction_positions.float().mean().item())
 
-        plt.bar(
-            range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy()
-        )
+        plt.bar(range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy())
         figure_path = os.path.join("artifacts", "visualizations", f"correct_reconstruction_positions_{sid}.png")
         plt.title(f"Correct reconstruction positions for sample {sid}")
         plt.xlabel("Token position")
@@ -114,12 +112,8 @@ def main():
         correct_reconstruction_positions = preds == input_ids[:, 1:]
         print("Accuracy with no prefix:", correct_reconstruction_positions.float().mean().item())
 
-        plt.bar(
-            range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy()
-        )
-        figure_path = os.path.join(
-            "artifacts", "visualizations", f"correct_reconstruction_positions_no_prefix_{sid}.png"
-        )
+        plt.bar(range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy())
+        figure_path = os.path.join("artifacts", "visualizations", f"correct_reconstruction_positions_no_prefix_{sid}.png")
         plt.title(f"Correct reconstruction positions for sample {sid} with no prefix")
         plt.xlabel("Token position")
         plt.ylabel("Correct reconstruction")
@@ -148,13 +142,9 @@ def main():
         outputs = model(inputs_embeds=inputs_embeds_with_ct, attention_mask=attention_mask_with_ct)
         preds = outputs.logits[:, 0:-1].argmax(dim=-1)
         correct_reconstruction_positions = preds == input_ids[:, :]
-        print(
-            "Accuracy with random compression token embedding:", correct_reconstruction_positions.float().mean().item()
-        )
+        print("Accuracy with random compression token embedding:", correct_reconstruction_positions.float().mean().item())
 
-        plt.bar(
-            range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy()
-        )
+        plt.bar(range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy())
         figure_path = os.path.join(
             "artifacts",
             "visualizations",

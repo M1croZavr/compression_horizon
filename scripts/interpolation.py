@@ -219,9 +219,7 @@ def learn_bezier_and_evaluate(
             accs.append(acc)
     # Stack learned control points into [n-1, C, D]
     learned = (
-        torch.stack([p.detach().clone() for p in control_params], dim=0)
-        if len(control_params) > 0
-        else torch.empty(0, C, D)
+        torch.stack([p.detach().clone() for p in control_params], dim=0) if len(control_params) > 0 else torch.empty(0, C, D)
     )
     return learned, ts_np, np.array(accs, dtype=np.float32)
 

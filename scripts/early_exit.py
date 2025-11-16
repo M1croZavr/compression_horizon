@@ -124,9 +124,7 @@ def evaluate_early_exit(
 
     for logits in layer_logits:
         # logits: [1, comp_len + seq_len, V]
-        pos_logits = logits[
-            :, comp_len : comp_len + seq_len - 1, :
-        ]  # [1, seq_len-1, V], positions predicting next tokens
+        pos_logits = logits[:, comp_len : comp_len + seq_len - 1, :]  # [1, seq_len-1, V], positions predicting next tokens
         pos_logits = pos_logits.squeeze(0)[valid_next_mask]  # [N, V]
         preds = pos_logits.argmax(dim=-1)  # [N]
         correct = (preds == target_labels.to(preds.device)).detach().cpu().numpy().astype(np.bool_)

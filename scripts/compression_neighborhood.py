@@ -250,9 +250,7 @@ def main():
     parser.add_argument("--text_file", type=str, default=None, help="Path to a text file to evaluate")
     parser.add_argument("--max_sequence_length", type=int, default=128)
     parser.add_argument("--num_points", type=int, default=1000)
-    parser.add_argument(
-        "--norm_types", type=str, nargs="+", default=["l2", "linf", "l1"], help="List of norms: l2 linf l1"
-    )
+    parser.add_argument("--norm_types", type=str, nargs="+", default=["l2", "linf", "l1"], help="List of norms: l2 linf l1")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -335,9 +333,7 @@ def main():
             writer.writerow([i, n, r, c])
 
     # Save plots
-    make_plots(
-        save_dir=out_dir, radii=radii, norm_types=norm_types, convergence=convergence, perturbations=perturbations
-    )
+    make_plots(save_dir=out_dir, radii=radii, norm_types=norm_types, convergence=convergence, perturbations=perturbations)
 
     print(f"Saved results and plots to: {out_dir}")
 
