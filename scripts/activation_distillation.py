@@ -6,7 +6,11 @@ import subprocess
 import torch
 import transformers
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+)
 
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer

@@ -11,14 +11,21 @@ class MyTrainingArguments(TrainingArguments):
 
     # Core compression arguments
     model_checkpoint: str = field(
-        default="HuggingFaceTB/SmolLM2-135M", metadata={"help": "Huggingface location for a model and a tokenizer."}
+        default="HuggingFaceTB/SmolLM2-135M",
+        metadata={"help": "Huggingface location for a model and a tokenizer."},
     )
     embedding_init_method: str = field(
         default="random",
         metadata={"help": 'Initialization method for compression embeddings: "random" or "mvnormal".'},
     )
-    number_of_mem_tokens: int = field(default=1, metadata={"help": "Number of trainable [mem] tokens for each sample."})
-    loss_type: str = field(default="l2", metadata={"help": "Loss type for activation alignment: l2, l1, or cosine."})
+    number_of_mem_tokens: int = field(
+        default=1,
+        metadata={"help": "Number of trainable [mem] tokens for each sample."},
+    )
+    loss_type: str = field(
+        default="l2",
+        metadata={"help": "Loss type for activation alignment: l2, l1, or cosine."},
+    )
     hybrid_alpha: float | None = field(
         default=None,
         metadata={
@@ -32,22 +39,28 @@ class MyTrainingArguments(TrainingArguments):
             "help": "Direction of taking transformer layers, True - from depth to shallow, False - from shallow to depth."
         },
     )
-    max_sequence_length: int = field(default=128, metadata={"help": "Max sequence length for compressing in training."})
+    max_sequence_length: int = field(
+        default=128,
+        metadata={"help": "Max sequence length for compressing in training."},
+    )
     max_optimization_steps_per_sample: int = field(
-        default=10_000, metadata={"help": "Max optimization steps for training 1 sample."}
+        default=10_000,
+        metadata={"help": "Max optimization steps for training 1 sample."},
     )
     random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)."})
 
     # Overrides with changed defaults
     per_device_train_batch_size: int = field(
-        default=1, metadata={"help": "Batch size per device accelerator core/CPU for training."}
+        default=1,
+        metadata={"help": "Batch size per device accelerator core/CPU for training."},
     )
     gradient_accumulation_steps: int = field(
         default=1,
         metadata={"help": "Number of updates steps to accumulate before performing a backward/update pass."},
     )
     dataloader_drop_last: bool = field(
-        default=True, metadata={"help": "Drop the last incomplete batch if it is not divisible by the batch size."}
+        default=True,
+        metadata={"help": "Drop the last incomplete batch if it is not divisible by the batch size."},
     )
     dataloader_num_workers: int = field(
         default=0,
@@ -59,7 +72,10 @@ class MyTrainingArguments(TrainingArguments):
         },
     )
     learning_rate: float = field(default=1e-3, metadata={"help": "The initial learning rate for an optimizer."})
-    weight_decay: float = field(default=0.01, metadata={"help": "Weight decay for an optimizer if we apply some."})
+    weight_decay: float = field(
+        default=0.01,
+        metadata={"help": "Weight decay for an optimizer if we apply some."},
+    )
     max_grad_norm: float = field(default=1.0, metadata={"help": "Max gradient norm."})
     lr_scheduler_type: SchedulerType | str = field(
         default="cosine",

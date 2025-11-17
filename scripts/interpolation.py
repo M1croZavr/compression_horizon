@@ -29,7 +29,9 @@ def filter_records(
     return rows
 
 
-def collate_stages_by_sample(rows: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+def collate_stages_by_sample(
+    rows: List[Dict[str, Any]],
+) -> Dict[int, List[Dict[str, Any]]]:
     by_sid: Dict[int, List[Dict[str, Any]]] = {}
     for r in rows:
         sid = int(r.get("sample_id", -1))
@@ -237,18 +239,63 @@ def pick_model_name(rows: List[Dict[str, Any]]) -> Optional[str]:
 
 def main():
     parser = argparse.ArgumentParser(description="Interpolate compression embeddings and evaluate accuracies")
-    parser.add_argument("--dataset_path1", type=str, required=True, help="Path to progressive_prefixes dataset")
-    parser.add_argument("--dataset_path2", type=str, required=True, help="Path to progressive_prefixes dataset")
+    parser.add_argument(
+        "--dataset_path1",
+        type=str,
+        required=True,
+        help="Path to progressive_prefixes dataset",
+    )
+    parser.add_argument(
+        "--dataset_path2",
+        type=str,
+        required=True,
+        help="Path to progressive_prefixes dataset",
+    )
     parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
-    parser.add_argument("--model_checkpoint", type=str, default=None, help="HF model name; inferred if omitted")
-    parser.add_argument("--num_points", type=int, default=100, help="Number of evaluation points along t  [0,1]")
-    parser.add_argument("--bezier_steps", type=int, default=200, help="Optimization steps for Bezier control point")
-    parser.add_argument("--bezier_lr", type=float, default=1e-2, help="Learning rate for Bezier control point")
-    parser.add_argument("--bezier_batch_t", type=int, default=32, help="Number of t samples per optimization step")
+    parser.add_argument(
+        "--model_checkpoint",
+        type=str,
+        default=None,
+        help="HF model name; inferred if omitted",
+    )
+    parser.add_argument(
+        "--num_points",
+        type=int,
+        default=100,
+        help="Number of evaluation points along t  [0,1]",
+    )
+    parser.add_argument(
+        "--bezier_steps",
+        type=int,
+        default=200,
+        help="Optimization steps for Bezier control point",
+    )
+    parser.add_argument(
+        "--bezier_lr",
+        type=float,
+        default=1e-2,
+        help="Learning rate for Bezier control point",
+    )
+    parser.add_argument(
+        "--bezier_batch_t",
+        type=int,
+        default=32,
+        help="Number of t samples per optimization step",
+    )
     parser.add_argument("--bezier_order", type=int, default=2, help="Bezier curve order (>=2)")
-    parser.add_argument("--bezier_weight_decay", type=float, default=0.0, help="Weight decay for Bezier control point")
+    parser.add_argument(
+        "--bezier_weight_decay",
+        type=float,
+        default=0.0,
+        help="Weight decay for Bezier control point",
+    )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output_dir", type=str, default="/tmp", help="Where to save plots and parameters")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="/tmp",
+        help="Where to save plots and parameters",
+    )
 
     args = parser.parse_args()
 
@@ -303,7 +350,13 @@ def main():
         e1 = to_tensor_embedding(last, device)
 
         ts_lin, accs_lin = evaluate_linear_curve(
-            model, e0, e1, inputs_embeds, attention_mask, input_ids, num_points=int(args.num_points)
+            model,
+            e0,
+            e1,
+            inputs_embeds,
+            attention_mask,
+            input_ids,
+            num_points=int(args.num_points),
         )
 
         learned_ctrl, ts_bez, accs_bez = learn_bezier_and_evaluate(
@@ -341,7 +394,7 @@ def main():
             {
                 "bezier_order": int(args.bezier_order),
                 "control_points": learned_ctrl.cpu(),  # [order-1, C, D]
-                "control_point": learned_ctrl.cpu()[0] if learned_ctrl.numel() > 0 else None,
+                "control_point": (learned_ctrl.cpu()[0] if learned_ctrl.numel() > 0 else None),
                 "num_compression_tokens": int(e0.shape[0]),
                 "hidden_size": int(e0.shape[1]),
                 "endpoints": {

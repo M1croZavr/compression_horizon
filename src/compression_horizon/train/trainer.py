@@ -11,7 +11,11 @@ from tqdm.auto import tqdm
 from transformers import get_scheduler
 
 from compression_horizon.inference.generation import generate_from_compression
-from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
+from compression_horizon.utils.launch import (
+    freeze_model_parameters,
+    get_device,
+    set_launch_seed,
+)
 
 
 class MyTrainer:
@@ -82,6 +86,7 @@ class MyTrainer:
         # Activation alignment loss
         loss_type = self.args.loss_type.lower()
         hybrid_alpha = self.args.hybrid_alpha
+        alignment_loss = None
         if hybrid_alpha is not None:
             alignment_loss = 0
             for i in alignment_layer_indices:
@@ -91,11 +96,24 @@ class MyTrainer:
                 target_hidden_states = outputs.hidden_states[i]  # [batch, sequence, hidden]
                 if loss_type == "l2":
                     layer_alignment_loss = (
-                        F.mse_loss(compression_hidden_states, target_hidden_states, reduction="none").sum(dim=-1).sqrt().mean()
+                        F.mse_loss(
+                            compression_hidden_states,
+                            target_hidden_states,
+                            reduction="none",
+                        )
+                        .sum(dim=-1)
+                        .sqrt()
+                        .mean()
                     )
                 elif loss_type == "l1":
                     layer_alignment_loss = (
-                        F.l1_loss(compression_hidden_states, target_hidden_states, reduction="none").sum(dim=-1).mean()
+                        F.l1_loss(
+                            compression_hidden_states,
+                            target_hidden_states,
+                            reduction="none",
+                        )
+                        .sum(dim=-1)
+                        .mean()
                     )
                 elif loss_type == "cosine":
                     cosine = F.cosine_similarity(compression_hidden_states, target_hidden_states, dim=-1)
@@ -103,7 +121,7 @@ class MyTrainer:
                 else:
                     raise ValueError(f"Unsupported loss_type: {loss_type}")
                 alignment_loss = alignment_loss + layer_alignment_loss
-            loss = (1 - hybrid_alpha) * loss + hybrid_alpha * alignment_loss
+            loss = loss + hybrid_alpha * alignment_loss
 
         model.eval()
         with torch.no_grad():
@@ -113,9 +131,9 @@ class MyTrainer:
             ).sum(dim=-1)
             convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
 
+            # Accuracy by autoregressive generation
+            # Generate tokens from compressed trained embedding
             if self.global_step % 100 == 0:
-                # Accuracy by autoregressive generation
-                # Generate tokens from compressed trained embedding
                 generated_text: Optional[list] = generate_from_compression(
                     model,
                     self.processing_class,
@@ -129,7 +147,13 @@ class MyTrainer:
                 ground_truth_text = None
         model.train()
 
-        return loss, convergence_per_sample, generated_text, ground_truth_text
+        return (
+            loss,
+            alignment_loss,
+            convergence_per_sample,
+            generated_text,
+            ground_truth_text,
+        )
 
     def _prepare_embedding_init(self, model):
         init_method = self.args.embedding_init_method
@@ -184,7 +208,11 @@ class MyTrainer:
         return trainable_embeddings
 
     def _build_optimizer_and_scheduler(self, compression_tokens_param):
-        optimizer = AdamW([compression_tokens_param], lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+        optimizer = AdamW(
+            [compression_tokens_param],
+            lr=self.args.learning_rate,
+            weight_decay=self.args.weight_decay,
+        )
         lr_scheduler = get_scheduler(
             name=self.args.lr_scheduler_type,
             optimizer=optimizer,
@@ -196,6 +224,7 @@ class MyTrainer:
     def _log_step(
         self,
         loss,
+        alignment_loss,
         convergence_per_sample,
         compression_token_embeddings,
         lr_scheduler,
@@ -205,11 +234,19 @@ class MyTrainer:
         if self.writer is None:
             return
         self.writer.add_scalar("train/loss", loss.item(), self.global_step)
+        if alignment_loss:
+            self.writer.add_scalar("train/alignment_loss", alignment_loss.item(), self.global_step)
         self.writer.add_scalar("train/convergence", convergence_per_sample.mean().item(), self.global_step)
         self.writer.add_scalar(
-            "compression_token_embeddings/mean", compression_token_embeddings.mean().item(), self.global_step
+            "compression_token_embeddings/mean",
+            compression_token_embeddings.mean().item(),
+            self.global_step,
         )
-        self.writer.add_scalar("compression_token_embeddings/std", compression_token_embeddings.std().item(), self.global_step)
+        self.writer.add_scalar(
+            "compression_token_embeddings/std",
+            compression_token_embeddings.std().item(),
+            self.global_step,
+        )
         grad_norm = compression_token_embeddings.grad.norm(2).item() if compression_token_embeddings.grad is not None else 0.0
         self.writer.add_scalar("train/grad_norm", grad_norm, self.global_step)
         lr_val = lr_scheduler.get_last_lr()[0]
@@ -217,7 +254,11 @@ class MyTrainer:
         if generated_text:
             self.writer.add_text("train/generated_text", " | ".join(generated_text), self.global_step)
         if ground_truth_text:
-            self.writer.add_text("train/ground_truth_text", " | ".join(ground_truth_text), self.global_step)
+            self.writer.add_text(
+                "train/ground_truth_text",
+                " | ".join(ground_truth_text),
+                self.global_step,
+            )
         flush_steps = getattr(self.args, "logging_flush_steps", 100)
         if flush_steps and self.global_step % flush_steps == 0:
             self.writer.flush()
@@ -265,9 +306,16 @@ class MyTrainer:
 
             optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
 
-            loss, convergence_per_sample, generated_text, ground_truth_text = None, None, None, None
+            (
+                loss,
+                alignment_loss,
+                convergence_per_sample,
+                generated_text,
+                ground_truth_text,
+            ) = (None, None, None, None, None)
             progress_bar = tqdm(
-                range(self.args.max_optimization_steps_per_sample), total=self.args.max_optimization_steps_per_sample
+                range(self.args.max_optimization_steps_per_sample),
+                total=self.args.max_optimization_steps_per_sample,
             )
             progress_bar.set_description("Training")
             for _ in progress_bar:
@@ -280,7 +328,13 @@ class MyTrainer:
                     [compression_attention_mask, attention_mask],
                     dim=1,
                 )  # [batch, mem + sequence]
-                loss, convergence_per_sample, generated_text, ground_truth_text = self.compute_loss(
+                (
+                    loss,
+                    alignment_loss,
+                    convergence_per_sample,
+                    generated_text,
+                    ground_truth_text,
+                ) = self.compute_loss(
                     model,
                     input_ids,
                     token_embeddings,
@@ -306,6 +360,7 @@ class MyTrainer:
                     )
                     self._log_step(
                         loss,
+                        alignment_loss,
                         convergence_per_sample,
                         compression_token_embeddings,
                         lr_scheduler,
@@ -471,15 +526,19 @@ class MyTrainer:
                                 "stage_seq_len": int(seq_len),
                                 "text": text,
                                 "embedding": embedding,
-                                "final_loss": float(last_loss_val) if last_loss_val is not None else None,
-                                "final_convergence": float(last_conv[j].item()) if last_conv is not None else None,
+                                "final_loss": (float(last_loss_val) if last_loss_val is not None else None),
+                                "final_convergence": (float(last_conv[j].item()) if last_conv is not None else None),
                                 "num_input_tokens": int(attn.sum().item()),
                                 "num_compression_tokens": int(num_compression_tokens),
                                 "hidden_size": int(comp_tokens_cpu.shape[-1]),
                                 "loss_type": getattr(self.args, "loss_type", "l2"),
                                 "model_checkpoint": getattr(self.args, "model_checkpoint", ""),
                                 "max_optimization_steps_per_sample": int(
-                                    getattr(self.args, "max_optimization_steps_per_sample", 0)
+                                    getattr(
+                                        self.args,
+                                        "max_optimization_steps_per_sample",
+                                        0,
+                                    )
                                 ),
                                 "convergence_threshold": float(threshold),
                                 "steps_taken": int(steps_taken),

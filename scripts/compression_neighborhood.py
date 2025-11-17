@@ -172,7 +172,14 @@ def make_plots(
     palette = {"l2": "tab:blue", "l1": "tab:green", "linf": "tab:red"}
     for norm_name in sorted(set(norm_types)):
         idx = [i for i, n in enumerate(norm_types) if n == norm_name]
-        plt.scatter(radii[idx], convergence[idx], s=12, alpha=0.6, label=norm_name, c=palette.get(norm_name, None))
+        plt.scatter(
+            radii[idx],
+            convergence[idx],
+            s=12,
+            alpha=0.6,
+            label=norm_name,
+            c=palette.get(norm_name, None),
+        )
     plt.xlabel("radius")
     plt.ylabel("convergence")
     plt.ylim(0.0, 1.0)
@@ -245,12 +252,23 @@ def make_plots(
 
 def main():
     parser = argparse.ArgumentParser(description="Explore convergence around a compressed embedding neighborhood")
-    parser.add_argument("--embedding_path", type=str, required=True, help="Path to compressed embedding file")
+    parser.add_argument(
+        "--embedding_path",
+        type=str,
+        required=True,
+        help="Path to compressed embedding file",
+    )
     parser.add_argument("--text", type=str, default=None, help="Text to evaluate against")
     parser.add_argument("--text_file", type=str, default=None, help="Path to a text file to evaluate")
     parser.add_argument("--max_sequence_length", type=int, default=128)
     parser.add_argument("--num_points", type=int, default=1000)
-    parser.add_argument("--norm_types", type=str, nargs="+", default=["l2", "linf", "l1"], help="List of norms: l2 linf l1")
+    parser.add_argument(
+        "--norm_types",
+        type=str,
+        nargs="+",
+        default=["l2", "linf", "l1"],
+        help="List of norms: l2 linf l1",
+    )
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -333,7 +351,13 @@ def main():
             writer.writerow([i, n, r, c])
 
     # Save plots
-    make_plots(save_dir=out_dir, radii=radii, norm_types=norm_types, convergence=convergence, perturbations=perturbations)
+    make_plots(
+        save_dir=out_dir,
+        radii=radii,
+        norm_types=norm_types,
+        convergence=convergence,
+        perturbations=perturbations,
+    )
 
     print(f"Saved results and plots to: {out_dir}")
 

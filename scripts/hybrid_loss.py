@@ -5,7 +5,11 @@ import uuid
 import torch
 import transformers
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+)
 
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer
@@ -26,7 +30,7 @@ if __name__ == "__main__":
     if training_args.hybrid_alpha is None:
         output_dir = (
             f"artifacts/experiments/common_loss/"
-            f"{training_args.model_checkpoint}|{training_args.max_sequence_length}|{training_args.number_of_mem_tokens}|{uuid.uuid4()}"
+            f"{training_args.model_checkpoint.replace('/', '_')}|{training_args.max_sequence_length}|{training_args.number_of_mem_tokens}|{uuid.uuid4()}"
         )
     else:
         output_dir = (

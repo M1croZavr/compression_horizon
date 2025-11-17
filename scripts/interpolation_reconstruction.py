@@ -17,13 +17,38 @@ from scripts.interpolation import (
 
 def main():
     parser = argparse.ArgumentParser(description="Interpolate compression embeddings and evaluate accuracies")
-    parser.add_argument("--dataset_path1", type=str, required=True, help="Path to progressive_prefixes dataset")
-    parser.add_argument("--dataset_path2", type=str, required=True, help="Path to progressive_prefixes dataset")
+    parser.add_argument(
+        "--dataset_path1",
+        type=str,
+        required=True,
+        help="Path to progressive_prefixes dataset",
+    )
+    parser.add_argument(
+        "--dataset_path2",
+        type=str,
+        required=True,
+        help="Path to progressive_prefixes dataset",
+    )
     parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
-    parser.add_argument("--model_checkpoint", type=str, default=None, help="HF model name; inferred if omitted")
-    parser.add_argument("--num_points", type=int, default=100, help="Number of evaluation points along t  [0,1]")
+    parser.add_argument(
+        "--model_checkpoint",
+        type=str,
+        default=None,
+        help="HF model name; inferred if omitted",
+    )
+    parser.add_argument(
+        "--num_points",
+        type=int,
+        default=100,
+        help="Number of evaluation points along t  [0,1]",
+    )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output_dir", type=str, default="/tmp", help="Where to save plots and parameters")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="/tmp",
+        help="Where to save plots and parameters",
+    )
 
     args = parser.parse_args()
 
@@ -86,9 +111,15 @@ def main():
         outputs = model(inputs_embeds=inputs_embeds_with_ct, attention_mask=attention_mask_with_ct)
         preds = outputs.logits[:, 0:-1].argmax(dim=-1)
         correct_reconstruction_positions = preds == input_ids[:, :]
-        print("Accuracy with interpolated prefix:", correct_reconstruction_positions.float().mean().item())
+        print(
+            "Accuracy with interpolated prefix:",
+            correct_reconstruction_positions.float().mean().item(),
+        )
 
-        plt.bar(range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy())
+        plt.bar(
+            range(correct_reconstruction_positions.shape[-1]),
+            correct_reconstruction_positions.cpu()[0].float().numpy(),
+        )
         figure_path = os.path.join("artifacts", "visualizations", f"correct_reconstruction_positions_{sid}.png")
         plt.title(f"Correct reconstruction positions for sample {sid}")
         plt.xlabel("Token position")
@@ -110,10 +141,20 @@ def main():
         outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
         preds = outputs.logits[:, 0:-1].argmax(dim=-1)
         correct_reconstruction_positions = preds == input_ids[:, 1:]
-        print("Accuracy with no prefix:", correct_reconstruction_positions.float().mean().item())
+        print(
+            "Accuracy with no prefix:",
+            correct_reconstruction_positions.float().mean().item(),
+        )
 
-        plt.bar(range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy())
-        figure_path = os.path.join("artifacts", "visualizations", f"correct_reconstruction_positions_no_prefix_{sid}.png")
+        plt.bar(
+            range(correct_reconstruction_positions.shape[-1]),
+            correct_reconstruction_positions.cpu()[0].float().numpy(),
+        )
+        figure_path = os.path.join(
+            "artifacts",
+            "visualizations",
+            f"correct_reconstruction_positions_no_prefix_{sid}.png",
+        )
         plt.title(f"Correct reconstruction positions for sample {sid} with no prefix")
         plt.xlabel("Token position")
         plt.ylabel("Correct reconstruction")
@@ -142,9 +183,15 @@ def main():
         outputs = model(inputs_embeds=inputs_embeds_with_ct, attention_mask=attention_mask_with_ct)
         preds = outputs.logits[:, 0:-1].argmax(dim=-1)
         correct_reconstruction_positions = preds == input_ids[:, :]
-        print("Accuracy with random compression token embedding:", correct_reconstruction_positions.float().mean().item())
+        print(
+            "Accuracy with random compression token embedding:",
+            correct_reconstruction_positions.float().mean().item(),
+        )
 
-        plt.bar(range(correct_reconstruction_positions.shape[-1]), correct_reconstruction_positions.cpu()[0].float().numpy())
+        plt.bar(
+            range(correct_reconstruction_positions.shape[-1]),
+            correct_reconstruction_positions.cpu()[0].float().numpy(),
+        )
         figure_path = os.path.join(
             "artifacts",
             "visualizations",

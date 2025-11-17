@@ -32,7 +32,9 @@ def filter_records(
     return rows
 
 
-def collate_stages_by_sample(rows: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+def collate_stages_by_sample(
+    rows: List[Dict[str, Any]],
+) -> Dict[int, List[Dict[str, Any]]]:
     by_sid: Dict[int, List[Dict[str, Any]]] = {}
     for r in rows:
         sid = int(r.get("sample_id", -1))
@@ -60,7 +62,14 @@ def compute_pairwise_similarities(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray
 
 def plot_heatmap(matrix: np.ndarray, labels: List[str], title: str, outfile: str):
     plt.figure(figsize=(0.7 * max(4, len(labels)), 0.7 * max(4, len(labels))))
-    sns.heatmap(matrix, xticklabels=labels, yticklabels=labels, cmap="viridis", annot=False, square=True)
+    sns.heatmap(
+        matrix,
+        xticklabels=labels,
+        yticklabels=labels,
+        cmap="viridis",
+        annot=False,
+        square=True,
+    )
     plt.title(title)
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
@@ -148,17 +157,32 @@ def maybe_compute_perplexity(
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize and analyze progressive_train artifacts")
-    parser.add_argument("--dataset_path", type=str, required=True, help="Path to progressive_prefixes dataset")
+    parser.add_argument(
+        "--dataset_path",
+        type=str,
+        required=True,
+        help="Path to progressive_prefixes dataset",
+    )
     parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
     parser.add_argument("--stage_index", type=int, default=None, help="Optional stage filter")
-    parser.add_argument("--output_dir", type=str, default=None, help="Directory to save figures and metrics")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Directory to save figures and metrics",
+    )
     parser.add_argument(
         "--perplexity_model",
         type=str,
         default=None,
         help="HF model name to compute token-level perplexity of sample texts",
     )
-    parser.add_argument("--perplexity_max_samples", type=int, default=64, help="Max rows to use for perplexity estimation")
+    parser.add_argument(
+        "--perplexity_max_samples",
+        type=int,
+        default=64,
+        help="Max rows to use for perplexity estimation",
+    )
 
     args = parser.parse_args()
 
@@ -187,7 +211,12 @@ def main():
         labels = [f"L{int(s.get('stage_seq_len', -1))}" for s in stages]
         X = np.stack([flatten_embedding(s) for s in stages], axis=0)
         l2, cos_d = compute_pairwise_similarities(X)
-        plot_heatmap(l2, labels, title=f"Sample {sid}: L2 by stage", outfile=os.path.join(out_dir, f"sid{sid}_l2.png"))
+        plot_heatmap(
+            l2,
+            labels,
+            title=f"Sample {sid}: L2 by stage",
+            outfile=os.path.join(out_dir, f"sid{sid}_l2.png"),
+        )
         plot_heatmap(
             cos_d,
             labels,

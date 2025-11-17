@@ -179,7 +179,14 @@ def save_outputs(
     # Provide target token string for interpretability
     with open(os.path.join(out_dir, "earliest_correct_per_token.csv"), "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["text_position", "target_token_id", "target_token", "earliest_correct_layer"])
+        writer.writerow(
+            [
+                "text_position",
+                "target_token_id",
+                "target_token",
+                "earliest_correct_layer",
+            ]
+        )
         for pos, (tid, layer_idx) in enumerate(zip(target_token_ids_filtered, earliest_correct_layer)):
             token_str = tokenizer.decode([tid])
             writer.writerow([pos + 1, tid, token_str, layer_idx])
@@ -239,7 +246,13 @@ def save_outputs(
     # 3) Correctness matrix heatmap (layers x positions)
     if correct_matrix.size > 0:
         plt.figure(figsize=(10, 6))
-        sns.heatmap(correct_matrix.astype(np.float32), cmap="Greens", cbar=True, vmin=0.0, vmax=1.0)
+        sns.heatmap(
+            correct_matrix.astype(np.float32),
+            cmap="Greens",
+            cbar=True,
+            vmin=0.0,
+            vmax=1.0,
+        )
         plt.xlabel("position (valid next-token targets)")
         plt.ylabel("layer index")
         plt.title("Correctness matrix (1=correct)")

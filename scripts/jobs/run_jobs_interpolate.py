@@ -11,8 +11,16 @@ if __name__ == "__main__":
     author_name = "d.tarasov"
 
     checkpoints = [
-        ["random", "ch_cross_entropy_init_random_fmivdb", "ch_cross_entropy_init_random_qjabzg"],
-        ["mvnormal", "ch_cross_entropy_init_mvnormal_qghjjl", "ch_cross_entropy_init_mvnormal_kgkutv"],
+        [
+            "random",
+            "ch_cross_entropy_init_random_fmivdb",
+            "ch_cross_entropy_init_random_qjabzg",
+        ],
+        [
+            "mvnormal",
+            "ch_cross_entropy_init_mvnormal_qghjjl",
+            "ch_cross_entropy_init_mvnormal_kgkutv",
+        ],
     ]
 
     for exp_type, checkpoint1, checkpoint2 in checkpoints:

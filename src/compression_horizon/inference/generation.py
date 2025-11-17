@@ -61,7 +61,11 @@ def generate_from_compression(
         if eos_token_id is not None:
             if generated_token_ids.size(1) > 0:
                 reached_eos = generated_token_ids[:, -1].eq(eos_token_id)
-                next_token_ids = torch.where(reached_eos, torch.full_like(next_token_ids, eos_token_id), next_token_ids)
+                next_token_ids = torch.where(
+                    reached_eos,
+                    torch.full_like(next_token_ids, eos_token_id),
+                    next_token_ids,
+                )
 
         generated_token_ids = torch.cat([generated_token_ids, next_token_ids.unsqueeze(-1)], dim=-1)
 

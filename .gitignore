@@ -13,3 +13,6 @@ artifacts/
 # Environment
 .venv
 .idea
+
+# Debug
+/tests/bar.py
