@@ -87,7 +87,7 @@ class MyTrainer:
         loss_type = self.args.loss_type.lower()
         hybrid_alpha = self.args.hybrid_alpha
         alignment_loss = None
-        if hybrid_alpha is not None:
+        if hybrid_alpha is not None and loss_type != "cross_entropy":
             alignment_loss = 0
             for i in alignment_layer_indices:
                 compression_hidden_states = compression_outputs.hidden_states[i][
@@ -207,9 +207,9 @@ class MyTrainer:
             trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size]))
         return trainable_embeddings
 
-    def _build_optimizer_and_scheduler(self, compression_tokens_param):
+    def _build_optimizer_and_scheduler(self, compression_token_embeddings):
         optimizer = AdamW(
-            [compression_tokens_param],
+            [compression_token_embeddings],
             lr=self.args.learning_rate,
             weight_decay=self.args.weight_decay,
         )
@@ -234,7 +234,7 @@ class MyTrainer:
         if self.writer is None:
             return
         self.writer.add_scalar("train/loss", loss.item(), self.global_step)
-        if alignment_loss:
+        if alignment_loss is not None:
             self.writer.add_scalar("train/alignment_loss", alignment_loss.item(), self.global_step)
         self.writer.add_scalar("train/convergence", convergence_per_sample.mean().item(), self.global_step)
         self.writer.add_scalar(
@@ -264,10 +264,12 @@ class MyTrainer:
             self.writer.flush()
         self.global_step += 1
 
-    def _save_artifacts(self, rows, subdir_name):
+    def _save_artifacts(self, compression_token_embeddings: torch.Tensor, rows, subdir_name):
         output_dir = self.args.output_dir
         if output_dir and len(rows) > 0:
             os.makedirs(output_dir, exist_ok=True)
+            save_path = os.path.join(output_dir, "compression_embeddings.pt")
+            torch.save(compression_token_embeddings, save_path)
             save_path = os.path.join(output_dir, subdir_name)
             ds = Dataset.from_list(rows)
             ds.save_to_disk(save_path)
@@ -353,9 +355,6 @@ class MyTrainer:
                     progress_bar.set_postfix(
                         loss=loss.item(),
                         convergece_per_sample=convergence_per_sample.mean().item(),
-                        compression_tokens_mean=compression_token_embeddings.mean().item(),
-                        compression_tokens_std=compression_token_embeddings.std().item(),
-                        grad=compression_token_embeddings.grad.norm(2).item(),
                         lr=lr_scheduler.get_last_lr()[0],
                     )
                     self._log_step(
@@ -375,8 +374,8 @@ class MyTrainer:
             # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
             with torch.no_grad():
                 tokenizer = self.processing_class
-                last_loss = float(loss.item())
-                last_convergence = convergence_per_sample.cpu()
+                last_loss = loss.item()
+                last_convergence_per_sample = convergence_per_sample.cpu()
                 compression_token_embeddings_cpu = compression_token_embeddings.detach().cpu()
                 for j in range(batch_size):
                     sample_attention_mask = attention_mask[j].bool()
@@ -385,20 +384,21 @@ class MyTrainer:
                     embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
                     compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
                     compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
-                    # TODO: Add more description data
                     collected_rows.append(
                         {
-                            "sample_id": int(sample_id_counter),
+                            "sample_id": sample_id_counter,
                             "text": sample_text,
                             "embedding": embedding,  # [mem, hidden]
                             "final_loss": last_loss,
-                            "final_convergence": float(last_convergence[j].item()),
+                            "final_convergence": last_convergence_per_sample[j].item(),
                             "compression_tokens_mean": compression_token_embeddings_mean,
                             "compression_tokens_std": compression_token_embeddings_std,
                             "num_input_tokens": int(sample_attention_mask.sum().item()),
                             "num_compression_tokens": int(num_compression_tokens),
                             "hidden_size": hidden_size,
                             "loss_type": self.args.loss_type,
+                            "hybrid_alpha": self.args.hybrid_alpha,
+                            "num_alignment_layers": self.args.num_alignment_layers,
                             "model_checkpoint": self.args.model_checkpoint,
                             "max_optimization_steps_per_sample": self.args.max_optimization_steps_per_sample,
                         }
@@ -411,7 +411,7 @@ class MyTrainer:
             self.writer.close()
 
         # Persist artifacts
-        save_path = self._save_artifacts(collected_rows, "compressed_prefixes")
+        save_path = self._save_artifacts(compression_token_embeddings_cpu, collected_rows, "compressed_prefixes")
         if save_path is not None:
             return save_path
         return None

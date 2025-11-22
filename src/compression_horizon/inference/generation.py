@@ -30,7 +30,7 @@ def generate_from_compression(
     batch_size, num_compression_tokens, hidden_size = compressed_embeddings.shape
 
     # Container for generated token ids
-    generated_token_ids = torch.empty((batch_size, 0), dtype=torch.long, device=device)
+    generated_token_ids = torch.empty((batch_size, 0), dtype=torch.long, device=device)  # [batch, 0]
     # Model's input embeddings layer
     input_embeddings = model.get_input_embeddings()
 
@@ -67,7 +67,7 @@ def generate_from_compression(
                     next_token_ids,
                 )
 
-        generated_token_ids = torch.cat([generated_token_ids, next_token_ids.unsqueeze(-1)], dim=-1)
+        generated_token_ids = torch.cat([generated_token_ids, next_token_ids.unsqueeze(-1)], dim=-1)  # [batch, sequence]
 
         # Stop early if all sequences just produced eos and had eos previously
         if eos_token_id is not None and torch.all(next_token_ids.eq(eos_token_id)):

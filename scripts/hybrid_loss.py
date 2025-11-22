@@ -35,7 +35,7 @@ if __name__ == "__main__":
     else:
         output_dir = (
             f"artifacts/experiments/hybrid_loss/"
-            f"{training_args.model_checkpoint}|{training_args.max_sequence_length}|{training_args.number_of_mem_tokens}|{training_args.learning_rate}|{training_args.loss_type}|{training_args.hybrid_alpha}|{training_args.num_alignment_layers}|{uuid.uuid4()}"
+            f"{training_args.model_checkpoint.replace('/', '_')}|{training_args.max_sequence_length}|{training_args.number_of_mem_tokens}|{training_args.learning_rate}|{training_args.loss_type}|{training_args.hybrid_alpha}|{training_args.num_alignment_layers}|{uuid.uuid4()}"
         )
     os.makedirs(output_dir, exist_ok=True)
     training_args.output_dir = output_dir

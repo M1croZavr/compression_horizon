@@ -9,9 +9,9 @@ def get_device():
     return device
 
 
-def set_launch_seed(seed):
+def set_launch_seed(seed: int):
     if seed is not None:
-        set_seed(int(seed))
+        set_seed(seed)
 
 
 def freeze_model_parameters(model):

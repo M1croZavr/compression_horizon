@@ -13,3 +13,6 @@ print(a, b)
 print(c)
 c = torch.cat([a, b], dim=1)
 print(c)
+
+o, i, *_ = 1, 2, 3, 4, 5
+print(o, _, i)

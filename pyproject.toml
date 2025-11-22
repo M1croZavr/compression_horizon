@@ -31,6 +31,8 @@ build-backend = "hatchling.build"
 dev = [
     "black>=25.9.0",
     "flake8>=7.3.0",
+    "pre-commit>=4.4.0",
+    "pytest>=8.4.2",
     "ruff>=0.14.3",
 ]
 
