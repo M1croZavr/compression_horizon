@@ -12,6 +12,20 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
+def curve_length_from_points(points: torch.Tensor) -> float:
+    """Compute polyline length given sampled points along a curve.
+
+    points: [K, C, D] tensor of compression token embeddings along t.
+    Returns total Euclidean arc length over flattened [C*D] space.
+    """
+    if points.dim() != 3 or points.size(0) < 2:
+        return 0.0
+    diffs = points[1:] - points[:-1]  # [K-1, C, D]
+    diffs_flat = diffs.reshape(diffs.size(0), -1)  # [K-1, C*D]
+    seg_lengths = torch.linalg.norm(diffs_flat, dim=1)  # [K-1]
+    return float(seg_lengths.sum().item())
+
+
 def load_progressive_dataset(dataset_path: str) -> Dataset:
     return Dataset.load_from_disk(dataset_path)
 
@@ -133,7 +147,7 @@ def learn_bezier_and_evaluate(
     batch_t: int = 16,
     seed: int = 42,
     evaluate_every: int = 100,
-) -> Tuple[torch.Tensor, np.ndarray, np.ndarray]:
+) -> Tuple[torch.Tensor, np.ndarray, np.ndarray, float]:
     torch.manual_seed(int(seed))
     device = e0.device
     C, D = e0.shape
@@ -180,9 +194,10 @@ def learn_bezier_and_evaluate(
         return cross_entropy_loss_for_batch(out.logits, ids_b, attn_b)
 
     for iter_i in tqdm(range(int(steps)), desc="Optimizing Bezier control point"):
-        ts = torch.rand(min(batch_t, num_points), device=device)
         # beta-distribution with alpha=0.5 and beta=0.5
-        # ts = torch.sqrt(ts) * torch.sqrt(1 - ts) / 3.1415
+        ts = torch.rand(min(batch_t, num_points), device=device)
+        # ts = distributions.Beta(0.5, 0.5).sample(sample_shape=torch.Size([min(batch_t, num_points)])).to(device)
+
         loss = run_step(ts)
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -213,17 +228,21 @@ def learn_bezier_and_evaluate(
 
     ts_np = np.linspace(0.0, 1.0, num_points, dtype=np.float32)
     accs: List[float] = []
+    curve_pts: List[torch.Tensor] = []
     with torch.no_grad():
         for tval in tqdm(ts_np, desc="Evaluating Bezier curve"):
             t_t = torch.tensor([tval], device=device, dtype=torch.float32)
             ct = _bezier_points(t_t)
             acc = compute_convergence(model, ct, inputs_embeds, attention_mask, input_ids)
             accs.append(acc)
+            curve_pts.append(ct.squeeze(0))  # [C, D]
+    bezier_points = torch.stack(curve_pts, dim=0)  # [K, C, D]
+    bezier_length = curve_length_from_points(bezier_points)
     # Stack learned control points into [n-1, C, D]
     learned = (
         torch.stack([p.detach().clone() for p in control_params], dim=0) if len(control_params) > 0 else torch.empty(0, C, D)
     )
-    return learned, ts_np, np.array(accs, dtype=np.float32)
+    return learned, ts_np, np.array(accs, dtype=np.float32), bezier_length
 
 
 def pick_model_name(rows: List[Dict[str, Any]]) -> Optional[str]:
@@ -239,63 +258,18 @@ def pick_model_name(rows: List[Dict[str, Any]]) -> Optional[str]:
 
 def main():
     parser = argparse.ArgumentParser(description="Interpolate compression embeddings and evaluate accuracies")
-    parser.add_argument(
-        "--dataset_path1",
-        type=str,
-        required=True,
-        help="Path to progressive_prefixes dataset",
-    )
-    parser.add_argument(
-        "--dataset_path2",
-        type=str,
-        required=True,
-        help="Path to progressive_prefixes dataset",
-    )
+    parser.add_argument("--dataset_path1", type=str, required=True, help="Path to progressive_prefixes dataset")
+    parser.add_argument("--dataset_path2", type=str, required=True, help="Path to progressive_prefixes dataset")
     parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
-    parser.add_argument(
-        "--model_checkpoint",
-        type=str,
-        default=None,
-        help="HF model name; inferred if omitted",
-    )
-    parser.add_argument(
-        "--num_points",
-        type=int,
-        default=100,
-        help="Number of evaluation points along t  [0,1]",
-    )
-    parser.add_argument(
-        "--bezier_steps",
-        type=int,
-        default=200,
-        help="Optimization steps for Bezier control point",
-    )
-    parser.add_argument(
-        "--bezier_lr",
-        type=float,
-        default=1e-2,
-        help="Learning rate for Bezier control point",
-    )
-    parser.add_argument(
-        "--bezier_batch_t",
-        type=int,
-        default=32,
-        help="Number of t samples per optimization step",
-    )
+    parser.add_argument("--model_checkpoint", type=str, default=None, help="HF model name; inferred if omitted")
+    parser.add_argument("--num_points", type=int, default=300, help="Number of evaluation points along t  [0,1]")
+    parser.add_argument("--bezier_steps", type=int, default=5000, help="Optimization steps for Bezier control point")
+    parser.add_argument("--bezier_lr", type=float, default=1e-2, help="Learning rate for Bezier control point")
+    parser.add_argument("--bezier_batch_t", type=int, default=32, help="Number of t samples per optimization step")
     parser.add_argument("--bezier_order", type=int, default=2, help="Bezier curve order (>=2)")
-    parser.add_argument(
-        "--bezier_weight_decay",
-        type=float,
-        default=0.0,
-        help="Weight decay for Bezier control point",
-    )
+    parser.add_argument("--bezier_weight_decay", type=float, default=0.0, help="Weight decay for Bezier control point")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="/tmp",
-        help="Where to save plots and parameters",
-    )
+    parser.add_argument("--output_dir", type=str, default="/tmp", help="Where to save plots and parameters")
 
     args = parser.parse_args()
 
@@ -326,6 +300,8 @@ def main():
     all_ts: Optional[np.ndarray] = None
     all_lin_accs: List[np.ndarray] = []
     all_bez_accs: List[np.ndarray] = []
+    all_lin_lengths: List[float] = []
+    all_bez_lengths: List[float] = []
 
     for sid, stages in by_sid.items():
         first = stages[0]
@@ -350,16 +326,12 @@ def main():
         e1 = to_tensor_embedding(last, device)
 
         ts_lin, accs_lin = evaluate_linear_curve(
-            model,
-            e0,
-            e1,
-            inputs_embeds,
-            attention_mask,
-            input_ids,
-            num_points=int(args.num_points),
+            model, e0, e1, inputs_embeds, attention_mask, input_ids, num_points=int(args.num_points)
         )
+        # Exact for linear interpolation even with discretization at uniform t
+        linear_length = float(torch.linalg.norm((e1 - e0).reshape(-1)).item())
 
-        learned_ctrl, ts_bez, accs_bez = learn_bezier_and_evaluate(
+        learned_ctrl, ts_bez, accs_bez, bezier_length = learn_bezier_and_evaluate(
             model,
             e0,
             e1,
@@ -378,8 +350,8 @@ def main():
         import matplotlib.pyplot as plt
 
         plt.figure(figsize=(7, 4))
-        plt.plot(ts_lin, accs_lin, label="Linear", linewidth=2)
-        plt.plot(ts_bez, accs_bez, label="Bezier (learned)", linewidth=2)
+        plt.plot(ts_lin, accs_lin, label=f"Linear (L={linear_length:.2f})", linewidth=2)
+        plt.plot(ts_bez, accs_bez, label=f"Bezier (learned, L={bezier_length:.2f})", linewidth=2)
         plt.xlabel("t")
         plt.ylabel("convergence accuracy")
         plt.title(f"Interpolation Accuracy (sample {sid})")
@@ -392,6 +364,7 @@ def main():
         params_path = os.path.join(args.output_dir, f"bezier_params_sid{sid}.pt")
         torch.save(
             {
+                "text_eval": text_eval,
                 "bezier_order": int(args.bezier_order),
                 "control_points": learned_ctrl.cpu(),  # [order-1, C, D]
                 "control_point": (learned_ctrl.cpu()[0] if learned_ctrl.numel() > 0 else None),
@@ -410,6 +383,8 @@ def main():
             all_ts = ts_lin
         all_lin_accs.append(accs_lin)
         all_bez_accs.append(accs_bez)
+        all_lin_lengths.append(linear_length)
+        all_bez_lengths.append(bezier_length)
 
     if all_ts is not None and len(all_lin_accs) > 0 and len(all_bez_accs) > 0:
         import matplotlib.pyplot as plt
@@ -421,10 +396,13 @@ def main():
         bez_mean = bez_stack.mean(axis=0)
         bez_std = bez_stack.std(axis=0)
 
+        mean_lin_len = float(np.mean(all_lin_lengths)) if len(all_lin_lengths) > 0 else 0.0
+        mean_bez_len = float(np.mean(all_bez_lengths)) if len(all_bez_lengths) > 0 else 0.0
+
         plt.figure(figsize=(7, 4))
-        plt.plot(all_ts, lin_mean, label="Linear (mean)", color="C0", linewidth=2)
+        plt.plot(all_ts, lin_mean, label=f"Linear (mean, L={mean_lin_len:.2f})", color="C0", linewidth=2)
         plt.fill_between(all_ts, lin_mean - lin_std, lin_mean + lin_std, color="C0", alpha=0.2)
-        plt.plot(all_ts, bez_mean, label="Bezier (mean)", color="C1", linewidth=2)
+        plt.plot(all_ts, bez_mean, label=f"Bezier (mean, L={mean_bez_len:.2f})", color="C1", linewidth=2)
         plt.fill_between(all_ts, bez_mean - bez_std, bez_mean + bez_std, color="C1", alpha=0.2)
         plt.xlabel("t")
         plt.ylabel("convergence accuracy")
