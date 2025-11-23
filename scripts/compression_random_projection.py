@@ -1,14 +1,13 @@
 import argparse
 import os
 from typing import Any, Dict, Tuple
-from tqdm.auto import tqdm
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
 from scripts.compute_embeddings_stat import compute_stats
+from tqdm.auto import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def _prepare_model(model_name: str, device: torch.device):
