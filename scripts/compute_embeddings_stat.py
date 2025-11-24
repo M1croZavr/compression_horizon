@@ -3,10 +3,10 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
 
 
 def frobenius_l2_norm(t: torch.Tensor) -> float:

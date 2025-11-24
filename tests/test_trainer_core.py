@@ -1,19 +1,21 @@
 import os
 import sys
-from types import SimpleNamespace
+from dataclasses import replace
 
 import torch
 from torch.utils.data import Dataset
 
+from compression_horizon.train.arguments import MyTrainingArguments
+
 # Ensure we can import from src/
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
-from train.trainer import MyTrainer  # noqa: E402
-
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from compression_horizon.train.trainer import MyTrainer  # noqa: E402
 
 
 def _make_args(**overrides):
-    # Minimal args object for MyTrainer
+    training_args = MyTrainingArguments()
     defaults = dict(
         model_checkpoint="dummy",
         max_optimization_steps_per_sample=1,
@@ -30,11 +32,12 @@ def _make_args(**overrides):
         dataloader_drop_last=True,
         dataloader_num_workers=0,
         warmup_steps=0,
-        logging_dir=False,  # disable SummaryWriter
-        number_of_eos_tokens=1,
+        logging_dir=None,  # Disable SummaryWriter usage
+        number_of_mem_tokens=1,
     )
-    defaults.update(overrides)
-    return SimpleNamespace(**defaults)
+    training_args = replace(training_args, **defaults)
+    training_args = replace(training_args, **overrides)
+    return training_args
 
 
 def test_compute_ce_loss():
@@ -43,11 +46,14 @@ def test_compute_ce_loss():
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
     args = _make_args(loss_type="cross_entropy", num_alignment_layers=0)  # 0 = all layers
-
     trainer = MyTrainer(model=model, processing_class=tokenizer, args=args)
 
-    batch_size, L, H = 2, 4, model.config.hidden_size  # base length 4, compression length 5
-    num_comp = args.number_of_eos_tokens
+    batch_size, L, H = (
+        2,
+        4,
+        model.config.hidden_size,
+    )  # base length 4, compression length 5
+    num_comp = args.number_of_mem_tokens
 
     # Fake token ids and mask
     input_ids = torch.randint(0, 16, (batch_size, L))
@@ -58,9 +64,12 @@ def test_compute_ce_loss():
 
     compression_tokens = torch.randn(batch_size, num_comp, H)
     model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
-    attention_mask_with_comp = torch.cat([torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1)
+    attention_mask_with_comp = torch.cat(
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask],
+        dim=1,
+    )
 
-    loss, _ = trainer.compute_loss(
+    loss, *_ = trainer.compute_loss(
         model,
         input_ids,
         model_token_embeddings,
@@ -79,12 +88,15 @@ def test_compute_l2_loss_num_alignment_layers():
     model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
-    args = _make_args(loss_type="l2", num_alignment_layers=0)  # 0 = all layers
-
+    args = _make_args(hybrid_alpha=1.0, loss_type="l2", num_alignment_layers=0)  # 0 = all layers
     trainer = MyTrainer(model=model, processing_class=tokenizer, args=args)
 
-    batch_size, L, H = 2, 4, model.config.hidden_size  # base length 4, compression length 5
-    num_comp = args.number_of_eos_tokens
+    batch_size, L, H = (
+        2,
+        4,
+        model.config.hidden_size,
+    )  # base length 4, compression length 5
+    num_comp = args.number_of_mem_tokens
 
     # Fake token ids and mask
     input_ids = torch.randint(0, 16, (batch_size, L))
@@ -95,9 +107,12 @@ def test_compute_l2_loss_num_alignment_layers():
 
     compression_tokens = torch.randn(batch_size, num_comp, H)
     model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
-    attention_mask_with_comp = torch.cat([torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1)
+    attention_mask_with_comp = torch.cat(
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask],
+        dim=1,
+    )
 
-    loss_all_layers, _ = trainer.compute_loss(
+    loss_all_layers, *_ = trainer.compute_loss(
         model,
         input_ids,
         model_token_embeddings,
@@ -108,7 +123,7 @@ def test_compute_l2_loss_num_alignment_layers():
     )
 
     trainer.args.num_alignment_layers = 1
-    loss_1_layer, _ = trainer.compute_loss(
+    loss_1_layer, *_ = trainer.compute_loss(
         model,
         input_ids,
         model_token_embeddings,
@@ -199,7 +214,7 @@ def test_compute_loss_convergence_metric_shape_and_range():
     trainer = MyTrainer(model=model, processing_class=tokenizer, args=args)
 
     batch_size, L, H = 3, 4, model.config.hidden_size
-    num_comp = args.number_of_eos_tokens
+    num_comp = args.number_of_mem_tokens
 
     input_ids = torch.randint(0, 16, (batch_size, L))
     attention_mask = torch.ones(batch_size, L, dtype=torch.long)
@@ -209,9 +224,12 @@ def test_compute_loss_convergence_metric_shape_and_range():
 
     compression_tokens = torch.randn(batch_size, num_comp, H)
     model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
-    attention_mask_with_comp = torch.cat([torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask], dim=1)
+    attention_mask_with_comp = torch.cat(
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask],
+        dim=1,
+    )
 
-    _, conv = trainer.compute_loss(
+    loss, _, convergence, *_ = trainer.compute_loss(
         model,
         input_ids,
         model_token_embeddings,
@@ -221,5 +239,5 @@ def test_compute_loss_convergence_metric_shape_and_range():
         num_comp,
     )
 
-    assert conv.shape == (batch_size,)
-    assert torch.all(conv >= 0) and torch.all(conv <= 1)
+    assert convergence.shape == (batch_size,)
+    assert torch.all(convergence >= 0) and torch.all(convergence <= 1)

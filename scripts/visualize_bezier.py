@@ -1,9 +1,9 @@
 import argparse
-import torch
+
 import matplotlib.pyplot as plt
+import torch
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--params_path", type=str, required=True)
     args = parser.parse_args()
@@ -45,7 +45,12 @@ if __name__ == "__main__":
 
     # plot values distribution for c_normalized
     plt.figure(figsize=(7, 4))
-    plt.hist(c[:, :].squeeze().detach().cpu().numpy(), bins=100, alpha=0.5, label="c_normalized")
+    plt.hist(
+        c[:, :].squeeze().detach().cpu().numpy(),
+        bins=100,
+        alpha=0.5,
+        label="c_normalized",
+    )
     plt.hist(e0[:, :].squeeze().detach().cpu().numpy(), bins=100, alpha=0.5, label="e0")
     plt.hist(e1[:, :].squeeze().detach().cpu().numpy(), bins=100, alpha=0.5, label="e1")
     plt.xlabel("value")
