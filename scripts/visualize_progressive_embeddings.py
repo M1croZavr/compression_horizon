@@ -78,15 +78,34 @@ def plot_pca(X: np.ndarray, labels: List[str], outfile: str):
     print(
         f"PCA explained variance: PC1={explained_var[0]:.4f}, PC2={explained_var[1]:.4f}, Cumulative={explained_var.sum():.4f}"
     )
-    # plt.figure(figsize=(6, 5))
+    # Check dispersion (std dev) and swap if needed to ensure x-axis has more dispersion
+    pc1_disp = np.std(xy[:, 0])
+    pc2_disp = np.std(xy[:, 1])
+    if pc2_disp > pc1_disp:
+        # Swap PC1 and PC2
+        xy = xy[:, [1, 0]]
+        explained_var = explained_var[[1, 0]]
+        xlabel = "PC2"
+        ylabel = "PC1"
+    else:
+        xlabel = "PC1"
+        ylabel = "PC2"
+    # Calculate appropriate figure size for 1:1 aspect ratio
+    x_range = np.max(xy[:, 0]) - np.min(xy[:, 0])
+    y_range = np.max(xy[:, 1]) - np.min(xy[:, 1])
+
+    plt.figure(figsize=(x_range, y_range))
     for i, lab in enumerate(labels):
         plt.scatter(xy[i, 0], xy[i, 1], s=60)
         plt.text(xy[i, 0], xy[i, 1], lab, fontsize=8, ha="left", va="bottom")
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.title("PCA of progressive embeddings (flattened)")
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.axis("equal")
+    plt.title(
+        f"PCA of progressive embeddings (flattened)\n{xlabel}: {explained_var[0]:.4f}, {ylabel}: {explained_var[1]:.4f}, Cumulative: {explained_var.sum():.4f}"
+    )
     plt.tight_layout()
-    plt.savefig(outfile, dpi=150)
+    plt.savefig(outfile, dpi=300)
     plt.close()
 
 
