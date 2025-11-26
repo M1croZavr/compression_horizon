@@ -74,7 +74,11 @@ def plot_pca(X: np.ndarray, labels: List[str], outfile: str):
         return
     pca = PCA(n_components=2, random_state=42)
     xy = pca.fit_transform(X)
-    plt.figure(figsize=(6, 5))
+    explained_var = pca.explained_variance_ratio_
+    print(
+        f"PCA explained variance: PC1={explained_var[0]:.4f}, PC2={explained_var[1]:.4f}, Cumulative={explained_var.sum():.4f}"
+    )
+    # plt.figure(figsize=(6, 5))
     for i, lab in enumerate(labels):
         plt.scatter(xy[i, 0], xy[i, 1], s=60)
         plt.text(xy[i, 0], xy[i, 1], lab, fontsize=8, ha="left", va="bottom")
@@ -96,6 +100,7 @@ def plot_correlation(x: np.ndarray, y: np.ndarray, xlabel: str, ylabel: str, tit
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
     plt.close()
+    print(f"Saved correlation plot to: {outfile}")
 
 
 def plot_norms_over_stages(
@@ -265,7 +270,9 @@ def main():
             tok = None
 
     # Holders for cross-sample correlation analyses
-    dist_init_final_all: List[float] = []
+    dist_l1_all: List[float] = []
+    dist_l2_all: List[float] = []
+    dist_cosine_all: List[float] = []
     ppl_all: List[float] = []
     seq_len_all: List[int] = []
     sid_all: List[int] = []
@@ -294,7 +301,18 @@ def main():
 
         # Per-sample distance metrics
         for i in range(X.shape[0] - 1):
-            dist_init_final_all.append(float(np.linalg.norm(X[i + 1] - X[i])))
+            # Compute L1 distance
+            l1_dist = float(np.linalg.norm(X[i + 1] - X[i], ord=1))
+            dist_l1_all.append(l1_dist)
+            # Compute L2 distance
+            l2_dist = float(np.linalg.norm(X[i + 1] - X[i], ord=2))
+            dist_l2_all.append(l2_dist)
+            # Compute cosine distance: 1 - cosine_similarity
+            v1 = X[i + 1] / (np.linalg.norm(X[i + 1]) + 1e-12)
+            v2 = X[i] / (np.linalg.norm(X[i]) + 1e-12)
+            cos_sim = np.clip(np.dot(v1, v2), -1.0, 1.0)
+            cos_dist = 1.0 - cos_sim
+            dist_cosine_all.append(float(cos_dist))
 
         # Per-sample perplexity (optional)
         if model is not None and tok is not None:
@@ -383,14 +401,32 @@ def main():
         )
 
     # Optional: plots leveraging per-sample perplexities (if available)
-    if len(ppl_all) > 1 and len(ppl_all) == len(dist_init_final_all):
+    if len(ppl_all) > 1 and len(ppl_all) == len(dist_l1_all):
         plot_correlation(
-            np.array(dist_init_final_all),
+            np.array(dist_l1_all),
             np.array(ppl_all),
-            xlabel="steps L2",
+            xlabel="L1 distance",
+            ylabel="perplexity",
+            title="Comp Embeddings L1 Distance vs Perplexity",
+            outfile=os.path.join(out_dir, "l1_dist_vs_perplexity.png"),
+        )
+    if len(ppl_all) > 1 and len(ppl_all) == len(dist_l2_all):
+        plot_correlation(
+            np.array(dist_l2_all),
+            np.array(ppl_all),
+            xlabel="L2 distance",
             ylabel="perplexity",
             title="Comp Embeddings L2 Distance vs Perplexity",
             outfile=os.path.join(out_dir, "l2_dist_vs_perplexity.png"),
+        )
+    if len(ppl_all) > 1 and len(ppl_all) == len(dist_cosine_all):
+        plot_correlation(
+            np.array(dist_cosine_all),
+            np.array(ppl_all),
+            xlabel="cosine distance",
+            ylabel="perplexity",
+            title="Comp Embeddings Cosine Distance vs Perplexity",
+            outfile=os.path.join(out_dir, "cosine_dist_vs_perplexity.png"),
         )
     if len(seq_len_all) > 1 and len(seq_len_all) == len(ppl_all):
         plot_correlation(
