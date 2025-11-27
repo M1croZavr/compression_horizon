@@ -320,7 +320,7 @@ class MyTrainer:
                 total=self.args.max_optimization_steps_per_sample,
             )
             progress_bar.set_description("Training")
-            for _ in progress_bar:
+            for step_i in progress_bar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
                 united_token_embeddings = torch.cat(
                     [compression_token_embeddings, token_embeddings],
@@ -354,6 +354,7 @@ class MyTrainer:
                     progress_bar.update(1)
                     progress_bar.set_postfix(
                         loss=loss.item(),
+                        loss_alignment=alignment_loss.item(),
                         convergece_per_sample=convergence_per_sample.mean().item(),
                         lr=lr_scheduler.get_last_lr()[0],
                     )
@@ -366,6 +367,10 @@ class MyTrainer:
                         generated_text,
                         ground_truth_text,
                     )
+
+                if convergence_per_sample == 1.0:
+                    print(f"Early stopping: compression converged in {step_i} steps")
+                    break
 
                 # Update learning rate
                 optimizer.zero_grad(set_to_none=True)

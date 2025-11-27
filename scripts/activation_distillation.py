@@ -39,6 +39,8 @@ if __name__ == "__main__":
 
     if training_args.progressive_train:
         run_dir_name = f"artifacts/experiments_progressive/ch_{getattr(training_args, 'loss_type', 'l2')}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}_{_rand_suffix(6)}"
+    elif training_args.hybrid_alpha is not None:
+        run_dir_name = f"artifacts/experiments_hybrid_alpha/ch_{getattr(training_args, 'loss_type', 'l2')}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}_{_rand_suffix(6)}"
     else:
         run_dir_name = f"artifacts/experiments/ch_{getattr(training_args, 'loss_type', 'l2')}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}_{_rand_suffix(6)}"
 
