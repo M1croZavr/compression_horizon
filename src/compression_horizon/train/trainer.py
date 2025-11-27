@@ -405,6 +405,7 @@ class MyTrainer:
                             "embedding": embedding,  # [mem, hidden]
                             "final_loss": last_loss,
                             "final_convergence": last_convergence_per_sample[j].item(),
+                            "convergence_after_steps": step_i,
                             "compression_tokens_mean": compression_token_embeddings_mean,
                             "compression_tokens_std": compression_token_embeddings_std,
                             "num_input_tokens": int(sample_attention_mask.sum().item()),
