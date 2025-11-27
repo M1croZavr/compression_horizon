@@ -48,6 +48,9 @@ class MyTrainingArguments(TrainingArguments):
         metadata={"help": "Max optimization steps for training 1 sample."},
     )
     random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)."})
+    fix_position_ids: bool = field(
+        default=False,
+    )
 
     # Overrides with changed defaults
     per_device_train_batch_size: int = field(

@@ -57,10 +57,19 @@ class MyTrainer:
                 output_hidden_states=True,
             )
         # Hidden state: [batch, mem + sequence, hidden]
+        extra_kwargs = {}
+        if self.args.fix_position_ids:
+            position_ids = torch.arange(-1, token_embeddings.shape[1], device=token_embeddings.device)
+            position_ids[0] = 0
+            position_ids = position_ids.unsqueeze(0)
+            # print('position_ids', position_ids)
+            extra_kwargs["position_ids"] = position_ids
+
         compression_outputs = model(
             inputs_embeds=united_token_embeddings,
             attention_mask=united_attention_mask,
             output_hidden_states=True,
+            **extra_kwargs,
         )
 
         # Number of hidden states: 1 (embedder) + number of transformer decoder layers
