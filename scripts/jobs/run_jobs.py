@@ -25,27 +25,34 @@ def build_args() -> argparse.Namespace:
 
     # Grid parameters
     parser.add_argument(
-        "--embedding-init-methods",
+        "--embedding_init_methods",
         nargs="+",
         default=["mvnormal"],
         help="List of embedding initialization methods.",
     )
     parser.add_argument(
-        "--random-seeds",
+        "--random_seeds",
         nargs="+",
         type=int,
-        default=[42, 533, 100, 200],
+        default=[42, 533, 134, 733],
         help="List of random seeds.",
     )
     parser.add_argument(
-        "--max-sequence-lengths",
+        "--fix_position_ids",
         nargs="+",
         type=int,
-        default=[8, 16, 32, 64],
+        default=[0, 1],
+        help="Fix position ids or not?",
+    )
+    parser.add_argument(
+        "--max_sequence_lengths",
+        nargs="+",
+        type=int,
+        default=[32, 64, 128],
         help="List of max sequence lengths.",
     )
     parser.add_argument(
-        "--hybrid-alphas",
+        "--hybrid_alphas",
         nargs="+",
         default=[None, "1.0"],
         help='List of hybrid alpha values. Use "none" to disable hybrid and use cross-entropy loss.',
@@ -53,7 +60,7 @@ def build_args() -> argparse.Namespace:
 
     # General execution/runtime configuration
     parser.add_argument(
-        "--python-path",
+        "--python_path",
         default="/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python",
         help="Absolute path to the Python interpreter inside the target environment.",
     )
@@ -63,54 +70,60 @@ def build_args() -> argparse.Namespace:
         help="Profile name for training_job_api_from_profile.",
     )
     parser.add_argument(
-        "--author-name",
+        "--author_name",
         default="d.tarasov",
         help="Author name tag for job description.",
     )
     parser.add_argument(
-        "--model-checkpoint",
+        "--model_checkpoint",
         default="HuggingFaceTB/SmolLM2-1.7B",
         help="Base model checkpoint to use.",
     )
     parser.add_argument(
-        "--model-checkpoints",
+        "--model_checkpoints",
         nargs="+",
         default=None,
         help="List of model checkpoints to grid over (overrides --model-checkpoint).",
     )
 
     # Training defaults that were previously hardcoded
-    parser.add_argument("--per-device-train-batch-size", type=int, default=1)
-    parser.add_argument("--max-optimization-steps-per-sample", type=int, default=1000)
-    parser.add_argument("--learning-rate", type=float, default=0.01)
-    parser.add_argument("--warmup-steps", type=int, default=100)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--max_optimization_steps_per_sample", type=int, default=1000)
+    parser.add_argument("--learning_rate", type=float, default=0.01)
+    parser.add_argument("--warmup_steps", type=int, default=100)
     parser.add_argument(
-        "--remove-unused-columns",
+        "--limit_dataset_items",
+        type=int,
+        default=100,
+        help="Limit the number of dataset items to use.",
+    )
+    parser.add_argument(
+        "--remove_unused_columns",
         action="store_true",
         default=False,
         help="Pass to set --remove_unused_columns True (default False).",
     )
     parser.add_argument(
-        "--num-alignment-layers-nonhybrid",
+        "--num_alignment_layers_nonhybrid",
         type=int,
         default=1,
         help="num_alignment_layers to use when hybrid is disabled.",
     )
     parser.add_argument(
-        "--num-alignment-layers-hybrid",
+        "--num_alignment_layers_hybrid",
         type=int,
         default=5,
         help="num_alignment_layers to use when hybrid is enabled.",
     )
 
     # Infra
-    parser.add_argument("--instance-type", default="a100.1gpu")
+    parser.add_argument("--instance_type", default="a100.1gpu")
     parser.add_argument(
-        "--base-image",
+        "--base_image",
         default="cr.ai.cloud.ru/aicloud-base-images/cuda12.1-torch2-py311:0.0.36",
     )
-    parser.add_argument("--n-workers", type=int, default=1)
-    parser.add_argument("--processes-per-worker", type=int, default=1)
+    parser.add_argument("--n_workers", type=int, default=1)
+    parser.add_argument("--processes_per_worker", type=int, default=1)
 
     # Behavior
     parser.add_argument(
@@ -135,6 +148,10 @@ if __name__ == "__main__":
     hybrid_alpha_values = parse_hybrid_alpha_list(args.hybrid_alphas)
     model_checkpoints = args.model_checkpoints if args.model_checkpoints is not None else [args.model_checkpoint]
 
+    jobs_planned = 0
+    jobs_launched = 0
+    jobs_dry = 0
+
     for hybrid_alpha, embedding_init_method, random_seed, max_sequence_length, model_checkpoint in product(
         hybrid_alpha_values,
         args.embedding_init_methods,
@@ -142,6 +159,7 @@ if __name__ == "__main__":
         args.max_sequence_lengths,
         model_checkpoints,
     ):
+        jobs_planned += 1
         is_hybrid = hybrid_alpha is not None
         loss_type = "cosine" if is_hybrid else "cross_entropy"
         num_alignment_layers = args.num_alignment_layers_hybrid if is_hybrid else args.num_alignment_layers_nonhybrid
@@ -159,6 +177,7 @@ if __name__ == "__main__":
             f"--per_device_train_batch_size {args.per_device_train_batch_size} "
             f"--max_optimization_steps_per_sample {args.max_optimization_steps_per_sample} "
             f"--learning_rate {args.learning_rate} "
+            f"--limit_dataset_items {args.limit_dataset_items} "
             f"--random_seed {random_seed} "
             f"--embedding_init_method {embedding_init_method} "
         )
@@ -168,6 +187,7 @@ if __name__ == "__main__":
 
         job_desc = (
             f"CH: compress init={embedding_init_method} "
+            f"hybrid_alpha={hybrid_alpha} "
             f"seq_len={max_sequence_length} seed={random_seed} "
             f"ckpt={model_checkpoint} "
             f"#{author_name} #rnd #multimodal @mrsndmn"
@@ -188,10 +208,19 @@ if __name__ == "__main__":
             "processes_per_worker": args.processes_per_worker,
         }
 
+        print(f"\033[32m Would launch with description:\033[0m {job_desc}")
+        print(f"\033[90m     Command: {base_cmd}\033[0m")
+        jobs_dry += 1
         if args.dry:
-            print("[DRY] Would launch with payload:")
-            print(payload)
             continue
 
         result = client.run_job(payload=payload)
+        jobs_launched += 1
         print(embedding_init_method, random_seed, max_sequence_length, result)
+
+    if args.dry:
+        print(f"[DRY] Total jobs planned: {jobs_planned}")
+        print(f"[DRY] Jobs printed (dry): {jobs_dry}")
+    else:
+        print(f"Total jobs planned: {jobs_planned}")
+        print(f"Jobs launched: {jobs_launched}")
