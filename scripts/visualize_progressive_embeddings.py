@@ -91,18 +91,30 @@ def plot_pca(X: np.ndarray, labels: List[str], outfile: str):
         xlabel = "PC1"
         ylabel = "PC2"
     # Calculate appropriate figure size for 1:1 aspect ratio
-    x_range = np.max(xy[:, 0]) - np.min(xy[:, 0])
-    y_range = np.max(xy[:, 1]) - np.min(xy[:, 1])
+    # x_range = np.max(xy[:, 0]) - np.min(xy[:, 0])
+    # y_range = np.max(xy[:, 1]) - np.min(xy[:, 1])
 
-    plt.figure(figsize=(x_range, y_range))
+    # plt.figure(figsize=(x_range, y_range))
+    plt.figure(figsize=(8.8, 7))
+    labeled_positions = []
     for i, lab in enumerate(labels):
         plt.scatter(xy[i, 0], xy[i, 1], s=60)
-        plt.text(xy[i, 0], xy[i, 1], lab, fontsize=8, ha="left", va="bottom")
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
+        # Check if there's already a labeled point within distance < 0.5
+        should_label = True
+        for labeled_pos in labeled_positions:
+            dist = np.linalg.norm(xy[i] - labeled_pos)
+            if dist < 0.5:
+                should_label = False
+                break
+        if should_label:
+            plt.text(xy[i, 0], xy[i, 1], lab, fontsize=18, ha="left", va="bottom")
+            labeled_positions.append(xy[i])
+    plt.xlabel(xlabel, fontsize=16)
+    plt.ylabel(ylabel, fontsize=16)
     plt.axis("equal")
     plt.title(
-        f"PCA of progressive embeddings (flattened)\n{xlabel}: {explained_var[0]:.4f}, {ylabel}: {explained_var[1]:.4f}, Cumulative: {explained_var.sum():.4f}"
+        f"PCA of progressive embeddings (flattened)\n{xlabel}: {explained_var[0]:.4f}, {ylabel}: {explained_var[1]:.4f}, Cumulative: {explained_var.sum():.4f}",
+        fontsize=18,
     )
     plt.tight_layout()
     plt.savefig(outfile, dpi=300)
@@ -111,7 +123,22 @@ def plot_pca(X: np.ndarray, labels: List[str], outfile: str):
 
 def plot_correlation(x: np.ndarray, y: np.ndarray, xlabel: str, ylabel: str, title: str, outfile: str):
     plt.figure(figsize=(6, 4))
-    sns.regplot(x=x, y=y, scatter_kws={"s": 20}, line_kws={"color": "red"})
+    # Create gradient colors based on position (first to last)
+    n_points = len(x)
+    if n_points > 0:
+        positions = np.arange(n_points)
+        # Normalize positions to [0, 1] for colormap
+        # norm_positions = positions / max(positions.max(), 1.0) if positions.max() > 0 else positions
+        # colors = plt.cm.viridis(norm_positions)
+        # Create scatter plot with gradient colors
+        scatter = plt.scatter(x, y, s=20, alpha=0.5, c=positions, cmap="viridis")
+        # Add colorbar to show gradient meaning
+        cbar = plt.colorbar(scatter, ax=plt.gca())
+        cbar.set_label("position", rotation=270, labelpad=15)
+    else:
+        plt.scatter(x, y, s=20, alpha=0.5)
+    # Add regression line
+    sns.regplot(x=x, y=y, scatter=False, line_kws={"color": "red"})
     corr = np.corrcoef(x, y)[0, 1] if x.size > 1 and y.size > 1 else np.nan
     plt.title(f"{title} (r={corr:.3f})")
     plt.xlabel(xlabel)

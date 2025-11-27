@@ -13,10 +13,7 @@ import seaborn as sns
 
 
 def _short_label_from_path(path: str) -> str:
-    base = os.path.basename(os.path.normpath(path))
-    if base.strip() == "":
-        base = path
-    return base
+    return os.path.normpath(path).split("/")[-2].replace("ch_cross_entropy_init_mvnormal_", "").replace("seq_len", "L")
 
 
 def _clean_label(label: str) -> str:
@@ -77,9 +74,12 @@ def compute_pairwise_metrics(embeddings: List[torch.Tensor]) -> Tuple[np.ndarray
 def plot_pairwise_heatmap(matrix: np.ndarray, labels: List[str], title: str, outfile: str):
     plt.figure(figsize=(0.8 * max(4, len(labels)), 0.8 * max(4, len(labels))))
     sns.heatmap(matrix, xticklabels=labels, yticklabels=labels, cmap="viridis", annot=False, square=True)
-    plt.title(title)
+    plt.title(title, fontsize=20)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
+    print("Saved to", outfile)
     plt.close()
 
 
@@ -89,13 +89,17 @@ def plot_pca_scatter(embeddings: List[torch.Tensor], labels: List[str], outfile:
         return
     pca = PCA(n_components=2, random_state=42)
     xy = pca.fit_transform(X)
+    evr = pca.explained_variance_ratio_
+    pc1_var = evr[0] * 100
+    pc2_var = evr[1] * 100
+    cum_var = (evr[0] + evr[1]) * 100
     plt.figure(figsize=(6, 5))
     for i, lab in enumerate(labels):
         plt.scatter(xy[i, 0], xy[i, 1], s=80, label=lab)
         plt.text(xy[i, 0], xy[i, 1], lab, fontsize=8, ha="left", va="bottom")
     plt.xlabel("PC1")
     plt.ylabel("PC2")
-    plt.title("PCA of compressed embeddings (flattened)")
+    plt.title(f"PCA of compressed embeddings (flattened)\nPC1: {pc1_var:.1f}%, PC2: {pc2_var:.1f}%, Cumulative: {cum_var:.1f}%")
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
     plt.close()
@@ -167,7 +171,7 @@ def main():
         labels = [str(x) for x in args.labels]
     else:
         for r in records:
-            label = r.get("model_checkpoint") or r.get("label") or _short_label_from_path(r.get("source_path", ""))
+            label = _short_label_from_path(r.get("source_path", "")) or r.get("label") or r.get("model_checkpoint")
             labels.append(_clean_label(str(label)))
 
     embeddings = [r["embedding"] for r in records]
