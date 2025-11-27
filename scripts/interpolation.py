@@ -1,17 +1,15 @@
 import argparse
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
-import math
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
-
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
-
-import matplotlib.pyplot as plt
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def curve_length_from_points(points: torch.Tensor) -> float:
@@ -45,7 +43,9 @@ def filter_records(
     return rows
 
 
-def collate_stages_by_sample(rows: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+def collate_stages_by_sample(
+    rows: List[Dict[str, Any]],
+) -> Dict[int, List[Dict[str, Any]]]:
     by_sid: Dict[int, List[Dict[str, Any]]] = {}
     for r in rows:
         sid = int(r.get("sample_id", -1))
@@ -80,7 +80,9 @@ def compute_convergence(
     input_ids: torch.Tensor,  # [B, T]
 ) -> float:
     attn_ct = torch.ones(
-        (compression_tokens.size(0), compression_tokens.size(1)), dtype=attention_mask.dtype, device=attention_mask.device
+        (compression_tokens.size(0), compression_tokens.size(1)),
+        dtype=attention_mask.dtype,
+        device=attention_mask.device,
     )
     inputs_embeds_with_ct = torch.cat([compression_tokens, inputs_embeds], dim=1)
     attention_mask_with_ct = torch.cat([attn_ct, attention_mask], dim=1)
@@ -365,7 +367,7 @@ def main():
                 "text_eval": text_eval,
                 "bezier_order": int(args.bezier_order),
                 "control_points": learned_ctrl.cpu(),  # [order-1, C, D]
-                "control_point": learned_ctrl.cpu()[0] if learned_ctrl.numel() > 0 else None,
+                "control_point": (learned_ctrl.cpu()[0] if learned_ctrl.numel() > 0 else None),
                 "num_compression_tokens": int(e0.shape[0]),
                 "hidden_size": int(e0.shape[1]),
                 "endpoints": {

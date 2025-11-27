@@ -4,12 +4,12 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import torch
 from datasets import Dataset
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 
 def _short_label_from_path(path: str) -> str:
@@ -47,7 +47,12 @@ def load_single_row(
         "text": row.get("text", ""),
         "embedding": embedding,  # [num_compression_tokens, hidden]
         "num_compression_tokens": int(row.get("num_compression_tokens", embedding.shape[0])),
-        "hidden_size": int(row.get("hidden_size", embedding.shape[1] if embedding.dim() == 2 else embedding.shape[-1])),
+        "hidden_size": int(
+            row.get(
+                "hidden_size",
+                embedding.shape[1] if embedding.dim() == 2 else embedding.shape[-1],
+            )
+        ),
         "model_checkpoint": row.get("model_checkpoint", None),
         "label": _short_label_from_path(dataset_path),
         "final_loss": row.get("final_loss", None),
@@ -58,7 +63,9 @@ def load_single_row(
     return info
 
 
-def compute_pairwise_metrics(embeddings: List[torch.Tensor]) -> Tuple[np.ndarray, np.ndarray]:
+def compute_pairwise_metrics(
+    embeddings: List[torch.Tensor],
+) -> Tuple[np.ndarray, np.ndarray]:
     flat = [e.reshape(-1).detach().cpu().numpy() for e in embeddings]
     X = np.stack(flat, axis=0)
     # L2 distances
@@ -117,7 +124,13 @@ def plot_per_token_l2_vs_baseline(embeddings: List[torch.Tensor], labels: List[s
         per_ckpt_dists.append(d)
     arr = np.stack(per_ckpt_dists, axis=0)  # [num_ckpts, num_tokens]
     plt.figure(figsize=(max(6, arr.shape[1] * 0.3), 4 + 0.2 * len(labels)))
-    sns.heatmap(arr, annot=False, cmap="magma", yticklabels=labels, xticklabels=[str(i) for i in range(num_tokens)])
+    sns.heatmap(
+        arr,
+        annot=False,
+        cmap="magma",
+        yticklabels=labels,
+        xticklabels=[str(i) for i in range(num_tokens)],
+    )
     plt.xlabel("compression token index")
     plt.ylabel("checkpoint")
     plt.title("Per-token L2 distance to baseline")
@@ -133,18 +146,45 @@ def save_metrics_csv(output_dir: str, labels: List[str], l2: np.ndarray, cos_dis
         n = len(labels)
         for i in range(n):
             for j in range(n):
-                f.write(f"{i},{j},{labels[i]},{labels[j]},{l2[i,j]:.6f},{cos_dist[i,j]:.6f}\n")
+                f.write(f"{i},{j},{labels[i]},{labels[j]},{l2[i, j]:.6f},{cos_dist[i, j]:.6f}\n")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Compare compressed embeddings from multiple checkpoints")
-    parser.add_argument("--embedding_paths", type=str, nargs="+", required=True, help="Paths to saved datasets")
-    parser.add_argument("--labels", type=str, nargs="*", default=None, help="Optional labels for each path")
+    parser.add_argument(
+        "--embedding_paths",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Paths to saved datasets",
+    )
+    parser.add_argument(
+        "--labels",
+        type=str,
+        nargs="*",
+        default=None,
+        help="Optional labels for each path",
+    )
     parser.add_argument("--sample_id", type=int, default=None, help="Filter: sample_id to select")
-    parser.add_argument("--text_contains", type=str, default=None, help="Filter: substring present in the sample text")
+    parser.add_argument(
+        "--text_contains",
+        type=str,
+        default=None,
+        help="Filter: substring present in the sample text",
+    )
     parser.add_argument("--stage_index", type=int, default=None, help="Filter for progressive datasets")
-    parser.add_argument("--baseline", type=int, default=0, help="Index of baseline for per-token heatmap")
-    parser.add_argument("--output_dir", type=str, default=None, help="Directory to save figures and metrics")
+    parser.add_argument(
+        "--baseline",
+        type=int,
+        default=0,
+        help="Index of baseline for per-token heatmap",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Directory to save figures and metrics",
+    )
 
     args = parser.parse_args()
 
@@ -188,14 +228,25 @@ def main():
 
     # Plots
     sns.set(style="whitegrid")
-    plot_pairwise_heatmap(l2, labels, title="Pairwise L2 distance", outfile=os.path.join(out_dir, "pairwise_l2.png"))
     plot_pairwise_heatmap(
-        cos_dist, labels, title="Pairwise cosine distance (1 - cos)", outfile=os.path.join(out_dir, "pairwise_cosine.png")
+        l2,
+        labels,
+        title="Pairwise L2 distance",
+        outfile=os.path.join(out_dir, "pairwise_l2.png"),
+    )
+    plot_pairwise_heatmap(
+        cos_dist,
+        labels,
+        title="Pairwise cosine distance (1 - cos)",
+        outfile=os.path.join(out_dir, "pairwise_cosine.png"),
     )
     plot_pca_scatter(embeddings, labels, outfile=os.path.join(out_dir, "pca_scatter.png"))
     baseline_index = max(0, min(int(args.baseline), len(embeddings) - 1))
     plot_per_token_l2_vs_baseline(
-        embeddings, labels, baseline_index=baseline_index, outfile=os.path.join(out_dir, "per_token_l2_vs_baseline.png")
+        embeddings,
+        labels,
+        baseline_index=baseline_index,
+        outfile=os.path.join(out_dir, "per_token_l2_vs_baseline.png"),
     )
 
     # Save a small text info file
