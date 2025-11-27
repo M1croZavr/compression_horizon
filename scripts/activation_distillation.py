@@ -37,12 +37,12 @@ if __name__ == "__main__":
     def _rand_suffix(n=6):
         return "".join(random.choice(string.ascii_lowercase) for _ in range(n))
 
+    os.makedirs("artifacts/experiments", exist_ok=True)
+
     if training_args.progressive_train:
         run_dir_name = f"artifacts/experiments_progressive/ch_{getattr(training_args, 'loss_type', 'l2')}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}_{_rand_suffix(6)}"
-    elif training_args.hybrid_alpha is not None:
-        run_dir_name = f"artifacts/experiments_hybrid_alpha/ch_{getattr(training_args, 'loss_type', 'l2')}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}_{_rand_suffix(6)}"
     else:
-        run_dir_name = f"artifacts/experiments/ch_{getattr(training_args, 'loss_type', 'l2')}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}_{_rand_suffix(6)}"
+        run_dir_name = f"artifacts/experiments/ch_{getattr(training_args, 'loss_type', 'l2')}_hybrid_alpha_{getattr(training_args, 'hybrid_alpha', 'None')}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}_{_rand_suffix(6)}"
 
     # Place at repo root with exact template
     output_dir = run_dir_name
@@ -55,7 +55,9 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
 
     raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
-    train_dataset = raw_dataset.select(range(1))
+
+    if training_args.limit_dataset_items is not None:
+        train_dataset = raw_dataset.select(range(training_args.limit_dataset_items))
     # eval_dataset = raw_dataset.select(range(10, 20))
 
     tokenizer.pad_token = tokenizer.eos_token
