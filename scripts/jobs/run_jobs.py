@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import os
 from itertools import product
 from typing import List, Optional
@@ -167,31 +168,51 @@ if __name__ == "__main__":
 
         remove_unused_columns_str = "True" if args.remove_unused_columns else "False"
 
+        # Build arguments-only string (exactly what the script receives) for hashing
+        args_parts = [
+            f"--remove_unused_columns {remove_unused_columns_str}",
+            f"--num_alignment_layers {num_alignment_layers}",
+            f"--loss_type {loss_type}",
+            f"--max_sequence_length {max_sequence_length}",
+            f"--warmup_steps {args.warmup_steps}",
+            f"--model_checkpoint {model_checkpoint}",
+            f"--per_device_train_batch_size {args.per_device_train_batch_size}",
+            f"--max_optimization_steps_per_sample {args.max_optimization_steps_per_sample}",
+            f"--learning_rate {args.learning_rate}",
+            f"--limit_dataset_items {args.limit_dataset_items}",
+            f"--random_seed {random_seed}",
+            f"--embedding_init_method {embedding_init_method}",
+            f"--fix_position_ids {fix_position_ids}",
+        ]
+        if is_hybrid:
+            args_parts.append(f"--hybrid_alpha {hybrid_alpha}")
+        args_for_hash = " ".join(args_parts).strip()
+
+        # Build deterministic output directory: essential prefix + hash of arguments
+        prefix = f"ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{embedding_init_method}_seq_len_{max_sequence_length}"
+        print("args_for_hash", args_for_hash)
+        cmd_hash8 = hashlib.sha1(args_for_hash.encode("utf-8")).hexdigest()[:8]
+        print("cmd_hash8", cmd_hash8)
+        output_dir = os.path.join("artifacts/experiments", f"{prefix}_{cmd_hash8}")
+
+        # If the directory already exists, treat as duplicate and skip
+        if os.path.isdir(output_dir):
+            print(f"\033[33mSkipping: matching experiment already exists at:\033[0m {output_dir}")
+            continue
+
+        # Compose full command with explicit output_dir
         base_cmd = (
             f"cd {workdir} && {python_path} scripts/activation_distillation.py "
-            f"--remove_unused_columns {remove_unused_columns_str} "
-            f"--num_alignment_layers {num_alignment_layers} "
-            f"--loss_type {loss_type} "
-            f"--max_sequence_length {max_sequence_length} "
-            f"--warmup_steps {args.warmup_steps} "
-            f"--model_checkpoint {model_checkpoint} "
-            f"--per_device_train_batch_size {args.per_device_train_batch_size} "
-            f"--max_optimization_steps_per_sample {args.max_optimization_steps_per_sample} "
-            f"--learning_rate {args.learning_rate} "
-            f"--limit_dataset_items {args.limit_dataset_items} "
-            f"--random_seed {random_seed} "
-            f"--embedding_init_method {embedding_init_method} "
-            f"--fix_position_ids {fix_position_ids} "
+            f"{args_for_hash} "
+            f"--output_dir {output_dir} "
         )
 
-        if is_hybrid:
-            base_cmd += f"--hybrid_alpha {hybrid_alpha} "
-
         job_desc = (
-            f"CH: compress init={embedding_init_method} "
+            f"CH: {cmd_hash8} init={embedding_init_method} "
             f"hybrid_alpha={hybrid_alpha} "
             f"seq_len={max_sequence_length} seed={random_seed} "
             f"ckpt={model_checkpoint} "
+            f"fix_position_ids={fix_position_ids} "
             f"#{author_name} #rnd #multimodal @mrsndmn"
         )
 
