@@ -411,6 +411,7 @@ class MyTrainer:
                             "num_input_tokens": int(sample_attention_mask.sum().item()),
                             "num_compression_tokens": int(num_compression_tokens),
                             "hidden_size": hidden_size,
+                            "fix_position_ids": self.args.fix_position_ids,
                             "loss_type": self.args.loss_type,
                             "hybrid_alpha": self.args.hybrid_alpha,
                             "num_alignment_layers": self.args.num_alignment_layers,
