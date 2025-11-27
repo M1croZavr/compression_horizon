@@ -126,3 +126,14 @@ class MyTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Whether to persist intermediate compression tokens for each stage."},
     )
+    # Precision control
+    dtype: str = field(
+        default="float32",
+        metadata={
+            "help": (
+                "Torch dtype for model and training. "
+                "One of: auto, float32|fp32, bfloat16|bf16, float16|fp16. "
+                "This overrides the torch_dtype used to load the model."
+            )
+        },
+    )

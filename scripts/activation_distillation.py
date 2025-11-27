@@ -34,6 +34,19 @@ if __name__ == "__main__":
     hf_parser = transformers.HfArgumentParser(MyTrainingArguments)
     (training_args,) = hf_parser.parse_args_into_dataclasses()
 
+    def _resolve_torch_dtype(dtype_str: str):
+        s = (dtype_str or "").lower()
+        if s in {"auto"}:
+            return "auto"
+        if s in {"float32", "fp32"}:
+            return torch.float32
+        if s in {"bfloat16", "bf16"}:
+            return torch.bfloat16
+        if s in {"float16", "fp16"}:
+            return torch.float16
+        # Fallback to float32 for unknown values
+        return torch.float32
+
     # Determine output directory:
     # - If user provided --output_dir, respect it.
     # - Otherwise, construct: artifacts/{experiments|experiments_progressive}/
@@ -55,12 +68,11 @@ if __name__ == "__main__":
     args_dict.pop("output_dir", None)
     args_dict.pop("logging_dir", None)
     args_json = json.dumps(args_dict, sort_keys=True, ensure_ascii=False, default=str)
-    args_hash8 = hashlib.sha1(args_json.encode("utf-8")).hexdigest()[:8]
 
     # If output_dir not provided, compose it using the prefix + args_hash
     output_dir = training_args.output_dir
     if not output_dir:
-        output_dir = os.path.join(default_base, f"{prefix}_{args_hash8}")
+        output_dir = os.path.join(default_base, f"{prefix}")
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -70,37 +82,29 @@ if __name__ == "__main__":
     # Attach to args so trainer can save artifacts there (respecting any user-provided output_dir)
     training_args.output_dir = output_dir
 
-    # Persist argument metadata for reproducibility and auditing
-    try:
-        with open(os.path.join(output_dir, "args.json"), "w", encoding="utf-8") as f:
-            f.write(args_json)
-        with open(os.path.join(output_dir, "args_hash.txt"), "w", encoding="utf-8") as f:
-            f.write(args_hash8 + "\n")
-        # Also persist raw CLI (excluding --output_dir) and its hash for auditability
-        argv = sys.argv[1:]
-        filtered_argv: list[str] = []
-        skip_next = False
-        for token in argv:
-            if skip_next:
-                skip_next = False
-                continue
-            if token == "--output_dir":
-                skip_next = True
-                continue
-            if token.startswith("--output_dir="):
-                continue
-            filtered_argv.append(token)
-        cmdline_str = " ".join(filtered_argv).strip()
-        cmd_hash8 = hashlib.sha1(cmdline_str.encode("utf-8")).hexdigest()[:8]
-        with open(os.path.join(output_dir, "cmd.txt"), "w", encoding="utf-8") as f:
-            f.write(cmdline_str + "\n")
-        with open(os.path.join(output_dir, "cmd_hash.txt"), "w", encoding="utf-8") as f:
-            f.write(cmd_hash8 + "\n")
-    except Exception:
-        # Non-fatal: do not block training if metadata save fails
-        pass
+    # Also persist raw CLI (excluding --output_dir) and its hash for auditability
+    argv = sys.argv[1:]
+    filtered_argv: list[str] = []
+    skip_next = False
+    for token in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--output_dir":
+            skip_next = True
+            continue
+        if token.startswith("--output_dir="):
+            continue
+        filtered_argv.append(token)
+    cmdline_str = " ".join(filtered_argv).strip()
+    cmd_hash8 = hashlib.sha1(cmdline_str.encode("utf-8")).hexdigest()[:8]
+    with open(os.path.join(output_dir, "cmd.txt"), "w", encoding="utf-8") as f:
+        f.write(cmdline_str + "\n")
+    with open(os.path.join(output_dir, "cmd_hash.txt"), "w", encoding="utf-8") as f:
+        f.write(cmd_hash8 + "\n")
 
-    model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch.float32)
+    torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
+    model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
 
     raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)

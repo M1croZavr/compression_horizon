@@ -33,6 +33,7 @@ def generate_from_compression(
     generated_token_ids = torch.empty((batch_size, 0), dtype=torch.long, device=device)  # [batch, 0]
     # Model's input embeddings layer
     input_embeddings = model.get_input_embeddings()
+    torch_dtype = input_embeddings.weight.dtype
 
     for _ in range(max_new_tokens):
         # Embeddings
@@ -43,6 +44,7 @@ def generate_from_compression(
         united_token_embeddings = torch.cat(
             [compressed_embeddings, generated_embeddings], dim=1
         )  # [batch, mem + sequence, hidden]
+        united_token_embeddings = united_token_embeddings.to(torch_dtype)
 
         # Attention mask
         compression_attention_mask = torch.ones(

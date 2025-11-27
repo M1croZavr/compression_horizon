@@ -86,6 +86,11 @@ def build_args() -> argparse.Namespace:
         default=None,
         help="List of model checkpoints to grid over (overrides --model-checkpoint).",
     )
+    parser.add_argument(
+        "--dtype",
+        default="float32",
+        help="Torch dtype to use: auto | float32/fp32 | bfloat16/bf16 | float16/fp16.",
+    )
 
     # Training defaults that were previously hardcoded
     parser.add_argument("--per_device_train_batch_size", type=int, default=1)
@@ -174,6 +179,7 @@ if __name__ == "__main__":
             f"--num_alignment_layers {num_alignment_layers}",
             f"--loss_type {loss_type}",
             f"--max_sequence_length {max_sequence_length}",
+            f"--dtype {args.dtype}",
             f"--warmup_steps {args.warmup_steps}",
             f"--model_checkpoint {model_checkpoint}",
             f"--per_device_train_batch_size {args.per_device_train_batch_size}",
@@ -190,9 +196,7 @@ if __name__ == "__main__":
 
         # Build deterministic output directory: essential prefix + hash of arguments
         prefix = f"ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{embedding_init_method}_seq_len_{max_sequence_length}"
-        print("args_for_hash", args_for_hash)
         cmd_hash8 = hashlib.sha1(args_for_hash.encode("utf-8")).hexdigest()[:8]
-        print("cmd_hash8", cmd_hash8)
         output_dir = os.path.join("artifacts/experiments", f"{prefix}_{cmd_hash8}")
 
         # If the directory already exists, treat as duplicate and skip
@@ -212,6 +216,7 @@ if __name__ == "__main__":
             f"hybrid_alpha={hybrid_alpha} "
             f"seq_len={max_sequence_length} seed={random_seed} "
             f"ckpt={model_checkpoint} "
+            f"dtype={args.dtype} "
             f"fix_position_ids={fix_position_ids} "
             f"#{author_name} #rnd #multimodal @mrsndmn"
         )
