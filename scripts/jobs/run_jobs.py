@@ -152,11 +152,12 @@ if __name__ == "__main__":
     jobs_launched = 0
     jobs_dry = 0
 
-    for hybrid_alpha, embedding_init_method, random_seed, max_sequence_length, model_checkpoint in product(
+    for hybrid_alpha, embedding_init_method, random_seed, max_sequence_length, fix_position_ids, model_checkpoint in product(
         hybrid_alpha_values,
         args.embedding_init_methods,
         args.random_seeds,
         args.max_sequence_lengths,
+        args.fix_position_ids,
         model_checkpoints,
     ):
         jobs_planned += 1
@@ -180,6 +181,7 @@ if __name__ == "__main__":
             f"--limit_dataset_items {args.limit_dataset_items} "
             f"--random_seed {random_seed} "
             f"--embedding_init_method {embedding_init_method} "
+            f"--fix_position_ids {fix_position_ids} "
         )
 
         if is_hybrid:

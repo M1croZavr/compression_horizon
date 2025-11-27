@@ -361,9 +361,12 @@ class MyTrainer:
                 # Log current step progress
                 with torch.no_grad():
                     progress_bar.update(1)
+                    alignment_loss_item = None
+                    if alignment_loss is not None:
+                        alignment_loss_item = alignment_loss.item()
                     progress_bar.set_postfix(
                         loss=loss.item(),
-                        loss_alignment=alignment_loss.item(),
+                        loss_alignment=alignment_loss_item,
                         convergece_per_sample=convergence_per_sample.mean().item(),
                         lr=lr_scheduler.get_last_lr()[0],
                     )
