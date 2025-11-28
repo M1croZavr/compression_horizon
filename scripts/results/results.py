@@ -359,15 +359,22 @@ def to_mean_std_cell(val_mean: Optional[float], val_std: Optional[float], is_int
     return f"{mean_str} $\\pm$ {std_str}"
 
 
-def build_latex_table(summaries: List[RunSummary], include_progressive: bool) -> str:
+def build_latex_table(
+    summaries: List[RunSummary], include_progressive: bool, selected_columns: Optional[List[str]] = None
+) -> str:
     """
     Build a LaTeX tabular with key properties and metrics using tabulate.
+
+    Args:
+        summaries: List of RunSummary objects to include in the table
+        include_progressive: Whether to include progressive-specific columns
+        selected_columns: Optional list of column field names to include. If None, includes all columns.
     """
     # Columns for properties
     prop_cols = [
         ("run_hash", "RunHash"),
         ("loss_type", "Loss"),
-        ("hybrid_alpha", "Hybrid W"),
+        ("hybrid_alpha", "Hybrid $\\alpha$"),
         ("embedding_init_method", "Init"),
         ("max_sequence_length", "SeqLen"),
         ("number_of_mem_tokens", "MemT"),
@@ -375,7 +382,7 @@ def build_latex_table(summaries: List[RunSummary], include_progressive: bool) ->
         ("fix_position_ids", "FixPosIds"),
         ("model_checkpoint", "Model"),
         ("dtype", "DType"),
-        # ("max_optimization_steps_per_sample", "MaxSteps"),
+        ("max_optimization_steps_per_sample", "MaxSteps"),
     ]
     # Metric columns (non-progressive)
     metric_cols = [
@@ -389,8 +396,16 @@ def build_latex_table(summaries: List[RunSummary], include_progressive: bool) ->
         ("convergence_threshold", "ConvThresh", False),
     ]
 
+    # Filter columns if selected_columns is provided
+    if selected_columns is not None:
+        selected_set = set(selected_columns)
+        prop_cols = [col for col in prop_cols if col[0] in selected_set]
+        metric_cols = [col for col in metric_cols if col[0] in selected_set]
+        progressive_metric_cols = [col for col in progressive_metric_cols if col[0] in selected_set]
+
     headers = [hdr for _, hdr in prop_cols] + [hdr for _, hdr, _ in metric_cols]
-    if include_progressive:
+    # Include progressive columns if: (1) include_progressive flag is set, OR (2) user explicitly selected them
+    if include_progressive or (selected_columns is not None and progressive_metric_cols):
         headers += [hdr for _, hdr, _ in progressive_metric_cols]
 
     table_rows: List[List[str]] = []
@@ -405,28 +420,29 @@ def build_latex_table(summaries: List[RunSummary], include_progressive: bool) ->
                 cell = "" if val is None else str(val)
             row.append(latex_escape(cell))
         # Metrics
-        if s.dataset_type == "compressed_prefixes":
-            # ConvSteps
-            row.append(to_mean_std_cell(s.convergence_after_steps_mean, s.convergence_after_steps_std, is_int=True))
-            # FinalConv
-            row.append(to_mean_std_cell(s.final_convergence_mean, s.final_convergence_std, is_int=False))
-            # FinalLoss
-            row.append(to_mean_std_cell(s.final_loss_mean, s.final_loss_std, is_int=False))
-        else:
-            # progressive row: ConvSteps N/A
-            row.append("")
-            # FinalConv
-            row.append(to_mean_std_cell(s.final_convergence_mean, s.final_convergence_std, is_int=False))
-            # FinalLoss
-            row.append(to_mean_std_cell(s.final_loss_mean, s.final_loss_std, is_int=False))
-        # Progressive extras if requested
-        if include_progressive:
-            if s.dataset_type == "progressive_prefixes":
-                row.append(to_mean_std_cell(s.steps_taken_mean, s.steps_taken_std, is_int=True))
-                row.append("" if s.convergence_threshold is None else f"{s.convergence_threshold:.2f}")
-            else:
-                row.append("")
-                row.append("")
+        for field_name, _hdr, is_int in metric_cols:
+            if field_name == "convergence_after_steps_mean":
+                if s.dataset_type == "compressed_prefixes":
+                    row.append(to_mean_std_cell(s.convergence_after_steps_mean, s.convergence_after_steps_std, is_int=is_int))
+                else:
+                    row.append("")
+            elif field_name == "final_convergence_mean":
+                row.append(to_mean_std_cell(s.final_convergence_mean, s.final_convergence_std, is_int=is_int))
+            elif field_name == "final_loss_mean":
+                row.append(to_mean_std_cell(s.final_loss_mean, s.final_loss_std, is_int=is_int))
+        # Progressive extras if requested or explicitly selected
+        if include_progressive or (selected_columns is not None and progressive_metric_cols):
+            for field_name, _hdr, is_int in progressive_metric_cols:
+                if field_name == "steps_taken_mean":
+                    if s.dataset_type == "progressive_prefixes":
+                        row.append(to_mean_std_cell(s.steps_taken_mean, s.steps_taken_std, is_int=is_int))
+                    else:
+                        row.append("")
+                elif field_name == "convergence_threshold":
+                    if s.dataset_type == "progressive_prefixes":
+                        row.append("" if s.convergence_threshold is None else f"{s.convergence_threshold:.2f}")
+                    else:
+                        row.append("")
         table_rows.append(row)
 
     # Use latex_raw to respect our own escaping and math cells
@@ -473,6 +489,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=str,
         default=None,
         help="Optional path to save the LaTeX table; prints to stdout otherwise.",
+    )
+    parser.add_argument(
+        "--columns",
+        nargs="*",
+        default=None,
+        help="Specify which columns to include in the table. Available columns: "
+        "run_hash, loss_type, hybrid_alpha, embedding_init_method, max_sequence_length, "
+        "number_of_mem_tokens, num_alignment_layers, fix_position_ids, model_checkpoint, "
+        "dtype, max_optimization_steps_per_sample, convergence_after_steps_mean, "
+        "final_convergence_mean, final_loss_mean, steps_taken_mean, convergence_threshold. "
+        "If not specified, all columns are included.",
     )
 
     # Property filters
@@ -526,6 +553,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     def sort_key(s: RunSummary):
         return (
             0 if s.dataset_type == "compressed_prefixes" else 1,
+            s.model_checkpoint,
             str(s.loss_type or ""),
             str(s.embedding_init_method or ""),
             int(s.max_sequence_length or 0),
@@ -567,7 +595,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return True
 
     summaries_sorted = [s for s in summaries_sorted if matches_filters(s)]
-    latex = build_latex_table(summaries_sorted, include_progressive=args.include_progressive)
+    latex = build_latex_table(summaries_sorted, include_progressive=args.include_progressive, selected_columns=args.columns)
 
     if args.output:
         out_path = Path(args.output)
