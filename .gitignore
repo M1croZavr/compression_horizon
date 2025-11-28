@@ -17,3 +17,5 @@ artifacts/
 
 # Debug
 /tests/bar.py
+
+trainer_output/

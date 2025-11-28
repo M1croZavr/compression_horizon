@@ -57,10 +57,19 @@ class MyTrainer:
                 output_hidden_states=True,
             )
         # Hidden state: [batch, mem + sequence, hidden]
+        extra_kwargs = {}
+        if self.args.fix_position_ids:
+            position_ids = torch.arange(-1, token_embeddings.shape[1], device=token_embeddings.device)
+            position_ids[0] = 0
+            position_ids = position_ids.unsqueeze(0)
+            # print('position_ids', position_ids)
+            extra_kwargs["position_ids"] = position_ids
+
         compression_outputs = model(
             inputs_embeds=united_token_embeddings,
             attention_mask=united_attention_mask,
             output_hidden_states=True,
+            **extra_kwargs,
         )
 
         # Number of hidden states: 1 (embedder) + number of transformer decoder layers
@@ -182,10 +191,14 @@ class MyTrainer:
                     sigma = sigma + eps * torch.eye(sigma.shape[0], device=sigma.device, dtype=sigma.dtype)
                     covariance = 1e-5 * sigma
                     try:
-                        mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=covariance)
+                        mvn_dist = torch.distributions.MultivariateNormal(
+                            mvn_mu.to(torch.float32), covariance_matrix=covariance.to(torch.float32)
+                        )
                     except Exception:
                         diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
-                        mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=torch.diag(diag_cov))
+                        mvn_dist = torch.distributions.MultivariateNormal(
+                            mvn_mu.to(torch.float32), covariance_matrix=torch.diag(diag_cov).to(torch.float32)
+                        )
                 else:
                     init_method = "random"
         return init_method, mvn_dist
@@ -199,12 +212,12 @@ class MyTrainer:
         )
 
     @staticmethod
-    def _init_compression_tokens(batch_size, num_tokens, hidden_size, init_method, mvn_dist):
+    def _init_compression_tokens(batch_size, num_tokens, hidden_size, init_method, mvn_dist, dtype):
         if init_method == "mvnormal" and mvn_dist is not None:
             samples = mvn_dist.sample((batch_size, num_tokens))
-            trainable_embeddings = torch.nn.Parameter(samples)
+            trainable_embeddings = torch.nn.Parameter(samples.to(dtype=torch.float32))
         else:
-            trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size]))
+            trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32))
         return trainable_embeddings
 
     def _build_optimizer_and_scheduler(self, compression_token_embeddings):
@@ -292,6 +305,8 @@ class MyTrainer:
         for batch in dataloader:
             model.train()
             input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
+            # print("input_ids", input_ids.shape)
+
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
             batch_size = input_ids.shape[0]
             with torch.no_grad():
@@ -300,7 +315,12 @@ class MyTrainer:
 
             # Trainable compression tokens per sample
             compression_token_embeddings = self._init_compression_tokens(
-                batch_size, num_compression_tokens, hidden_size, init_method, mvn_dist
+                batch_size,
+                num_compression_tokens,
+                hidden_size,
+                init_method,
+                mvn_dist,
+                dtype=token_embeddings.dtype,
             )  # [batch, mem, hidden]
             compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
@@ -320,10 +340,35 @@ class MyTrainer:
                 total=self.args.max_optimization_steps_per_sample,
             )
             progress_bar.set_description("Training")
-            for _ in progress_bar:
+
+            total_per_sample_convergence = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    input_ids.shape[0],
+                ],
+                dtype=torch.long,
+            )
+            prev_convergence = None
+            # prev_convergence_per_sample = None
+            total_per_sample_convergence_099 = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    input_ids.shape[0],
+                ],
+                dtype=torch.long,
+            )
+            total_per_sample_convergence_095 = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    input_ids.shape[0],
+                ],
+                dtype=torch.long,
+            )
+
+            for step_i in progress_bar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
                 united_token_embeddings = torch.cat(
-                    [compression_token_embeddings, token_embeddings],
+                    [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings],
                     dim=1,
                 )  # [batch, mem + sequence, hidden]
                 united_attention_mask = torch.cat(
@@ -347,13 +392,36 @@ class MyTrainer:
                 )
                 # Calculate gradients and update compression embeddings
                 loss.backward()
+
+                if prev_convergence is not None:
+                    # Zero gradients for converged items
+                    compression_token_embeddings.grad[prev_convergence] = 0
+                    # print(
+                    #     "Non zero gradients:",
+                    #     (compression_token_embeddings.grad.sum(-1) != 0).sum(),
+                    #     "/",
+                    #     united_token_embeddings.shape[0],
+                    #     "prev_convergence_per_sample",
+                    #     prev_convergence_per_sample,
+                    # )
+
+                compression_token_embeddings_clone = compression_token_embeddings.detach().clone()
+
                 optimizer.step()
+
+                if prev_convergence is not None:
+                    with torch.no_grad():
+                        compression_token_embeddings[prev_convergence] = compression_token_embeddings_clone[prev_convergence]
 
                 # Log current step progress
                 with torch.no_grad():
                     progress_bar.update(1)
+                    alignment_loss_item = None
+                    if alignment_loss is not None:
+                        alignment_loss_item = alignment_loss.item()
                     progress_bar.set_postfix(
                         loss=loss.item(),
+                        loss_alignment=alignment_loss_item,
                         convergece_per_sample=convergence_per_sample.mean().item(),
                         lr=lr_scheduler.get_last_lr()[0],
                     )
@@ -367,9 +435,26 @@ class MyTrainer:
                         ground_truth_text,
                     )
 
+                total_per_sample_convergence[step_i, :] = convergence_per_sample < 1.0
+                total_per_sample_convergence_099[step_i, :] = convergence_per_sample < 0.99
+                total_per_sample_convergence_095[step_i, :] = convergence_per_sample < 0.95
+                prev_convergence = convergence_per_sample == 1.0
+                # prev_convergence_per_sample = convergence_per_sample
+
+                if (convergence_per_sample == 1.0).all():
+                    print(f"Early stopping: compression converged in {step_i} steps")
+                    break
+
                 # Update learning rate
                 optimizer.zero_grad(set_to_none=True)
                 lr_scheduler.step()
+
+            total_per_sample_convergence_sum = total_per_sample_convergence.sum(dim=0)
+            print("total_per_sample_convergence_sum", total_per_sample_convergence_sum)
+            total_per_sample_convergence_099_sum = total_per_sample_convergence_099.sum(dim=0)
+            print("total_per_sample_convergence_099_sum", total_per_sample_convergence_099_sum)
+            total_per_sample_convergence_095_sum = total_per_sample_convergence_095.sum(dim=0)
+            print("total_per_sample_convergence_095_sum", total_per_sample_convergence_095_sum)
 
             # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
             with torch.no_grad():
@@ -384,6 +469,7 @@ class MyTrainer:
                     embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
                     compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
                     compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
+                    item_convergence_per_sample = total_per_sample_convergence_sum[j].item()
                     collected_rows.append(
                         {
                             "sample_id": sample_id_counter,
@@ -391,13 +477,18 @@ class MyTrainer:
                             "embedding": embedding,  # [mem, hidden]
                             "final_loss": last_loss,
                             "final_convergence": last_convergence_per_sample[j].item(),
+                            "convergence_after_steps": item_convergence_per_sample,
+                            "convergence_0.99_after_steps": int(total_per_sample_convergence_099_sum[j].item()),
+                            "convergence_0.95_after_steps": int(total_per_sample_convergence_095_sum[j].item()),
                             "compression_tokens_mean": compression_token_embeddings_mean,
                             "compression_tokens_std": compression_token_embeddings_std,
                             "num_input_tokens": int(sample_attention_mask.sum().item()),
                             "num_compression_tokens": int(num_compression_tokens),
                             "hidden_size": hidden_size,
+                            "fix_position_ids": self.args.fix_position_ids,
                             "loss_type": self.args.loss_type,
                             "hybrid_alpha": self.args.hybrid_alpha,
+                            "dtype": self.args.dtype,
                             "num_alignment_layers": self.args.num_alignment_layers,
                             "model_checkpoint": self.args.model_checkpoint,
                             "max_optimization_steps_per_sample": self.args.max_optimization_steps_per_sample,
@@ -443,7 +534,12 @@ class MyTrainer:
 
             hidden_size = full_model_token_embeddings.shape[-1]
             compression_tokens = self._init_compression_tokens(
-                batch_size, num_compression_tokens, hidden_size, init_method, mvn_dist
+                batch_size,
+                num_compression_tokens,
+                hidden_size,
+                init_method,
+                mvn_dist,
+                dtype=full_model_token_embeddings.dtype,
             )
             compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
@@ -473,7 +569,9 @@ class MyTrainer:
                 steps_taken = 0
 
                 for i in pbar:
-                    model_tokens_with_compression_tokens = torch.cat([compression_tokens, inputs_embeds], dim=1)
+                    model_tokens_with_compression_tokens = torch.cat(
+                        [compression_tokens.to(inputs_embeds.dtype), inputs_embeds], dim=1
+                    )
                     attention_mask_with_compression_tokens = torch.cat(
                         [compression_tokens_attention_mask, attention_mask], dim=1
                     )
@@ -532,6 +630,7 @@ class MyTrainer:
                                 "num_compression_tokens": int(num_compression_tokens),
                                 "hidden_size": int(comp_tokens_cpu.shape[-1]),
                                 "loss_type": getattr(self.args, "loss_type", "l2"),
+                                "dtype": getattr(self.args, "dtype", "float32"),
                                 "model_checkpoint": getattr(self.args, "model_checkpoint", ""),
                                 "max_optimization_steps_per_sample": int(
                                     getattr(

@@ -44,12 +44,19 @@ class MyTrainingArguments(TrainingArguments):
         metadata={"help": "Max sequence length for compressing in training."},
     )
     max_optimization_steps_per_sample: int = field(
-        default=10_000,
+        default=1_000,
         metadata={"help": "Max optimization steps for training 1 sample."},
     )
     random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)."})
+    fix_position_ids: bool = field(
+        default=False,
+    )
+    limit_dataset_items: int | None = field(default=1)
 
     # Overrides with changed defaults
+    # optim: str = field(
+    #     default="sgd",
+    # )
     per_device_train_batch_size: int = field(
         default=1,
         metadata={"help": "Batch size per device accelerator core/CPU for training."},
@@ -71,7 +78,9 @@ class MyTrainingArguments(TrainingArguments):
             )
         },
     )
-    learning_rate: float = field(default=1e-3, metadata={"help": "The initial learning rate for an optimizer."})
+    learning_rate: float = field(default=1e-2, metadata={"help": "The initial learning rate for an optimizer."})
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.9
     weight_decay: float = field(
         default=0.01,
         metadata={"help": "Weight decay for an optimizer if we apply some."},
@@ -121,4 +130,15 @@ class MyTrainingArguments(TrainingArguments):
     save_progressive_artifacts: bool = field(
         default=True,
         metadata={"help": "Whether to persist intermediate compression tokens for each stage."},
+    )
+    # Precision control
+    dtype: str = field(
+        default="float32",
+        metadata={
+            "help": (
+                "Torch dtype for model and training. "
+                "One of: auto, float32|fp32, bfloat16|bf16, float16|fp16. "
+                "This overrides the torch_dtype used to load the model."
+            )
+        },
     )

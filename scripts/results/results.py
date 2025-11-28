@@ -1,0 +1,611 @@
+#!/usr/bin/env python3
+"""
+Results aggregation and LaTeX table printer for compression_horizon experiments.
+
+This script scans experiment artifact folders produced by MyTrainer (see
+src/compression_horizon/train/trainer.py) and builds a LaTeX table with:
+- experiment properties (loss type, init, seq len, etc.)
+- metrics averaged over samples with standard deviation (mean ± std)
+
+Supported artifact layouts:
+- Non-progressive runs in: artifacts/experiments/<run_name>/compressed_prefixes
+- Progressive runs in:     artifacts/experiments_progressive/<run_name>/progressive_prefixes
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import textwrap
+from dataclasses import dataclass
+from pathlib import Path
+from statistics import mean, pstdev
+from typing import Dict, Iterable, List, Optional, Tuple
+
+from datasets import load_from_disk
+from tabulate import tabulate
+from tqdm.auto import tqdm
+
+# ------------------------------- Utilities --------------------------------- #
+
+
+@dataclass
+class RunSummary:
+    # Identifiers
+    run_dir: str
+    run_hash: str
+    dataset_type: str  # "compressed_prefixes" | "progressive_prefixes"
+    # Properties (best-effort from saved rows and/or run_dir name)
+    dtype: Optional[str] = None
+    loss_type: Optional[str] = None
+    hybrid_alpha: Optional[str] = None
+    embedding_init_method: Optional[str] = None
+    max_sequence_length: Optional[int] = None
+    number_of_mem_tokens: Optional[int] = None
+    num_alignment_layers: Optional[int] = None
+    inverted_alignment: Optional[bool] = None
+    fix_position_ids: Optional[bool] = None
+    model_checkpoint: Optional[str] = None
+    max_optimization_steps_per_sample: Optional[int] = None
+    # Metrics (aggregated across samples)
+    convergence_after_steps_mean: Optional[float] = None
+    convergence_after_steps_std: Optional[float] = None
+    final_convergence_mean: Optional[float] = None
+    final_convergence_std: Optional[float] = None
+    final_loss_mean: Optional[float] = None
+    final_loss_std: Optional[float] = None
+    # Progressive-only optional extras
+    steps_taken_mean: Optional[float] = None
+    steps_taken_std: Optional[float] = None
+    convergence_threshold: Optional[float] = None
+
+
+LATEX_ESCAPE_MAP = {
+    "&": r"\&",
+    "%": r"\%",
+    "$": r"\$",
+    "#": r"\#",
+    "_": r"\_",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+    "\\": r"\textbackslash{}",
+}
+
+
+def latex_escape(text: Optional[str]) -> str:
+    if text is None:
+        return ""
+    out = []
+    for ch in str(text):
+        out.append(LATEX_ESCAPE_MAP.get(ch, ch))
+    return "".join(out)
+
+
+def parse_run_name_for_properties(run_name: str) -> Dict[str, Optional[str]]:
+    """
+    Parse fields injected in activation_distillation.py:
+    - Non-progressive: ch_{loss}_hybrid_alpha_{alpha}_init_{init}_seq_len_{L}_{suffix}
+    - Progressive:     ch_{loss}_init_{init}_seq_len_{L}_{suffix}
+    """
+    props: Dict[str, Optional[str]] = {
+        "loss_type": None,
+        "hybrid_alpha": None,
+        "embedding_init_method": None,
+        "max_sequence_length": None,
+    }
+    # Generic patterns
+    m_loss = re.search(r"ch_([^_]+)", run_name)
+    if m_loss:
+        props["loss_type"] = m_loss.group(1)
+    m_alpha = re.search(r"hybrid_alpha_([^_]+)", run_name)
+    if m_alpha:
+        props["hybrid_alpha"] = m_alpha.group(1)
+    m_init = re.search(r"init_([^_]+)", run_name)
+    if m_init:
+        props["embedding_init_method"] = m_init.group(1)
+    m_len = re.search(r"seq_len_([0-9]+)", run_name)
+    if m_len:
+        props["max_sequence_length"] = int(m_len.group(1))
+    return props
+
+
+def discover_run_datasets(base_dirs: Iterable[str]) -> List[Tuple[str, str]]:
+    """
+    Return list of tuples: (dataset_path, dataset_type)
+    dataset_type in {"compressed_prefixes", "progressive_prefixes"}
+    """
+    results: List[Tuple[str, str]] = []
+    for base in base_dirs:
+        if not base:
+            continue
+        base_path = Path(base)
+        if not base_path.exists():
+            continue
+        for run_dir in sorted([p for p in base_path.iterdir() if p.is_dir()]):
+            # Look for known dataset subfolders
+            for ds_type in ("compressed_prefixes", "progressive_prefixes"):
+                ds_path = run_dir / ds_type
+                # A HF dataset saved_to_disk has a "dataset_info.json" or "state.json" and an "arrow" subdir
+                if ds_path.exists() and ds_path.is_dir():
+                    results.append((str(ds_path), ds_type))
+    return results
+
+
+def safe_mean(values: List[float]) -> Optional[float]:
+    return mean(values) if values else None
+
+
+def safe_std(values: List[float]) -> Optional[float]:
+    # population std (to keep deterministic for small N), use pstdev
+    return pstdev(values) if values else None
+
+
+abbreviation = {
+    "loss_type": {
+        "cosine": "cos",
+        "cross_entropy": "CE",
+    },
+    "embedding_init_method": {
+        "mvnormal": "mvnorm",
+    },
+    "model_checkpoint": {
+        "HuggingFaceTB/SmolLM2-1.7B": "SLM2-1.7B",
+        "Qwen/Qwen3-4B": "Q3-4B",
+        "unsloth/Llama-3.2-3B": "L3.2-3B",
+    },
+}
+
+
+def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
+    # Pull common properties – they should be constant within a run
+    props_from_rows: Dict[str, Optional[object]] = {}
+    for key in (
+        "loss_type",
+        "hybrid_alpha",
+        "num_alignment_layers",
+        "fix_position_ids",
+        "model_checkpoint",
+        "max_optimization_steps_per_sample",
+        "num_compression_tokens",
+        "dtype",
+    ):
+        val = None
+        for r in ds_rows:
+            if key in r:
+                val = r[key]
+                break
+        props_from_rows[key] = val
+
+    run_name = Path(run_dir).parent.name
+    parsed = parse_run_name_for_properties(run_name)
+
+    conv_steps = [r.get("convergence_after_steps") for r in ds_rows if r.get("convergence_after_steps") is not None]
+    fin_conv = [r.get("final_convergence") for r in ds_rows if r.get("final_convergence") is not None]
+    fin_loss = [r.get("final_loss") for r in ds_rows if r.get("final_loss") is not None]
+
+    run_dir_parent = str(Path(run_dir).parent)
+    run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
+    if not os.path.exists(run_hash_file):
+        print("Can't find run hash file:", run_hash_file)
+        return None
+
+    with open(run_hash_file, "r") as hash_file:
+        run_hash = hash_file.readline()
+
+    loss_type = props_from_rows.get("loss_type") or parsed.get("loss_type")
+    if loss_type in abbreviation["loss_type"]:
+        loss_type = abbreviation["loss_type"][loss_type]
+
+    embedding_init_method = parsed.get("embedding_init_method")
+    if embedding_init_method in abbreviation.get("embedding_init_method", {}):
+        embedding_init_method = abbreviation["embedding_init_method"][embedding_init_method]
+
+    model_checkpoint = str(props_from_rows["model_checkpoint"]) if props_from_rows.get("model_checkpoint") is not None else None
+    if model_checkpoint in abbreviation.get("model_checkpoint", {}):
+        model_checkpoint = abbreviation["model_checkpoint"][model_checkpoint]
+
+    summary = RunSummary(
+        run_dir=run_dir_parent,
+        run_hash=run_hash,
+        dataset_type="compressed_prefixes",
+        loss_type=loss_type,
+        hybrid_alpha=str(
+            props_from_rows.get("hybrid_alpha")
+            if props_from_rows.get("hybrid_alpha") is not None
+            else parsed.get("hybrid_alpha")
+        ),
+        dtype=(props_from_rows.get("dtype")),
+        embedding_init_method=embedding_init_method,
+        max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
+        number_of_mem_tokens=(
+            int(props_from_rows["num_compression_tokens"])
+            if props_from_rows.get("num_compression_tokens") is not None
+            else None
+        ),
+        num_alignment_layers=(
+            int(props_from_rows["num_alignment_layers"]) if props_from_rows.get("num_alignment_layers") is not None else None
+        ),
+        inverted_alignment=None,  # not persisted in rows; unknown
+        fix_position_ids=(
+            bool(props_from_rows["fix_position_ids"]) if props_from_rows.get("fix_position_ids") is not None else None
+        ),
+        model_checkpoint=model_checkpoint,
+        max_optimization_steps_per_sample=(
+            int(props_from_rows["max_optimization_steps_per_sample"])
+            if props_from_rows.get("max_optimization_steps_per_sample") is not None
+            else None
+        ),
+        convergence_after_steps_mean=safe_mean([float(x) for x in conv_steps]),
+        convergence_after_steps_std=safe_std([float(x) for x in conv_steps]),
+        final_convergence_mean=safe_mean([float(x) for x in fin_conv]),
+        final_convergence_std=safe_std([float(x) for x in fin_conv]),
+        final_loss_mean=safe_mean([float(x) for x in fin_loss]),
+        final_loss_std=safe_std([float(x) for x in fin_loss]),
+    )
+    return summary
+
+
+def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
+    """
+    For progressive runs, aggregate final stage per sample_id.
+    We compute final_loss, final_convergence for the last stage and steps_taken stats.
+    """
+    # Properties from run name (progressive template lacks hybrid_alpha)
+    run_name = Path(run_dir).parent.name
+    parsed = parse_run_name_for_properties(run_name)
+
+    # For progressive rows, group by sample_id and take the last stage_index
+    by_sample: Dict[int, List[dict]] = {}
+    for r in ds_rows:
+        sid = int(r.get("sample_id"))
+        by_sample.setdefault(sid, []).append(r)
+    last_rows: List[dict] = []
+    for sid, rows in by_sample.items():
+        rows_sorted = sorted(rows, key=lambda x: int(x.get("stage_index", 0)))
+        last_rows.append(rows_sorted[-1])
+
+    # Collect stats
+    fin_conv = [r.get("final_convergence") for r in last_rows if r.get("final_convergence") is not None]
+    fin_loss = [r.get("final_loss") for r in last_rows if r.get("final_loss") is not None]
+    steps_taken = [r.get("steps_taken") for r in last_rows if r.get("steps_taken") is not None]
+
+    # Extract a few more properties if present in rows
+    props_from_rows: Dict[str, Optional[object]] = {}
+    for key in ("num_compression_tokens", "model_checkpoint", "max_optimization_steps_per_sample", "loss_type", "dtype"):
+        val = None
+        for r in ds_rows:
+            if key in r:
+                val = r[key]
+                break
+        props_from_rows[key] = val
+
+    # Convergence threshold is constant
+    cthr = None
+    for r in ds_rows:
+        if "convergence_threshold" in r:
+            cthr = r["convergence_threshold"]
+            break
+
+    run_dir_parent = str(Path(run_dir).parent)
+    run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
+    if not os.path.exists(run_hash_file):
+        print("Can't find run hash file:", run_hash_file)
+        return None
+
+    with open(run_hash_file, "r") as hash_file:
+        run_hash = hash_file.readline()
+
+    loss_type = props_from_rows.get("loss_type") or parsed.get("loss_type")
+    if loss_type in abbreviation.get("loss_type", {}):
+        loss_type = abbreviation["loss_type"][loss_type]
+
+    embedding_init_method = parsed.get("embedding_init_method")
+    if embedding_init_method in abbreviation.get("embedding_init_method", {}):
+        embedding_init_method = abbreviation["embedding_init_method"][embedding_init_method]
+
+    model_checkpoint = str(props_from_rows["model_checkpoint"]) if props_from_rows.get("model_checkpoint") is not None else None
+    if model_checkpoint in abbreviation.get("model_checkpoint", {}):
+        model_checkpoint = abbreviation["model_checkpoint"][model_checkpoint]
+
+    summary = RunSummary(
+        run_dir=str(Path(run_dir).parent),
+        run_hash=run_hash,
+        dataset_type="progressive_prefixes",
+        loss_type=loss_type,
+        hybrid_alpha=None,
+        embedding_init_method=embedding_init_method,
+        dtype=(props_from_rows.get("dtype")),
+        max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
+        number_of_mem_tokens=(
+            int(props_from_rows["num_compression_tokens"])
+            if props_from_rows.get("num_compression_tokens") is not None
+            else None
+        ),
+        num_alignment_layers=None,
+        inverted_alignment=None,
+        fix_position_ids=None,
+        model_checkpoint=model_checkpoint,
+        max_optimization_steps_per_sample=(
+            int(props_from_rows["max_optimization_steps_per_sample"])
+            if props_from_rows.get("max_optimization_steps_per_sample") is not None
+            else None
+        ),
+        convergence_after_steps_mean=None,  # N/A for progressive
+        convergence_after_steps_std=None,
+        final_convergence_mean=safe_mean([float(x) for x in fin_conv]),
+        final_convergence_std=safe_std([float(x) for x in fin_conv]),
+        final_loss_mean=safe_mean([float(x) for x in fin_loss]),
+        final_loss_std=safe_std([float(x) for x in fin_loss]),
+        steps_taken_mean=safe_mean([float(x) for x in steps_taken]),
+        steps_taken_std=safe_std([float(x) for x in steps_taken]),
+        convergence_threshold=(float(cthr) if cthr is not None else None),
+    )
+    return summary
+
+
+def to_mean_std_cell(val_mean: Optional[float], val_std: Optional[float], is_int: bool = False) -> str:
+    if val_mean is None:
+        return ""
+    if is_int:
+        mean_str = f"{int(round(val_mean))}"
+        std_str = f"{int(round(val_std))}" if val_std is not None else "0"
+        return f"{mean_str} $\\pm$ {std_str}"
+    # floats
+    mean_str = f"{val_mean:.4f}".rstrip("0").rstrip(".")
+    std_str = f"{val_std:.4f}".rstrip("0").rstrip(".") if val_std is not None else "0"
+    return f"{mean_str} $\\pm$ {std_str}"
+
+
+def build_latex_table(
+    summaries: List[RunSummary], include_progressive: bool, selected_columns: Optional[List[str]] = None
+) -> str:
+    """
+    Build a LaTeX tabular with key properties and metrics using tabulate.
+
+    Args:
+        summaries: List of RunSummary objects to include in the table
+        include_progressive: Whether to include progressive-specific columns
+        selected_columns: Optional list of column field names to include. If None, includes all columns.
+    """
+    # Columns for properties
+    prop_cols = [
+        ("run_hash", "RunHash"),
+        ("loss_type", "Loss"),
+        ("hybrid_alpha", "Hybrid $\\alpha$"),
+        ("embedding_init_method", "Init"),
+        ("max_sequence_length", "SeqLen"),
+        ("number_of_mem_tokens", "MemT"),
+        ("num_alignment_layers", "AlignLayers"),
+        ("fix_position_ids", "FixPosIds"),
+        ("model_checkpoint", "Model"),
+        ("dtype", "DType"),
+        ("max_optimization_steps_per_sample", "MaxSteps"),
+    ]
+    # Metric columns (non-progressive)
+    metric_cols = [
+        ("convergence_after_steps_mean", "ConvSteps (mean $\\pm$ std)", True),  # True => integer formatting
+        ("final_convergence_mean", "FinalConv (mean $\\pm$ std)", False),
+        ("final_loss_mean", "FinalLoss (mean $\\pm$ std)", False),
+    ]
+    # Progressive specific (optional tail columns)
+    progressive_metric_cols = [
+        ("steps_taken_mean", "StepsTaken (mean $\\pm$ std)", True),
+        ("convergence_threshold", "ConvThresh", False),
+    ]
+
+    # Filter columns if selected_columns is provided
+    if selected_columns is not None:
+        selected_set = set(selected_columns)
+        prop_cols = [col for col in prop_cols if col[0] in selected_set]
+        metric_cols = [col for col in metric_cols if col[0] in selected_set]
+        progressive_metric_cols = [col for col in progressive_metric_cols if col[0] in selected_set]
+
+    headers = [hdr for _, hdr in prop_cols] + [hdr for _, hdr, _ in metric_cols]
+    # Include progressive columns if: (1) include_progressive flag is set, OR (2) user explicitly selected them
+    if include_progressive or (selected_columns is not None and progressive_metric_cols):
+        headers += [hdr for _, hdr, _ in progressive_metric_cols]
+
+    table_rows: List[List[str]] = []
+    for s in summaries:
+        row: List[str] = []
+        # Properties
+        for field_name, _hdr in prop_cols:
+            val = getattr(s, field_name)
+            if isinstance(val, bool):
+                cell = "True" if val else "False"
+            else:
+                cell = "" if val is None else str(val)
+            row.append(latex_escape(cell))
+        # Metrics
+        for field_name, _hdr, is_int in metric_cols:
+            if field_name == "convergence_after_steps_mean":
+                if s.dataset_type == "compressed_prefixes":
+                    row.append(to_mean_std_cell(s.convergence_after_steps_mean, s.convergence_after_steps_std, is_int=is_int))
+                else:
+                    row.append("")
+            elif field_name == "final_convergence_mean":
+                row.append(to_mean_std_cell(s.final_convergence_mean, s.final_convergence_std, is_int=is_int))
+            elif field_name == "final_loss_mean":
+                row.append(to_mean_std_cell(s.final_loss_mean, s.final_loss_std, is_int=is_int))
+        # Progressive extras if requested or explicitly selected
+        if include_progressive or (selected_columns is not None and progressive_metric_cols):
+            for field_name, _hdr, is_int in progressive_metric_cols:
+                if field_name == "steps_taken_mean":
+                    if s.dataset_type == "progressive_prefixes":
+                        row.append(to_mean_std_cell(s.steps_taken_mean, s.steps_taken_std, is_int=is_int))
+                    else:
+                        row.append("")
+                elif field_name == "convergence_threshold":
+                    if s.dataset_type == "progressive_prefixes":
+                        row.append("" if s.convergence_threshold is None else f"{s.convergence_threshold:.2f}")
+                    else:
+                        row.append("")
+        table_rows.append(row)
+
+    # Use latex_raw to respect our own escaping and math cells
+    return tabulate(table_rows, headers=headers, tablefmt="latex_raw")
+
+
+def load_dataset_rows(ds_path: str) -> List[dict]:
+    ds = load_from_disk(ds_path)
+    # Ensure plain Python data (avoid pandas requirement)
+    return [dict(r) for r in ds]
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="results.py",
+        description="Aggregate experiment artifacts and print a LaTeX table.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """\
+            By default scans:
+              - artifacts/experiments/*/compressed_prefixes
+              - artifacts/experiments_progressive/*/progressive_prefixes
+            """
+        ),
+    )
+    parser.add_argument(
+        "--dirs",
+        nargs="*",
+        default=["artifacts/experiments", "artifacts/experiments_progressive"],
+        help="Base directories to scan for runs.",
+    )
+    parser.add_argument(
+        "--include-progressive",
+        action="store_true",
+        help="Include progressive-only columns (StepsTaken, ConvThresh).",
+    )
+    parser.add_argument(
+        "--only-non-progressive",
+        action="store_true",
+        help="Only include non-progressive runs (ignore progressive_prefixes).",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional path to save the LaTeX table; prints to stdout otherwise.",
+    )
+    parser.add_argument(
+        "--columns",
+        nargs="*",
+        default=None,
+        help="Specify which columns to include in the table. Available columns: "
+        "run_hash, loss_type, hybrid_alpha, embedding_init_method, max_sequence_length, "
+        "number_of_mem_tokens, num_alignment_layers, fix_position_ids, model_checkpoint, "
+        "dtype, max_optimization_steps_per_sample, convergence_after_steps_mean, "
+        "final_convergence_mean, final_loss_mean, steps_taken_mean, convergence_threshold. "
+        "If not specified, all columns are included.",
+    )
+
+    # Property filters
+    def _parse_bool(x: str) -> bool:
+        val = x.strip().lower()
+        if val in {"1", "true", "t", "yes", "y"}:
+            return True
+        if val in {"0", "false", "f", "no", "n"}:
+            return False
+        raise argparse.ArgumentTypeError(f"Invalid boolean value: {x}")
+
+    parser.add_argument(
+        "--loss-type", type=str, default=None, help="Filter by loss type (e.g., l2, l1, cosine, cross_entropy)."
+    )
+    parser.add_argument("--hybrid-alpha", type=str, default=None, help="Filter by hybrid alpha value (string match).")
+    parser.add_argument("--init", type=str, default=None, help="Filter by embedding init method (e.g., random, mvnormal).")
+    parser.add_argument("--seq-len", type=int, default=None, help="Filter by max sequence length (int).")
+    parser.add_argument("--mem-tokens", type=int, default=None, help="Filter by number of mem tokens (int).")
+    parser.add_argument("--align-layers", type=int, default=None, help="Filter by number of alignment layers (int).")
+    parser.add_argument("--fix-position-ids", type=_parse_bool, default=None, help="Filter by fix_position_ids (true/false).")
+    parser.add_argument("--model", type=str, default=None, help="Filter by model checkpoint substring (case-insensitive).")
+    parser.add_argument("--max-steps", type=int, default=None, help="Filter by max optimization steps per sample (int).")
+    args = parser.parse_args(argv)
+
+    ds_paths = discover_run_datasets(args.dirs)
+    if args.only_non_progressive:
+        ds_paths = [p for p in ds_paths if p[1] == "compressed_prefixes"]
+
+    if not ds_paths:
+        print("No experiment datasets found. Searched:", file=sys.stderr)
+        for d in args.dirs:
+            print(f" - {d}", file=sys.stderr)
+        return 1
+
+    summaries: List[RunSummary] = []
+    for ds_path, ds_type in tqdm(ds_paths, desc="Load Dataset Rows"):
+        try:
+            rows = load_dataset_rows(ds_path)
+        except Exception as e:
+            print(f"Failed to load dataset at {ds_path}: {e}", file=sys.stderr)
+            continue
+        if ds_type == "compressed_prefixes":
+            summary = aggregate_non_progressive(ds_path, rows)
+        else:
+            summary = aggregate_progressive(ds_path, rows)
+        if summary is None:
+            continue
+        summaries.append(summary)
+
+    # Sort for readability
+    def sort_key(s: RunSummary):
+        return (
+            0 if s.dataset_type == "compressed_prefixes" else 1,
+            s.model_checkpoint,
+            str(s.loss_type or ""),
+            str(s.embedding_init_method or ""),
+            int(s.max_sequence_length or 0),
+            int(s.number_of_mem_tokens or 0),
+        )
+
+    summaries_sorted = sorted(summaries, key=sort_key)
+
+    # Apply property filters
+    def matches_filters(s: RunSummary) -> bool:
+        if args.loss_type is not None and (s.loss_type or "").lower() != args.loss_type.lower():
+            return False
+        if args.hybrid_alpha is not None and (s.hybrid_alpha or "").lower() != args.hybrid_alpha.lower():
+            return False
+        if args.init is not None and (s.embedding_init_method or "").lower() != args.init.lower():
+            return False
+        if args.seq_len is not None and (s.max_sequence_length is None or int(s.max_sequence_length) != int(args.seq_len)):
+            return False
+        if args.mem_tokens is not None and (
+            s.number_of_mem_tokens is None or int(s.number_of_mem_tokens) != int(args.mem_tokens)
+        ):
+            return False
+        if args.align_layers is not None and (
+            s.num_alignment_layers is None or int(s.num_alignment_layers) != int(args.align_layers)
+        ):
+            return False
+        if args.fix_position_ids is not None and (
+            s.fix_position_ids is None or bool(s.fix_position_ids) != bool(args.fix_position_ids)
+        ):
+            return False
+        if args.model is not None:
+            model_val = (s.model_checkpoint or "").lower()
+            if args.model.lower() not in model_val:
+                return False
+        if args.max_steps is not None and (
+            s.max_optimization_steps_per_sample is None or int(s.max_optimization_steps_per_sample) != int(args.max_steps)
+        ):
+            return False
+        return True
+
+    summaries_sorted = [s for s in summaries_sorted if matches_filters(s)]
+    latex = build_latex_table(summaries_sorted, include_progressive=args.include_progressive, selected_columns=args.columns)
+
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(latex)
+        print(f"Wrote LaTeX table to {args.output}")
+    else:
+        print(latex)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

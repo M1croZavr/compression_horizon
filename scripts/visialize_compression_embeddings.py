@@ -13,7 +13,12 @@ from sklearn.decomposition import PCA
 
 
 def _short_label_from_path(path: str) -> str:
-    return os.path.normpath(path).split("/")[-2].replace("ch_cross_entropy_init_mvnormal_", "").replace("seq_len", "L")
+    return (
+        os.path.normpath(path)
+        .split("/")[-2]
+        .replace("ch_cross_entropy_init_mvnormal_seq_len", "L")
+        .replace("ch_cosine_init_mvnormal_seq_len", "L")
+    )
 
 
 def _clean_label(label: str) -> str:
