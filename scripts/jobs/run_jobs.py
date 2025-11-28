@@ -35,7 +35,8 @@ def build_args() -> argparse.Namespace:
         "--random_seeds",
         nargs="+",
         type=int,
-        default=[42, 533, 134, 733],
+        # default=[42, 533, 134, 733],
+        default=[42],
         help="List of random seeds.",
     )
     parser.add_argument(
@@ -88,12 +89,12 @@ def build_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dtype",
-        default="float32",
+        default="bfloat16",
         help="Torch dtype to use: auto | float32/fp32 | bfloat16/bf16 | float16/fp16.",
     )
 
     # Training defaults that were previously hardcoded
-    parser.add_argument("--per_device_train_batch_size", type=int, default=16)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=1)
     parser.add_argument("--max_optimization_steps_per_sample", type=int, default=1000)
     parser.add_argument("--learning_rate", type=float, default=0.01)
     parser.add_argument("--warmup_steps", type=int, default=100)

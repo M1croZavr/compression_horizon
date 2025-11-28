@@ -331,10 +331,10 @@ def build_latex_table(summaries: List[RunSummary], include_progressive: bool) ->
     prop_cols = [
         ("run_hash", "RunHash"),
         ("loss_type", "Loss"),
-        ("hybrid_alpha", "Hybrid $\\alpha$"),
+        ("hybrid_alpha", "Hybrid W"),
         ("embedding_init_method", "Init"),
         ("max_sequence_length", "SeqLen"),
-        ("number_of_mem_tokens", "MemTokens"),
+        ("number_of_mem_tokens", "MemT"),
         ("num_alignment_layers", "AlignLayers"),
         ("fix_position_ids", "FixPosIds"),
         ("model_checkpoint", "Model"),

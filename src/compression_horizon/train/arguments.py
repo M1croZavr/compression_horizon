@@ -54,6 +54,9 @@ class MyTrainingArguments(TrainingArguments):
     limit_dataset_items: int | None = field(default=1)
 
     # Overrides with changed defaults
+    optim: str = field(
+        default="sgd",
+    )
     per_device_train_batch_size: int = field(
         default=1,
         metadata={"help": "Batch size per device accelerator core/CPU for training."},
@@ -75,7 +78,7 @@ class MyTrainingArguments(TrainingArguments):
             )
         },
     )
-    learning_rate: float = field(default=1e-3, metadata={"help": "The initial learning rate for an optimizer."})
+    learning_rate: float = field(default=1e-2, metadata={"help": "The initial learning rate for an optimizer."})
     weight_decay: float = field(
         default=0.01,
         metadata={"help": "Weight decay for an optimizer if we apply some."},
