@@ -14,6 +14,7 @@ Supported artifact layouts:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import textwrap
@@ -24,6 +25,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from datasets import load_from_disk
 from tabulate import tabulate
+from tqdm.auto import tqdm
 
 # ------------------------------- Utilities --------------------------------- #
 
@@ -32,8 +34,10 @@ from tabulate import tabulate
 class RunSummary:
     # Identifiers
     run_dir: str
+    run_hash: str
     dataset_type: str  # "compressed_prefixes" | "progressive_prefixes"
     # Properties (best-effort from saved rows and/or run_dir name)
+    dtype: Optional[str] = None
     loss_type: Optional[str] = None
     hybrid_alpha: Optional[str] = None
     embedding_init_method: Optional[str] = None
@@ -150,6 +154,7 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         "model_checkpoint",
         "max_optimization_steps_per_sample",
         "num_compression_tokens",
+        "dtype",
     ):
         val = None
         for r in ds_rows:
@@ -165,8 +170,18 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     fin_conv = [r.get("final_convergence") for r in ds_rows if r.get("final_convergence") is not None]
     fin_loss = [r.get("final_loss") for r in ds_rows if r.get("final_loss") is not None]
 
+    run_dir_parent = str(Path(run_dir).parent)
+    run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
+    if not os.path.exists(run_hash_file):
+        print("Can't find run hash file:", run_hash_file)
+        return None
+
+    with open(run_hash_file, "r") as hash_file:
+        run_hash = hash_file.readline()
+
     summary = RunSummary(
-        run_dir=str(Path(run_dir).parent),
+        run_dir=run_dir_parent,
+        run_hash=run_hash,
         dataset_type="compressed_prefixes",
         loss_type=(props_from_rows.get("loss_type") or parsed.get("loss_type")),
         hybrid_alpha=str(
@@ -174,6 +189,7 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
             if props_from_rows.get("hybrid_alpha") is not None
             else parsed.get("hybrid_alpha")
         ),
+        dtype=(props_from_rows.get("dtype")),
         embedding_init_method=(parsed.get("embedding_init_method")),
         max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
         number_of_mem_tokens=(
@@ -232,7 +248,7 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
 
     # Extract a few more properties if present in rows
     props_from_rows: Dict[str, Optional[object]] = {}
-    for key in ("num_compression_tokens", "model_checkpoint", "max_optimization_steps_per_sample", "loss_type"):
+    for key in ("num_compression_tokens", "model_checkpoint", "max_optimization_steps_per_sample", "loss_type", "dtype"):
         val = None
         for r in ds_rows:
             if key in r:
@@ -247,12 +263,23 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
             cthr = r["convergence_threshold"]
             break
 
+    run_dir_parent = str(Path(run_dir).parent)
+    run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
+    if not os.path.exists(run_hash_file):
+        print("Can't find run hash file:", run_hash_file)
+        return None
+
+    with open(run_hash_file, "r") as hash_file:
+        run_hash = hash_file.readline()
+
     summary = RunSummary(
         run_dir=str(Path(run_dir).parent),
+        run_hash=run_hash,
         dataset_type="progressive_prefixes",
         loss_type=(props_from_rows.get("loss_type") or parsed.get("loss_type")),
         hybrid_alpha=None,
-        embedding_init_method=(parsed.get("embedding_init_method")),
+        embedding_init_method=(props_from_rows.get("embedding_init_method")),
+        dtype=(props_from_rows.get("dtype")),
         max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
         number_of_mem_tokens=(
             int(props_from_rows["num_compression_tokens"])
@@ -302,6 +329,7 @@ def build_latex_table(summaries: List[RunSummary], include_progressive: bool) ->
     """
     # Columns for properties
     prop_cols = [
+        ("run_hash", "RunHash"),
         ("loss_type", "Loss"),
         ("hybrid_alpha", "Hybrid $\\alpha$"),
         ("embedding_init_method", "Init"),
@@ -310,7 +338,8 @@ def build_latex_table(summaries: List[RunSummary], include_progressive: bool) ->
         ("num_alignment_layers", "AlignLayers"),
         ("fix_position_ids", "FixPosIds"),
         ("model_checkpoint", "Model"),
-        ("max_optimization_steps_per_sample", "MaxSteps"),
+        ("dtype", "DType"),
+        # ("max_optimization_steps_per_sample", "MaxSteps"),
     ]
     # Metric columns (non-progressive)
     metric_cols = [
@@ -443,16 +472,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     summaries: List[RunSummary] = []
-    for ds_path, ds_type in ds_paths:
+    for ds_path, ds_type in tqdm(ds_paths, desc="Load Dataset Rows"):
         try:
             rows = load_dataset_rows(ds_path)
         except Exception as e:
             print(f"Failed to load dataset at {ds_path}: {e}", file=sys.stderr)
             continue
         if ds_type == "compressed_prefixes":
-            summaries.append(aggregate_non_progressive(ds_path, rows))
+            summary = aggregate_non_progressive(ds_path, rows)
         else:
-            summaries.append(aggregate_progressive(ds_path, rows))
+            summary = aggregate_progressive(ds_path, rows)
+        if summary is None:
+            continue
+        summaries.append(summary)
 
     # Sort for readability
     def sort_key(s: RunSummary):

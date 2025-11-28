@@ -191,10 +191,14 @@ class MyTrainer:
                     sigma = sigma + eps * torch.eye(sigma.shape[0], device=sigma.device, dtype=sigma.dtype)
                     covariance = 1e-5 * sigma
                     try:
-                        mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=covariance)
+                        mvn_dist = torch.distributions.MultivariateNormal(
+                            mvn_mu.to(torch.float32), covariance_matrix=covariance.to(torch.float32)
+                        )
                     except Exception:
                         diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
-                        mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=torch.diag(diag_cov))
+                        mvn_dist = torch.distributions.MultivariateNormal(
+                            mvn_mu.to(torch.float32), covariance_matrix=torch.diag(diag_cov).to(torch.float32)
+                        )
                 else:
                     init_method = "random"
         return init_method, mvn_dist
@@ -211,9 +215,9 @@ class MyTrainer:
     def _init_compression_tokens(batch_size, num_tokens, hidden_size, init_method, mvn_dist, dtype):
         if init_method == "mvnormal" and mvn_dist is not None:
             samples = mvn_dist.sample((batch_size, num_tokens))
-            trainable_embeddings = torch.nn.Parameter(samples.to(dtype=dtype))
+            trainable_embeddings = torch.nn.Parameter(samples.to(dtype=torch.float32))
         else:
-            trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=dtype))
+            trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32))
         return trainable_embeddings
 
     def _build_optimizer_and_scheduler(self, compression_token_embeddings):
@@ -335,7 +339,7 @@ class MyTrainer:
             )
             progress_bar.set_description("Training")
 
-            total_per_sample_convergence = torch.ones(
+            total_per_sample_convergence = torch.zeros(
                 [
                     self.args.max_optimization_steps_per_sample,
                     input_ids.shape[0],
@@ -375,12 +379,12 @@ class MyTrainer:
                 if prev_convergence is not None:
                     # Zero gradients for converged items
                     compression_token_embeddings.grad[prev_convergence] = 0
-                    print(
-                        "Non zero gradients:",
-                        (compression_token_embeddings.grad.sum(-1) != 0).sum(),
-                        "/",
-                        united_token_embeddings.shape[0],
-                    )
+                    # print(
+                    #     "Non zero gradients:",
+                    #     (compression_token_embeddings.grad.sum(-1) != 0).sum(),
+                    #     "/",
+                    #     united_token_embeddings.shape[0],
+                    # )
 
                 optimizer.step()
 
@@ -417,7 +421,7 @@ class MyTrainer:
                 optimizer.zero_grad(set_to_none=True)
                 lr_scheduler.step()
 
-            total_per_sample_convergence = total_per_sample_convergence.sum(dim=0)
+            total_per_sample_convergence_sum = total_per_sample_convergence.sum(dim=0)
 
             # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
             with torch.no_grad():
@@ -432,7 +436,7 @@ class MyTrainer:
                     embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
                     compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
                     compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
-                    item_convergence_per_sample = total_per_sample_convergence[j].item()
+                    item_convergence_per_sample = total_per_sample_convergence_sum[j].item()
                     collected_rows.append(
                         {
                             "sample_id": sample_id_counter,

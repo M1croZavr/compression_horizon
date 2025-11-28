@@ -93,7 +93,7 @@ def build_args() -> argparse.Namespace:
     )
 
     # Training defaults that were previously hardcoded
-    parser.add_argument("--per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=16)
     parser.add_argument("--max_optimization_steps_per_sample", type=int, default=1000)
     parser.add_argument("--learning_rate", type=float, default=0.01)
     parser.add_argument("--warmup_steps", type=int, default=100)
@@ -112,7 +112,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument(
         "--num_alignment_layers_nonhybrid",
         type=int,
-        default=1,
+        default=0,
         help="num_alignment_layers to use when hybrid is disabled.",
     )
     parser.add_argument(
@@ -136,6 +136,11 @@ def build_args() -> argparse.Namespace:
         "--dry",
         action="store_true",
         help="Only print generated scripts, do not launch jobs.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run jobs even if a matching experiment output directory already exists.",
     )
 
     return parser.parse_args()
@@ -200,9 +205,11 @@ if __name__ == "__main__":
         output_dir = os.path.join("artifacts/experiments", f"{prefix}_{cmd_hash8}")
 
         # If the directory already exists, treat as duplicate and skip
-        if os.path.isdir(output_dir):
+        if os.path.isdir(output_dir) and not args.force:
             print(f"\033[33mSkipping: matching experiment already exists at:\033[0m {output_dir}")
             continue
+        elif os.path.isdir(output_dir) and args.force:
+            print(f"\033[35mForce enabled: re-running even though directory exists:\033[0m {output_dir}")
 
         # Compose full command with explicit output_dir
         base_cmd = (
@@ -226,6 +233,7 @@ if __name__ == "__main__":
             "job_desc": job_desc,
             "env_variables": {
                 "PYTHONPATH": "./src",
+                "HF_HOME": "/workspace-SR004.nfs2/.cache/huggingface",
             },
             "instance_type": args.instance_type,
             "region": extra_options["region"],
