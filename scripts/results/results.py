@@ -143,6 +143,22 @@ def safe_std(values: List[float]) -> Optional[float]:
     return pstdev(values) if values else None
 
 
+abbreviation = {
+    "loss_type": {
+        "cosine": "cos",
+        "cross_entropy": "CE",
+    },
+    "embedding_init_method": {
+        "mvnormal": "mvnorm",
+    },
+    "model_checkpoint": {
+        "HuggingFaceTB/SmolLM2-1.7B": "SLM2-1.7B",
+        "Qwen/Qwen3-4B": "Q3-4B",
+        "unsloth/Llama-3.2-3B": "L3.2-3B",
+    },
+}
+
+
 def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     # Pull common properties – they should be constant within a run
     props_from_rows: Dict[str, Optional[object]] = {}
@@ -179,18 +195,30 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     with open(run_hash_file, "r") as hash_file:
         run_hash = hash_file.readline()
 
+    loss_type = props_from_rows.get("loss_type") or parsed.get("loss_type")
+    if loss_type in abbreviation["loss_type"]:
+        loss_type = abbreviation["loss_type"][loss_type]
+
+    embedding_init_method = parsed.get("embedding_init_method")
+    if embedding_init_method in abbreviation.get("embedding_init_method", {}):
+        embedding_init_method = abbreviation["embedding_init_method"][embedding_init_method]
+
+    model_checkpoint = str(props_from_rows["model_checkpoint"]) if props_from_rows.get("model_checkpoint") is not None else None
+    if model_checkpoint in abbreviation.get("model_checkpoint", {}):
+        model_checkpoint = abbreviation["model_checkpoint"][model_checkpoint]
+
     summary = RunSummary(
         run_dir=run_dir_parent,
         run_hash=run_hash,
         dataset_type="compressed_prefixes",
-        loss_type=(props_from_rows.get("loss_type") or parsed.get("loss_type")),
+        loss_type=loss_type,
         hybrid_alpha=str(
             props_from_rows.get("hybrid_alpha")
             if props_from_rows.get("hybrid_alpha") is not None
             else parsed.get("hybrid_alpha")
         ),
         dtype=(props_from_rows.get("dtype")),
-        embedding_init_method=(parsed.get("embedding_init_method")),
+        embedding_init_method=embedding_init_method,
         max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
         number_of_mem_tokens=(
             int(props_from_rows["num_compression_tokens"])
@@ -204,9 +232,7 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         fix_position_ids=(
             bool(props_from_rows["fix_position_ids"]) if props_from_rows.get("fix_position_ids") is not None else None
         ),
-        model_checkpoint=(
-            str(props_from_rows["model_checkpoint"]) if props_from_rows.get("model_checkpoint") is not None else None
-        ),
+        model_checkpoint=model_checkpoint,
         max_optimization_steps_per_sample=(
             int(props_from_rows["max_optimization_steps_per_sample"])
             if props_from_rows.get("max_optimization_steps_per_sample") is not None
@@ -272,13 +298,25 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     with open(run_hash_file, "r") as hash_file:
         run_hash = hash_file.readline()
 
+    loss_type = props_from_rows.get("loss_type") or parsed.get("loss_type")
+    if loss_type in abbreviation.get("loss_type", {}):
+        loss_type = abbreviation["loss_type"][loss_type]
+
+    embedding_init_method = parsed.get("embedding_init_method")
+    if embedding_init_method in abbreviation.get("embedding_init_method", {}):
+        embedding_init_method = abbreviation["embedding_init_method"][embedding_init_method]
+
+    model_checkpoint = str(props_from_rows["model_checkpoint"]) if props_from_rows.get("model_checkpoint") is not None else None
+    if model_checkpoint in abbreviation.get("model_checkpoint", {}):
+        model_checkpoint = abbreviation["model_checkpoint"][model_checkpoint]
+
     summary = RunSummary(
         run_dir=str(Path(run_dir).parent),
         run_hash=run_hash,
         dataset_type="progressive_prefixes",
-        loss_type=(props_from_rows.get("loss_type") or parsed.get("loss_type")),
+        loss_type=loss_type,
         hybrid_alpha=None,
-        embedding_init_method=(props_from_rows.get("embedding_init_method")),
+        embedding_init_method=embedding_init_method,
         dtype=(props_from_rows.get("dtype")),
         max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
         number_of_mem_tokens=(
@@ -289,9 +327,7 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         num_alignment_layers=None,
         inverted_alignment=None,
         fix_position_ids=None,
-        model_checkpoint=(
-            str(props_from_rows["model_checkpoint"]) if props_from_rows.get("model_checkpoint") is not None else None
-        ),
+        model_checkpoint=model_checkpoint,
         max_optimization_steps_per_sample=(
             int(props_from_rows["max_optimization_steps_per_sample"])
             if props_from_rows.get("max_optimization_steps_per_sample") is not None
