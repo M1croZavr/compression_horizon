@@ -350,6 +350,20 @@ class MyTrainer:
             )
             prev_convergence = None
             # prev_convergence_per_sample = None
+            total_per_sample_convergence_099 = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    input_ids.shape[0],
+                ],
+                dtype=torch.long,
+            )
+            total_per_sample_convergence_095 = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    input_ids.shape[0],
+                ],
+                dtype=torch.long,
+            )
 
             for step_i in progress_bar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
@@ -422,6 +436,8 @@ class MyTrainer:
                     )
 
                 total_per_sample_convergence[step_i, :] = convergence_per_sample < 1.0
+                total_per_sample_convergence_099[step_i, :] = convergence_per_sample < 0.99
+                total_per_sample_convergence_095[step_i, :] = convergence_per_sample < 0.95
                 prev_convergence = convergence_per_sample == 1.0
                 # prev_convergence_per_sample = convergence_per_sample
 
@@ -435,6 +451,10 @@ class MyTrainer:
 
             total_per_sample_convergence_sum = total_per_sample_convergence.sum(dim=0)
             print("total_per_sample_convergence_sum", total_per_sample_convergence_sum)
+            total_per_sample_convergence_099_sum = total_per_sample_convergence_099.sum(dim=0)
+            print("total_per_sample_convergence_099_sum", total_per_sample_convergence_099_sum)
+            total_per_sample_convergence_095_sum = total_per_sample_convergence_095.sum(dim=0)
+            print("total_per_sample_convergence_095_sum", total_per_sample_convergence_095_sum)
 
             # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
             with torch.no_grad():
@@ -458,6 +478,8 @@ class MyTrainer:
                             "final_loss": last_loss,
                             "final_convergence": last_convergence_per_sample[j].item(),
                             "convergence_after_steps": item_convergence_per_sample,
+                            "convergence_0.99_after_steps": int(total_per_sample_convergence_099_sum[j].item()),
+                            "convergence_0.95_after_steps": int(total_per_sample_convergence_095_sum[j].item()),
                             "compression_tokens_mean": compression_token_embeddings_mean,
                             "compression_tokens_std": compression_token_embeddings_std,
                             "num_input_tokens": int(sample_attention_mask.sum().item()),

@@ -44,7 +44,7 @@ class MyTrainingArguments(TrainingArguments):
         metadata={"help": "Max sequence length for compressing in training."},
     )
     max_optimization_steps_per_sample: int = field(
-        default=10_000,
+        default=1_000,
         metadata={"help": "Max optimization steps for training 1 sample."},
     )
     random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)."})
@@ -79,6 +79,8 @@ class MyTrainingArguments(TrainingArguments):
         },
     )
     learning_rate: float = field(default=1e-2, metadata={"help": "The initial learning rate for an optimizer."})
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.9
     weight_decay: float = field(
         default=0.01,
         metadata={"help": "Weight decay for an optimizer if we apply some."},
