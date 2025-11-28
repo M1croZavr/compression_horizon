@@ -349,7 +349,7 @@ class MyTrainer:
                 dtype=torch.long,
             )
             prev_convergence = None
-            prev_convergence_per_sample = None
+            # prev_convergence_per_sample = None
 
             for step_i in progress_bar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
@@ -382,21 +382,22 @@ class MyTrainer:
                 if prev_convergence is not None:
                     # Zero gradients for converged items
                     compression_token_embeddings.grad[prev_convergence] = 0
-                    print(
-                        "Non zero gradients:",
-                        (compression_token_embeddings.grad.sum(-1) != 0).sum(),
-                        "/",
-                        united_token_embeddings.shape[0],
-                        "prev_convergence_per_sample",
-                        prev_convergence_per_sample,
-                    )
+                    # print(
+                    #     "Non zero gradients:",
+                    #     (compression_token_embeddings.grad.sum(-1) != 0).sum(),
+                    #     "/",
+                    #     united_token_embeddings.shape[0],
+                    #     "prev_convergence_per_sample",
+                    #     prev_convergence_per_sample,
+                    # )
 
                 compression_token_embeddings_clone = compression_token_embeddings.detach().clone()
 
                 optimizer.step()
 
                 if prev_convergence is not None:
-                    compression_token_embeddings[prev_convergence] = compression_token_embeddings_clone[prev_convergence]
+                    with torch.no_grad():
+                        compression_token_embeddings[prev_convergence] = compression_token_embeddings_clone[prev_convergence]
 
                 # Log current step progress
                 with torch.no_grad():
@@ -422,7 +423,7 @@ class MyTrainer:
 
                 total_per_sample_convergence[step_i, :] = convergence_per_sample < 1.0
                 prev_convergence = convergence_per_sample == 1.0
-                prev_convergence_per_sample = convergence_per_sample
+                # prev_convergence_per_sample = convergence_per_sample
 
                 if (convergence_per_sample == 1.0).all():
                     print(f"Early stopping: compression converged in {step_i} steps")
@@ -432,7 +433,7 @@ class MyTrainer:
                 optimizer.zero_grad(set_to_none=True)
                 lr_scheduler.step()
 
-            total_per_sample_convergence_sum = total_per_sample_convergence.cumsum(dim=0)
+            total_per_sample_convergence_sum = total_per_sample_convergence.sum(dim=0)
             print("total_per_sample_convergence_sum", total_per_sample_convergence_sum)
 
             # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
