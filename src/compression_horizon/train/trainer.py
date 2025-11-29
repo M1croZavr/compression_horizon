@@ -200,7 +200,7 @@ class MyTrainer:
                             mvn_mu.to(torch.float32), covariance_matrix=torch.diag(diag_cov).to(torch.float32)
                         )
                 else:
-                    init_method = "random"
+                    raise ValueError("cant run mv normal initialization method")
         return init_method, mvn_dist
 
     def _create_dataloader(self):
@@ -212,12 +212,17 @@ class MyTrainer:
         )
 
     @staticmethod
-    def _init_compression_tokens(batch_size, num_tokens, hidden_size, init_method, mvn_dist, dtype):
+    def _init_compression_tokens(batch_size, num_tokens, hidden_size, init_method, mvn_dist, token_embeddings=None):
         if init_method == "mvnormal" and mvn_dist is not None:
             samples = mvn_dist.sample((batch_size, num_tokens))
             trainable_embeddings = torch.nn.Parameter(samples.to(dtype=torch.float32))
-        else:
+        elif init_method == "random":
             trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32))
+        elif init_method == "mean_token_embeds":
+            assert token_embeddings is not None, "token_embeddings is required for `mean_token_embeds` init method"
+            trainable_embeddings = torch.nn.Parameter(token_embeddings.mean(1, keepdim=True).repeat(1, num_tokens, 1))
+        else:
+            raise ValueError(f"unsupported init method: {init_method}")
         return trainable_embeddings
 
     def _build_optimizer_and_scheduler(self, compression_token_embeddings):
@@ -320,7 +325,7 @@ class MyTrainer:
                 hidden_size,
                 init_method,
                 mvn_dist,
-                dtype=token_embeddings.dtype,
+                token_embeddings=token_embeddings,
             )  # [batch, mem, hidden]
             compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
@@ -539,7 +544,6 @@ class MyTrainer:
                 hidden_size,
                 init_method,
                 mvn_dist,
-                dtype=full_model_token_embeddings.dtype,
             )
             compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
