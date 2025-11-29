@@ -386,7 +386,7 @@ def build_latex_table(
     ]
     # Metric columns (non-progressive)
     metric_cols = [
-        ("convergence_after_steps_mean", "ConvSteps (mean $\\pm$ std)", True),  # True => integer formatting
+        ("convergence_after_steps_mean", "ConvSteps", True),  # True => integer formatting
         ("final_convergence_mean", "FinalConv (mean $\\pm$ std)", False),
         ("final_loss_mean", "FinalLoss (mean $\\pm$ std)", False),
     ]
@@ -519,9 +519,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--seq-len", type=int, default=None, help="Filter by max sequence length (int).")
     parser.add_argument("--mem-tokens", type=int, default=None, help="Filter by number of mem tokens (int).")
     parser.add_argument("--align-layers", type=int, default=None, help="Filter by number of alignment layers (int).")
-    parser.add_argument("--fix-position-ids", type=_parse_bool, default=None, help="Filter by fix_position_ids (true/false).")
+    parser.add_argument(
+        "--fix-position-ids",
+        type=_parse_bool,
+        default=None,
+        help="Filter by fix_position_ids. Accepts: true/false, 1/0, yes/no, t/f, y/n (case-insensitive).",
+    )
     parser.add_argument("--model", type=str, default=None, help="Filter by model checkpoint substring (case-insensitive).")
     parser.add_argument("--max-steps", type=int, default=None, help="Filter by max optimization steps per sample (int).")
+    parser.add_argument("--dtype", type=str, default=None, help="Filter by dtype (e.g., float32, float16, bfloat16).")
     args = parser.parse_args(argv)
 
     ds_paths = discover_run_datasets(args.dirs)
@@ -554,6 +560,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return (
             0 if s.dataset_type == "compressed_prefixes" else 1,
             s.model_checkpoint,
+            str(s.fix_position_ids or ""),
             str(s.loss_type or ""),
             str(s.embedding_init_method or ""),
             int(s.max_sequence_length or 0),
@@ -591,6 +598,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.max_steps is not None and (
             s.max_optimization_steps_per_sample is None or int(s.max_optimization_steps_per_sample) != int(args.max_steps)
         ):
+            return False
+        if args.dtype is not None and (s.dtype or "").lower() != args.dtype.lower():
             return False
         return True
 
