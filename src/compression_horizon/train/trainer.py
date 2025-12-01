@@ -231,10 +231,31 @@ class MyTrainer:
                 )
             else:
                 single_random_embedding = torch.rand([1, num_tokens, hidden_size], dtype=torch.float32)
+                # assert batch_size == 1
                 single_random_embedding = single_random_embedding.repeat(batch_size, 1, 1)
                 trainable_embeddings = torch.nn.Parameter(single_random_embedding)
         elif init_method == "random":
             trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32))
+        elif init_method == "random0.2":
+            trainable_embeddings = torch.nn.Parameter(
+                torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.2
+            )
+        elif init_method == "random5":
+            trainable_embeddings = torch.nn.Parameter(
+                torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 5
+            )
+        elif init_method == "neg_random":
+            trainable_embeddings = torch.nn.Parameter(
+                torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 2 - 1
+            )
+        elif init_method == "neg_random0.2":
+            trainable_embeddings = torch.nn.Parameter(
+                (torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 2 - 1) * 0.2
+            )
+        elif init_method == "neg_random5":
+            trainable_embeddings = torch.nn.Parameter(
+                (torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 2 - 1) * 5
+            )
         elif init_method == "mean_token_embeds":
             assert token_embeddings is not None, "token_embeddings is required for `mean_token_embeds` init method"
             trainable_embeddings = torch.nn.Parameter(token_embeddings.mean(1, keepdim=True).repeat(1, num_tokens, 1))
@@ -345,7 +366,7 @@ class MyTrainer:
             model.train()
             input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
             # print("input_ids", input_ids.shape)
-            batch_size = batch.input_ids.shape[1]
+            batch_size = input_ids.shape[0]
 
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
             with torch.no_grad():
