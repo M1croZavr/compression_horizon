@@ -610,14 +610,17 @@ class MyTrainer:
         )
 
         dataloader = self._create_dataloader()
-        num_training_steps = self.args.num_train_epochs * len(self.train_dataset)
+        num_training_steps = self.args.num_train_epochs * len(self.train_dataset) / self.args.gradient_accumulation_steps
         optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
             compression_token_embeddings_single, num_training_steps=num_training_steps
         )
 
-        for epoch_i in range(int(self.args.num_train_epochs)):
-            pbar = tqdm(dataloader)
-            for batch in pbar:
+        gradient_accumulation_steps = self.args.gradient_accumulation_steps
+        accumulation_step = 0
+
+        pbar = tqdm(range(int(self.args.num_train_epochs)))
+        for epoch_i in pbar:
+            for batch in dataloader:
                 model.train()
                 input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
                 # print("input_ids", input_ids.shape)
@@ -654,21 +657,36 @@ class MyTrainer:
                     ].flatten(0, 1),
                     base_logits.flatten(0, 1).softmax(dim=-1),
                 )
-                pbar.set_postfix(
-                    loss=loss.item(),
-                    lr=lr_scheduler.get_last_lr()[0],
-                    comp_emb_mean=compression_token_embeddings_single.mean().item(),
-                    comp_emb_std=compression_token_embeddings_single.std().item(),
-                )
+                # Scale loss by gradient accumulation steps to maintain effective learning rate
+                loss = loss / gradient_accumulation_steps
 
-                # Calculate gradients and update compression embeddings
+                if epoch_i % 10 == 0:
+                    pbar.set_postfix(
+                        loss=loss.item() * gradient_accumulation_steps,
+                        lr=lr_scheduler.get_last_lr()[0],
+                        comp_emb_mean=compression_token_embeddings_single.mean().item(),
+                        comp_emb_std=compression_token_embeddings_single.std().item(),
+                        accum_step=f"{accumulation_step + 1}/{gradient_accumulation_steps}",
+                    )
+
+                # Calculate gradients and accumulate
                 loss.backward()
+                accumulation_step += 1
 
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                lr_scheduler.step()
+                # Update weights only after accumulating enough gradients
+                if accumulation_step >= gradient_accumulation_steps:
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+                    lr_scheduler.step()
+                    accumulation_step = 0
 
                 # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
+
+        # Handle any remaining accumulated gradients at the end of training
+        if accumulation_step > 0:
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            lr_scheduler.step()
 
         # Persist artifacts
         # save_path = self._save_artifacts(compression_token_embeddings_single.data, [], "noop_prefixes")
