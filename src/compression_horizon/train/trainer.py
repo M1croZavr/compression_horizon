@@ -226,7 +226,9 @@ class MyTrainer:
             trainable_embeddings = torch.nn.Parameter(samples.to(dtype=torch.float32))
         elif init_method == "single_random":
             if single_compressed_embeddings_initialization is not None:
-                trainable_embeddings = torch.nn.Parameter(single_compressed_embeddings_initialization.detach().clone())
+                trainable_embeddings = torch.nn.Parameter(
+                    single_compressed_embeddings_initialization.detach().clone().repeat(batch_size, 1, 1)
+                )
             else:
                 single_random_embedding = torch.rand([1, num_tokens, hidden_size], dtype=torch.float32)
                 single_random_embedding = single_random_embedding.repeat(batch_size, 1, 1)
@@ -321,13 +323,12 @@ class MyTrainer:
         collected_rows = []
         sample_id_counter = 0
 
-        batch_size = self.args.per_device_train_batch_size
         hidden_size = model.config.hidden_size
 
         single_compressed_embeddings_initialization = None
         if init_method.startswith("single_"):
             single_compressed_embeddings_initialization = self._init_compression_tokens(
-                batch_size,
+                1,
                 num_compression_tokens,
                 hidden_size,
                 init_method,
@@ -344,6 +345,7 @@ class MyTrainer:
             model.train()
             input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
             # print("input_ids", input_ids.shape)
+            batch_size = batch.input_ids.shape[1]
 
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
             with torch.no_grad():
