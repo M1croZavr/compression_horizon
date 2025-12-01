@@ -103,9 +103,12 @@ def parse_run_name_for_properties(run_name: str) -> Dict[str, Optional[str]]:
     m_alpha = re.search(r"hybrid_alpha_([^_]+)", run_name)
     if m_alpha:
         props["hybrid_alpha"] = m_alpha.group(1)
-    m_init = re.search(r"init_([^_]+)", run_name)
+    m_init = re.search(r"init_((neg_)?random\d?(\.\d+)?|mvnormal|mean|single_random)", run_name)
     if m_init:
         props["embedding_init_method"] = m_init.group(1)
+    else:
+        print("Failed to parse init method:", run_name)
+
     m_len = re.search(r"seq_len_([0-9]+)", run_name)
     if m_len:
         props["max_sequence_length"] = int(m_len.group(1))

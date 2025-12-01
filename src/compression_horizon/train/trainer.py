@@ -240,6 +240,18 @@ class MyTrainer:
             trainable_embeddings = torch.nn.Parameter(
                 torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.2
             )
+        elif init_method == "random0.02":
+            trainable_embeddings = torch.nn.Parameter(
+                torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.02
+            )
+        elif init_method == "random0.002":
+            trainable_embeddings = torch.nn.Parameter(
+                torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.002
+            )
+        elif init_method == "random0.0002":
+            trainable_embeddings = torch.nn.Parameter(
+                torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.0002
+            )
         elif init_method == "random5":
             trainable_embeddings = torch.nn.Parameter(
                 torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 5
@@ -549,6 +561,7 @@ class MyTrainer:
                             "loss_type": self.args.loss_type,
                             "hybrid_alpha": self.args.hybrid_alpha,
                             "dtype": self.args.dtype,
+                            "embedding_init_method": self.args.embedding_init_method,
                             "num_alignment_layers": self.args.num_alignment_layers,
                             "model_checkpoint": self.args.model_checkpoint,
                             "max_optimization_steps_per_sample": self.args.max_optimization_steps_per_sample,
