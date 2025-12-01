@@ -212,10 +212,25 @@ class MyTrainer:
         )
 
     @staticmethod
-    def _init_compression_tokens(batch_size, num_tokens, hidden_size, init_method, mvn_dist, token_embeddings=None):
+    def _init_compression_tokens(
+        batch_size,
+        num_tokens,
+        hidden_size,
+        init_method,
+        mvn_dist,
+        token_embeddings=None,
+        single_compressed_embeddings_initialization=None,
+    ):
         if init_method == "mvnormal" and mvn_dist is not None:
             samples = mvn_dist.sample((batch_size, num_tokens))
             trainable_embeddings = torch.nn.Parameter(samples.to(dtype=torch.float32))
+        elif init_method == "single_random":
+            if single_compressed_embeddings_initialization is not None:
+                trainable_embeddings = torch.nn.Parameter(single_compressed_embeddings_initialization.detach().clone())
+            else:
+                single_random_embedding = torch.rand([1, num_tokens, hidden_size], dtype=torch.float32)
+                single_random_embedding = single_random_embedding.repeat(batch_size, 1, 1)
+                trainable_embeddings = torch.nn.Parameter(single_random_embedding)
         elif init_method == "random":
             trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32))
         elif init_method == "mean_token_embeds":
@@ -306,6 +321,24 @@ class MyTrainer:
         collected_rows = []
         sample_id_counter = 0
 
+        batch_size = self.args.per_device_train_batch_size
+        hidden_size = model.config.hidden_size
+
+        single_compressed_embeddings_initialization = None
+        if init_method.startswith("single_"):
+            single_compressed_embeddings_initialization = self._init_compression_tokens(
+                batch_size,
+                num_compression_tokens,
+                hidden_size,
+                init_method,
+                mvn_dist,
+                token_embeddings=None,
+                single_compressed_embeddings_initialization=None,
+            )
+            single_compressed_embeddings_initialization = (
+                single_compressed_embeddings_initialization.data.detach().clone()
+            )  # [batch, mem, hidden]
+
         dataloader = self._create_dataloader()
         for batch in dataloader:
             model.train()
@@ -313,10 +346,8 @@ class MyTrainer:
             # print("input_ids", input_ids.shape)
 
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
-            batch_size = input_ids.shape[0]
             with torch.no_grad():
                 token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
-                hidden_size = token_embeddings.shape[-1]
 
             # Trainable compression tokens per sample
             compression_token_embeddings = self._init_compression_tokens(
@@ -325,6 +356,7 @@ class MyTrainer:
                 hidden_size,
                 init_method,
                 mvn_dist,
+                single_compressed_embeddings_initialization=single_compressed_embeddings_initialization,
                 token_embeddings=token_embeddings,
             )  # [batch, mem, hidden]
             compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(

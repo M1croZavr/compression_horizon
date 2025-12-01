@@ -516,6 +516,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--hybrid-alpha", type=str, default=None, help="Filter by hybrid alpha value (string match).")
     parser.add_argument("--init", type=str, default=None, help="Filter by embedding init method (e.g., random, mvnormal).")
+    parser.add_argument(
+        "--embedding-init-method", type=str, default=None, help="Filter by embedding init method (e.g., random, mvnormal)."
+    )
     parser.add_argument("--seq-len", type=int, default=None, help="Filter by max sequence length (int).")
     parser.add_argument("--mem-tokens", type=int, default=None, help="Filter by number of mem tokens (int).")
     parser.add_argument("--align-layers", type=int, default=None, help="Filter by number of alignment layers (int).")
@@ -575,7 +578,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             return False
         if args.hybrid_alpha is not None and (s.hybrid_alpha or "").lower() != args.hybrid_alpha.lower():
             return False
-        if args.init is not None and (s.embedding_init_method or "").lower() != args.init.lower():
+        # Check embedding_init_method filter (--embedding-init-method takes precedence over --init)
+        embedding_init_filter = args.embedding_init_method if args.embedding_init_method is not None else args.init
+        if embedding_init_filter is not None and (s.embedding_init_method or "").lower() != embedding_init_filter.lower():
             return False
         if args.seq_len is not None and (s.max_sequence_length is None or int(s.max_sequence_length) != int(args.seq_len)):
             return False
