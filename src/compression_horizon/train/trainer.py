@@ -2,6 +2,7 @@ import os
 from typing import Optional
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from datasets import Dataset
 from torch.optim import AdamW
@@ -275,17 +276,21 @@ class MyTrainer:
             raise ValueError(f"unsupported init method: {init_method}")
         return trainable_embeddings
 
-    def _build_optimizer_and_scheduler(self, compression_token_embeddings):
+    def _build_optimizer_and_scheduler(self, compression_token_embeddings, num_training_steps=None):
         optimizer = AdamW(
             [compression_token_embeddings],
             lr=self.args.learning_rate,
             weight_decay=self.args.weight_decay,
         )
+
+        if num_training_steps is None:
+            num_training_steps = self.args.max_optimization_steps_per_sample
+
         lr_scheduler = get_scheduler(
             name=self.args.lr_scheduler_type,
             optimizer=optimizer,
             num_warmup_steps=self.args.warmup_steps,
-            num_training_steps=self.args.max_optimization_steps_per_sample,
+            num_training_steps=num_training_steps,
         )
         return optimizer, lr_scheduler
 
@@ -578,6 +583,97 @@ class MyTrainer:
         save_path = self._save_artifacts(compression_token_embeddings_cpu, collected_rows, "compressed_prefixes")
         if save_path is not None:
             return save_path
+        return None
+
+    def train_noop(self):
+        set_launch_seed(self.args.random_seed)
+        device = get_device()
+        model = self.model.to(device)
+        freeze_model_parameters(model)
+        init_method, mvn_dist = self._prepare_embedding_init(model)
+        num_compression_tokens = self.args.number_of_mem_tokens
+
+        # Collect per-sample artifacts for optional saving
+        # collected_rows = []
+        # sample_id_counter = 0
+
+        hidden_size = model.config.hidden_size
+
+        compression_token_embeddings_single = self._init_compression_tokens(
+            1,
+            num_compression_tokens,
+            hidden_size,
+            init_method,
+            mvn_dist,
+            token_embeddings=None,
+            single_compressed_embeddings_initialization=None,
+        )
+
+        dataloader = self._create_dataloader()
+        num_training_steps = self.args.num_train_epochs * len(self.train_dataset)
+        optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
+            compression_token_embeddings_single, num_training_steps=num_training_steps
+        )
+
+        for epoch_i in range(int(self.args.num_train_epochs)):
+            pbar = tqdm(dataloader)
+            for batch in pbar:
+                model.train()
+                input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
+                # print("input_ids", input_ids.shape)
+                batch_size = input_ids.shape[0]
+
+                compression_token_embeddings = compression_token_embeddings_single.repeat([batch_size, 1, 1])
+
+                attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
+                with torch.no_grad():
+                    token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+
+                # Trainable compression tokens per sample
+                compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
+                    batch_size, num_compression_tokens
+                )  # [batch, mem]
+
+                united_token_embeddings = torch.cat(
+                    [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings],
+                    dim=1,
+                )  # [batch, mem + sequence, hidden]
+                united_attention_mask = torch.cat(
+                    [compression_attention_mask, attention_mask],
+                    dim=1,
+                )  # [batch, mem + sequence]
+
+                base_logits = model(input_ids).logits
+                united_logits = model(inputs_embeds=united_token_embeddings, attention_mask=united_attention_mask).logits
+
+                criterion = nn.CrossEntropyLoss()
+                loss = criterion(
+                    united_logits[
+                        :,
+                        1:,
+                    ].flatten(0, 1),
+                    base_logits.flatten(0, 1).softmax(dim=-1),
+                )
+                pbar.set_postfix(
+                    loss=loss.item(),
+                    lr=lr_scheduler.get_last_lr()[0],
+                    comp_emb_mean=compression_token_embeddings_single.mean().item(),
+                    comp_emb_std=compression_token_embeddings_single.std().item(),
+                )
+
+                # Calculate gradients and update compression embeddings
+                loss.backward()
+
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                lr_scheduler.step()
+
+                # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
+
+        # Persist artifacts
+        # save_path = self._save_artifacts(compression_token_embeddings_single.data, [], "noop_prefixes")
+        # if save_path is not None:
+        #     return save_path
         return None
 
     def progressive_train(self):

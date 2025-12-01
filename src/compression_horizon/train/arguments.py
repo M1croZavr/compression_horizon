@@ -111,6 +111,7 @@ class MyTrainingArguments(TrainingArguments):
 
     # Progressive training control
     progressive_train: bool = field(default=False, metadata={"help": "Whether to use progressive training."})
+    noop_train: bool = field(default=False, metadata={"help": "Whether to use noop training."})
     progressive_min_seq_len: int = field(
         default=1,
         metadata={"help": "Starting effective sequence length for progressive_train."},

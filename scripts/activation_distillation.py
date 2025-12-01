@@ -6,7 +6,7 @@ import sys
 
 import torch
 import transformers
-from datasets import load_dataset
+from datasets import Dataset, load_dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -106,24 +106,52 @@ if __name__ == "__main__":
     torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
     model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
-
-    raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
-
-    if training_args.limit_dataset_items is not None:
-        train_dataset = raw_dataset.select(range(training_args.limit_dataset_items))
-    # eval_dataset = raw_dataset.select(range(10, 20))
-
     tokenizer.pad_token = tokenizer.eos_token
-    train_dataset = train_dataset.map(
-        lambda x: tokenizer(
-            x["text"],
-            truncation=True,
-            padding="max_length",
-            max_length=training_args.max_sequence_length,
-            return_tensors="pt",
-        ),
-        remove_columns=train_dataset.column_names,
-    )
+
+    # Create cache directory for tokenized datasets
+    cache_dir = "artifacts/cache/tokenized_datasets"
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Generate cache key based on dataset parameters
+    cache_params = {
+        "dataset": "mrsndmn/pg19",
+        "split": "test",
+        "limit_dataset_items": getattr(training_args, "limit_dataset_items", None),
+        "max_sequence_length": training_args.max_sequence_length,
+        "model_checkpoint": training_args.model_checkpoint,
+    }
+    cache_key_json = json.dumps(cache_params, sort_keys=True, ensure_ascii=False, default=str)
+    cache_key_hash = hashlib.sha256(cache_key_json.encode("utf-8")).hexdigest()[:16]
+    cache_path = os.path.join(cache_dir, f"dataset_{cache_key_hash}")
+
+    # Try to load cached tokenized dataset
+    if os.path.exists(cache_path):
+        print(f"Loading tokenized dataset from cache: {cache_path}")
+        train_dataset = Dataset.load_from_disk(cache_path)
+    else:
+        print("Tokenizing dataset (this may take a while)...")
+        raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
+
+        if training_args.limit_dataset_items is not None:
+            train_dataset = raw_dataset.select(range(training_args.limit_dataset_items))
+        else:
+            train_dataset = raw_dataset
+        # eval_dataset = raw_dataset.select(range(10, 20))
+
+        train_dataset = train_dataset.map(
+            lambda x: tokenizer(
+                x["text"],
+                truncation=True,
+                padding="max_length",
+                max_length=training_args.max_sequence_length,
+                return_tensors="pt",
+            ),
+            remove_columns=train_dataset.column_names,
+        )
+
+        # Save tokenized dataset to cache
+        print(f"Saving tokenized dataset to cache: {cache_path}")
+        train_dataset.save_to_disk(cache_path)
 
     print("train_dataset", len(train_dataset))
     print("train_dataset", train_dataset)
@@ -142,7 +170,9 @@ if __name__ == "__main__":
     )
 
     if training_args.progressive_train:
-        training_artifacts = trainer.progressive_train()
+        training_artifacts = trainer.train()
+    elif training_args.noop_train:
+        training_artifacts = trainer.train_noop()
     else:
         training_artifacts = trainer.train()
     print(f"Saved compressed prefixes to: {training_artifacts}")
