@@ -110,8 +110,13 @@ class MyTrainingArguments(TrainingArguments):
     )
 
     # Progressive training control
-    progressive_train: bool = field(default=False, metadata={"help": "Whether to use progressive training."})
     noop_train: bool = field(default=False, metadata={"help": "Whether to use noop training."})
+    noop_convergence_threshold: float = field(
+        default=1.0,
+        metadata={"help": "Mean token-level match ratio required to mark a stage as converged."},
+    )
+
+    progressive_train: bool = field(default=False, metadata={"help": "Whether to use progressive training."})
     progressive_min_seq_len: int = field(
         default=1,
         metadata={"help": "Starting effective sequence length for progressive_train."},
@@ -121,7 +126,7 @@ class MyTrainingArguments(TrainingArguments):
         metadata={"help": "Step size to increase effective sequence length between stages."},
     )
     progressive_convergence_threshold: float = field(
-        default=0.99,
+        default=1.0,
         metadata={"help": "Mean token-level match ratio required to mark a stage as converged."},
     )
     progressive_max_stages: int = field(

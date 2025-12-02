@@ -25,6 +25,82 @@ class NvidiaSMIError(Exception):
         super().__init__(self.message)
 
 
+def load_or_create_tokenized_dataset(
+    cache_dir: str,
+    dataset_name: str,
+    split: str,
+    tokenizer: AutoTokenizer,
+    max_sequence_length: int,
+    model_checkpoint: str,
+    limit_dataset_items: int | None = None,
+    cache_prefix: str = "dataset",
+    num_proc: int = 4,
+    fallback_length: int | None = None,
+) -> Dataset:
+    """
+    Load a tokenized dataset from cache or create and cache it.
+
+    Args:
+        cache_dir: Directory for caching datasets
+        dataset_name: Name of the dataset (e.g., "mrsndmn/pg19")
+        split: Dataset split (e.g., "test")
+        tokenizer: Tokenizer to use for tokenization
+        max_sequence_length: Maximum sequence length for tokenization
+        model_checkpoint: Model checkpoint name (for cache key)
+        limit_dataset_items: Optional limit on number of items to select
+        cache_prefix: Prefix for cache file name (default: "dataset")
+        num_proc: Number of processes for dataset loading
+        fallback_length: If provided and limit_dataset_items is None, use this length
+
+    Returns:
+        Tokenized Dataset
+    """
+    # Generate cache key based on dataset parameters
+    cache_params = {
+        "dataset": dataset_name,
+        "split": split,
+        "limit_dataset_items": limit_dataset_items,
+        "max_sequence_length": max_sequence_length,
+        "model_checkpoint": model_checkpoint,
+    }
+    cache_key_json = json.dumps(cache_params, sort_keys=True, ensure_ascii=False, default=str)
+    cache_key_hash = hashlib.sha256(cache_key_json.encode("utf-8")).hexdigest()[:16]
+    cache_path = os.path.join(cache_dir, f"{cache_prefix}_{cache_key_hash}")
+
+    # Try to load cached tokenized dataset
+    if os.path.exists(cache_path):
+        print(f"Loading tokenized dataset from cache: {cache_path}")
+        return Dataset.load_from_disk(cache_path)
+
+    # Create dataset if not cached
+    print("Tokenizing dataset (this may take a while)...")
+    raw_dataset = load_dataset(dataset_name, split=split, num_proc=num_proc)
+
+    if limit_dataset_items is not None:
+        dataset = raw_dataset.select(range(limit_dataset_items))
+    elif fallback_length is not None:
+        dataset = raw_dataset.select(range(fallback_length))
+    else:
+        dataset = raw_dataset
+
+    dataset = dataset.map(
+        lambda x: tokenizer(
+            x["text"],
+            truncation=True,
+            padding="max_length",
+            max_length=max_sequence_length,
+            return_tensors="pt",
+        ),
+        remove_columns=dataset.column_names,
+    )
+
+    # Save tokenized dataset to cache
+    print(f"Saving tokenized dataset to cache: {cache_path}")
+    dataset.save_to_disk(cache_path)
+
+    return dataset
+
+
 if __name__ == "__main__":
     try:
         subprocess.check_output(["nvidia-smi"], shell=True)
@@ -112,50 +188,41 @@ if __name__ == "__main__":
     cache_dir = "artifacts/cache/tokenized_datasets"
     os.makedirs(cache_dir, exist_ok=True)
 
-    # Generate cache key based on dataset parameters
-    cache_params = {
-        "dataset": "mrsndmn/pg19",
-        "split": "test",
-        "limit_dataset_items": getattr(training_args, "limit_dataset_items", None),
-        "max_sequence_length": training_args.max_sequence_length,
-        "model_checkpoint": training_args.model_checkpoint,
-    }
-    cache_key_json = json.dumps(cache_params, sort_keys=True, ensure_ascii=False, default=str)
-    cache_key_hash = hashlib.sha256(cache_key_json.encode("utf-8")).hexdigest()[:16]
-    cache_path = os.path.join(cache_dir, f"dataset_{cache_key_hash}")
-
-    # Try to load cached tokenized dataset
-    if os.path.exists(cache_path):
-        print(f"Loading tokenized dataset from cache: {cache_path}")
-        train_dataset = Dataset.load_from_disk(cache_path)
-    else:
-        print("Tokenizing dataset (this may take a while)...")
-        raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
-
-        if training_args.limit_dataset_items is not None:
-            train_dataset = raw_dataset.select(range(training_args.limit_dataset_items))
-        else:
-            train_dataset = raw_dataset
-        # eval_dataset = raw_dataset.select(range(10, 20))
-
-        train_dataset = train_dataset.map(
-            lambda x: tokenizer(
-                x["text"],
-                truncation=True,
-                padding="max_length",
-                max_length=training_args.max_sequence_length,
-                return_tensors="pt",
-            ),
-            remove_columns=train_dataset.column_names,
-        )
-
-        # Save tokenized dataset to cache
-        print(f"Saving tokenized dataset to cache: {cache_path}")
-        train_dataset.save_to_disk(cache_path)
+    # Load or create training dataset
+    train_dataset = load_or_create_tokenized_dataset(
+        cache_dir=cache_dir,
+        dataset_name="mrsndmn/pg19",
+        split="test",
+        tokenizer=tokenizer,
+        max_sequence_length=training_args.max_sequence_length,
+        model_checkpoint=training_args.model_checkpoint,
+        limit_dataset_items=getattr(training_args, "limit_dataset_items", None),
+        cache_prefix="dataset",
+    )
 
     print("train_dataset", len(train_dataset))
     print("train_dataset", train_dataset)
-    # print("eval_dataset", len(eval_dataset))
+
+    # Prepare evaluation dataset with twice the sequence length for noop_train
+    eval_dataset = None
+    if training_args.noop_train:
+        eval_seq_length = training_args.max_sequence_length * 2
+        print(f"Preparing evaluation dataset with sequence length {eval_seq_length} (2x training length)...")
+
+        eval_dataset = load_or_create_tokenized_dataset(
+            cache_dir=cache_dir,
+            dataset_name="mrsndmn/pg19",
+            split="test",
+            tokenizer=tokenizer,
+            max_sequence_length=eval_seq_length,
+            model_checkpoint=training_args.model_checkpoint,
+            limit_dataset_items=getattr(training_args, "limit_dataset_items", None),
+            cache_prefix="eval_dataset",
+            fallback_length=len(train_dataset),
+        )
+
+        print(f"eval_dataset length: {len(eval_dataset)}")
+        print(f"eval_dataset sequence length: {eval_seq_length}")
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
@@ -166,6 +233,7 @@ if __name__ == "__main__":
         processing_class=tokenizer,
         args=training_args,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
     )
 

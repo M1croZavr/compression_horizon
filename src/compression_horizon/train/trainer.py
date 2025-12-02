@@ -586,6 +586,62 @@ class MyTrainer:
             return save_path
         return None
 
+    def _evaluate_noop_on_longer_sequences(self, model, compression_token_embeddings_single, num_compression_tokens):
+        """Evaluate compression embeddings on sequences that are twice as long as training sequences."""
+        model.eval()
+        device = next(model.parameters()).device
+        eval_dataloader = DataLoader(
+            self.eval_dataset,
+            batch_size=self.args.per_device_train_batch_size,
+            shuffle=False,
+            collate_fn=self.data_collator,
+        )
+
+        all_convergences = []
+        eval_seq_length = None
+
+        with torch.no_grad():
+            compression_token_embeddings_single_eval = compression_token_embeddings_single.to(device)
+            for batch in eval_dataloader:
+                input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
+                batch_size = input_ids.shape[0]
+                attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
+
+                if eval_seq_length is None:
+                    eval_seq_length = input_ids.shape[1]
+
+                compression_token_embeddings = compression_token_embeddings_single_eval.repeat([batch_size, 1, 1])
+                token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+
+                compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
+                    batch_size, num_compression_tokens
+                )  # [batch, mem]
+
+                united_token_embeddings = torch.cat(
+                    [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings], dim=1
+                )  # [batch, mem + sequence, hidden]
+                united_attention_mask = torch.cat([compression_attention_mask, attention_mask], dim=1)
+
+                # Get base model predictions
+                base_logits = model(input_ids, attention_mask=attention_mask).logits
+                # Get compression model predictions
+                united_logits = model(inputs_embeds=united_token_embeddings, attention_mask=united_attention_mask).logits
+
+                # Compute convergence: compare united_logits argmax with base_logits argmax
+                base_preds = base_logits.argmax(dim=-1)  # [batch, sequence]
+                united_preds = united_logits[:, num_compression_tokens:, :].argmax(dim=-1)  # [batch, sequence]
+                convergence_numerator = (united_preds == base_preds).sum(dim=-1)
+                convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
+
+                all_convergences.extend(convergence_per_sample.cpu().numpy().tolist())
+
+        mean_convergence = float(torch.mean(torch.tensor(all_convergences)).item())
+        return {
+            "mean_convergence": mean_convergence,
+            "all_convergences": all_convergences,
+            "eval_seq_length": eval_seq_length,
+        }
+
     def train_noop(self):
         set_launch_seed(self.args.random_seed)
         device = get_device()
@@ -622,6 +678,9 @@ class MyTrainer:
 
         pbar = tqdm(range(int(self.args.num_train_epochs)))
         for epoch_i in pbar:
+            if early_stopped:
+                break
+
             for batch in dataloader:
                 model.train()
                 input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
@@ -678,7 +737,6 @@ class MyTrainer:
                 target_distribution_valid = target_distribution_flat[valid_mask_flat]  # [num_valid, vocab]
                 # Compute KL divergence: sum over vocab dimension, mean over valid positions
                 loss = F.kl_div(united_log_probs_valid, target_distribution_valid, reduction="batchmean")
-                breakpoint()
                 # Scale loss by gradient accumulation steps to maintain effective learning rate
                 loss = loss / gradient_accumulation_steps
 
@@ -744,7 +802,7 @@ class MyTrainer:
                     )
 
                     # Early stopping: check if convergence threshold reached
-                    convergence_threshold = getattr(self.args, "noop_convergence_threshold", 0.99)
+                    convergence_threshold = self.args.noop_convergence_threshold
                     if (convergence_per_sample >= convergence_threshold).all():
                         print(
                             f"Early stopping: convergence reached threshold {convergence_threshold} at step {self.global_step}"
@@ -765,6 +823,7 @@ class MyTrainer:
             tokenizer = self.processing_class
             compression_token_embeddings_cpu = compression_token_embeddings_single.detach().cpu()
             # Get final evaluation metrics
+            all_convergences = []
             model.eval()
             for batch in dataloader:
                 input_ids = batch.input_ids.squeeze(1)
@@ -786,6 +845,7 @@ class MyTrainer:
                 united_preds = united_logits_eval[:, num_compression_tokens:, :].argmax(dim=-1)
                 convergence_numerator = (united_preds == base_preds).sum(dim=-1)
                 convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
+                all_convergences.extend(convergence_per_sample.cpu().numpy().tolist())
 
                 for j in range(batch_size):
                     sample_attention_mask = attention_mask[j].bool()
@@ -813,12 +873,27 @@ class MyTrainer:
                         }
                     )
                     sample_id_counter += 1
+
+            print("all_convergences mean", torch.mean(torch.tensor(all_convergences)))
+
             model.train()
 
         # Close TensorBoard writer
         if self.writer is not None:
             self.writer.flush()
             self.writer.close()
+
+        # Evaluate on longer sequences if eval_dataset is provided
+        if self.eval_dataset is not None:
+            print("Evaluating compression embeddings on longer sequences...")
+            eval_results = self._evaluate_noop_on_longer_sequences(
+                model, compression_token_embeddings_single, num_compression_tokens
+            )
+            print(f"Evaluation on longer sequences - Mean convergence: {eval_results['mean_convergence']:.4f}")
+            # Add evaluation results to collected_rows metadata
+            for row in collected_rows:
+                row["eval_longer_seq_mean_convergence"] = eval_results["mean_convergence"]
+                row["eval_longer_seq_length"] = eval_results["eval_seq_length"]
 
         # Persist artifacts
         save_path = self._save_artifacts(compression_token_embeddings_single.detach().cpu(), collected_rows, "noop_prefixes")
