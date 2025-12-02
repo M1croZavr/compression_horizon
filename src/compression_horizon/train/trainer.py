@@ -2,7 +2,6 @@ import os
 from typing import Optional
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from datasets import Dataset
 from torch.optim import AdamW
@@ -225,6 +224,8 @@ class MyTrainer:
         if init_method == "mvnormal" and mvn_dist is not None:
             samples = mvn_dist.sample((batch_size, num_tokens))
             trainable_embeddings = torch.nn.Parameter(samples.to(dtype=torch.float32))
+        elif init_method == "zeros":
+            trainable_embeddings = torch.nn.Parameter(torch.zeros([batch_size, num_tokens, hidden_size], dtype=torch.float32))
         elif init_method == "single_random":
             if single_compressed_embeddings_initialization is not None:
                 trainable_embeddings = torch.nn.Parameter(
@@ -594,8 +595,8 @@ class MyTrainer:
         num_compression_tokens = self.args.number_of_mem_tokens
 
         # Collect per-sample artifacts for optional saving
-        # collected_rows = []
-        # sample_id_counter = 0
+        collected_rows = []
+        sample_id_counter = 0
 
         hidden_size = model.config.hidden_size
 
@@ -610,20 +611,20 @@ class MyTrainer:
         )
 
         dataloader = self._create_dataloader()
-        num_training_steps = self.args.num_train_epochs * len(self.train_dataset) / self.args.gradient_accumulation_steps
+        num_training_steps = self.args.num_train_epochs * len(dataloader) / self.args.gradient_accumulation_steps
         optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
             compression_token_embeddings_single, num_training_steps=num_training_steps
         )
 
         gradient_accumulation_steps = self.args.gradient_accumulation_steps
         accumulation_step = 0
+        early_stopped = False
 
         pbar = tqdm(range(int(self.args.num_train_epochs)))
         for epoch_i in pbar:
             for batch in dataloader:
                 model.train()
                 input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
-                # print("input_ids", input_ids.shape)
                 batch_size = input_ids.shape[0]
 
                 compression_token_embeddings = compression_token_embeddings_single.repeat([batch_size, 1, 1])
@@ -646,28 +647,40 @@ class MyTrainer:
                     dim=1,
                 )  # [batch, mem + sequence]
 
-                base_logits = model(input_ids).logits
+                base_logits = model(input_ids, attention_mask=attention_mask).logits
                 united_logits = model(inputs_embeds=united_token_embeddings, attention_mask=united_attention_mask).logits
 
-                criterion = nn.CrossEntropyLoss()
-                loss = criterion(
-                    united_logits[
-                        :,
-                        1:,
-                    ].flatten(0, 1),
-                    base_logits.flatten(0, 1).softmax(dim=-1),
-                )
+                # Create distribution-like target: set non-top-k elements to -inf, then softmax
+                max_tokens = self.args.max_tokens_in_distribution
+                target_logits = base_logits.clone()
+                # Get top-k tokens for each position
+                topk_values, topk_indices = torch.topk(base_logits, k=max_tokens, dim=-1)  # [batch, sequence, k]
+                # Create mask for top-k positions
+                batch_size, seq_len, vocab_size = base_logits.shape
+                topk_mask = torch.zeros_like(target_logits, dtype=torch.bool)
+                topk_mask.scatter_(2, topk_indices, True)
+                # Set non-top-k elements to -inf
+                target_logits[~topk_mask] = float("-inf")
+                # Apply softmax to get distribution with top-k tokens
+                target_distribution = F.softmax(target_logits, dim=-1)
+
+                # Use KL divergence for distribution target
+                united_logits_sliced = united_logits[:, num_compression_tokens:, :]  # [batch, sequence, vocab]
+                united_log_probs = F.log_softmax(united_logits_sliced, dim=-1)
+                # Mask out padding positions by creating a valid positions mask
+                valid_mask = attention_mask.bool()  # [batch, sequence]
+                # Flatten for loss computation
+                united_log_probs_flat = united_log_probs.flatten(0, 1)  # [batch*sequence, vocab]
+                target_distribution_flat = target_distribution.flatten(0, 1)  # [batch*sequence, vocab]
+                valid_mask_flat = valid_mask.flatten()  # [batch*sequence]
+                # Only compute loss on valid (non-padding) positions
+                united_log_probs_valid = united_log_probs_flat[valid_mask_flat]  # [num_valid, vocab]
+                target_distribution_valid = target_distribution_flat[valid_mask_flat]  # [num_valid, vocab]
+                # Compute KL divergence: sum over vocab dimension, mean over valid positions
+                loss = F.kl_div(united_log_probs_valid, target_distribution_valid, reduction="batchmean")
+                breakpoint()
                 # Scale loss by gradient accumulation steps to maintain effective learning rate
                 loss = loss / gradient_accumulation_steps
-
-                if epoch_i % 10 == 0:
-                    pbar.set_postfix(
-                        loss=loss.item() * gradient_accumulation_steps,
-                        lr=lr_scheduler.get_last_lr()[0],
-                        comp_emb_mean=compression_token_embeddings_single.mean().item(),
-                        comp_emb_std=compression_token_embeddings_single.std().item(),
-                        accum_step=f"{accumulation_step + 1}/{gradient_accumulation_steps}",
-                    )
 
                 # Calculate gradients and accumulate
                 loss.backward()
@@ -680,7 +693,66 @@ class MyTrainer:
                     lr_scheduler.step()
                     accumulation_step = 0
 
-                # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
+                    # Evaluation: compute convergence metrics
+                    model.eval()
+                    with torch.no_grad():
+                        # Recompute logits for evaluation
+                        base_logits_eval = model(input_ids, attention_mask=attention_mask).logits
+                        united_logits_eval = model(
+                            inputs_embeds=united_token_embeddings, attention_mask=united_attention_mask
+                        ).logits
+
+                        # Compute convergence: compare united_logits argmax with base_logits argmax
+                        base_preds = base_logits_eval.argmax(dim=-1)  # [batch, sequence]
+                        united_preds = united_logits_eval[:, num_compression_tokens:, :].argmax(dim=-1)  # [batch, sequence]
+                        convergence_numerator = (united_preds == base_preds).sum(dim=-1)
+                        convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
+
+                        # Generate text periodically for evaluation
+                        generated_text: Optional[list] = None
+                        ground_truth_text: Optional[list] = None
+                        if self.global_step % 100 == 0:
+                            generated_text = generate_from_compression(
+                                model,
+                                self.processing_class,
+                                united_token_embeddings[:, :num_compression_tokens],
+                                max_new_tokens=self.args.max_sequence_length,
+                                num_return_sequences=1,
+                            )
+                            ground_truth_text = self.processing_class.batch_decode(input_ids, skip_special_tokens=True)
+
+                    model.train()
+
+                    # Log metrics
+                    self._log_step(
+                        loss * gradient_accumulation_steps,
+                        None,  # alignment_loss not used in train_noop
+                        convergence_per_sample,
+                        compression_token_embeddings_single,
+                        lr_scheduler,
+                        generated_text,
+                        ground_truth_text,
+                    )
+
+                    # Update progress bar
+                    pbar.set_postfix(
+                        loss=loss.item() * gradient_accumulation_steps,
+                        convergence=convergence_per_sample.mean().item(),
+                        lr=lr_scheduler.get_last_lr()[0],
+                        comp_emb_mean=compression_token_embeddings_single.mean().item(),
+                        comp_emb_std=compression_token_embeddings_single.std().item(),
+                    )
+
+                    # Early stopping: check if convergence threshold reached
+                    convergence_threshold = getattr(self.args, "noop_convergence_threshold", 0.99)
+                    if (convergence_per_sample >= convergence_threshold).all():
+                        print(
+                            f"Early stopping: convergence reached threshold {convergence_threshold} at step {self.global_step}"
+                        )
+                        early_stopped = True
+                        break
+                if early_stopped:
+                    break
 
         # Handle any remaining accumulated gradients at the end of training
         if accumulation_step > 0:
@@ -688,10 +760,70 @@ class MyTrainer:
             optimizer.zero_grad(set_to_none=True)
             lr_scheduler.step()
 
+        # Record artifacts for remaining batches
+        with torch.no_grad():
+            tokenizer = self.processing_class
+            compression_token_embeddings_cpu = compression_token_embeddings_single.detach().cpu()
+            # Get final evaluation metrics
+            model.eval()
+            for batch in dataloader:
+                input_ids = batch.input_ids.squeeze(1)
+                batch_size = input_ids.shape[0]
+                attention_mask = batch.attention_mask.squeeze(1)
+                compression_token_embeddings = compression_token_embeddings_single.repeat([batch_size, 1, 1])
+                with torch.no_grad():
+                    token_embeddings = model.model.embed_tokens(input_ids)
+                compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
+                    batch_size, num_compression_tokens
+                )
+                united_token_embeddings = torch.cat(
+                    [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings], dim=1
+                )
+                united_attention_mask = torch.cat([compression_attention_mask, attention_mask], dim=1)
+                base_logits_eval = model(input_ids, attention_mask=attention_mask).logits
+                united_logits_eval = model(inputs_embeds=united_token_embeddings, attention_mask=united_attention_mask).logits
+                base_preds = base_logits_eval.argmax(dim=-1)
+                united_preds = united_logits_eval[:, num_compression_tokens:, :].argmax(dim=-1)
+                convergence_numerator = (united_preds == base_preds).sum(dim=-1)
+                convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
+
+                for j in range(batch_size):
+                    sample_attention_mask = attention_mask[j].bool()
+                    sample_input_ids = input_ids[j][sample_attention_mask]
+                    sample_text = tokenizer.decode(sample_input_ids, skip_special_tokens=True)
+                    embedding = compression_token_embeddings_cpu.to(torch.float32).numpy().tolist()
+                    collected_rows.append(
+                        {
+                            "sample_id": sample_id_counter,
+                            "text": sample_text,
+                            "embedding": embedding,
+                            "final_loss": None,  # Loss not computed in final eval
+                            "final_convergence": convergence_per_sample[j].item(),
+                            "compression_tokens_mean": float(compression_token_embeddings_cpu.mean().item()),
+                            "compression_tokens_std": float(compression_token_embeddings_cpu.std().item()),
+                            "num_input_tokens": int(sample_attention_mask.sum().item()),
+                            "num_compression_tokens": int(num_compression_tokens),
+                            "hidden_size": hidden_size,
+                            "loss_type": "noop_kl_div",
+                            "max_tokens_in_distribution": self.args.max_tokens_in_distribution,
+                            "dtype": self.args.dtype,
+                            "embedding_init_method": self.args.embedding_init_method,
+                            "model_checkpoint": self.args.model_checkpoint,
+                            "num_train_epochs": self.args.num_train_epochs,
+                        }
+                    )
+                    sample_id_counter += 1
+            model.train()
+
+        # Close TensorBoard writer
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+
         # Persist artifacts
-        # save_path = self._save_artifacts(compression_token_embeddings_single.data, [], "noop_prefixes")
-        # if save_path is not None:
-        #     return save_path
+        save_path = self._save_artifacts(compression_token_embeddings_single.detach().cpu(), collected_rows, "noop_prefixes")
+        if save_path is not None:
+            return save_path
         return None
 
     def progressive_train(self):

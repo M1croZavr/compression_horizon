@@ -132,6 +132,10 @@ class MyTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Whether to persist intermediate compression tokens for each stage."},
     )
+    max_tokens_in_distribution: int = field(
+        default=1,
+        metadata={"help": "Number of top tokens to keep in the distribution target (for train_noop)."},
+    )
     # Precision control
     dtype: str = field(
         default="float32",
