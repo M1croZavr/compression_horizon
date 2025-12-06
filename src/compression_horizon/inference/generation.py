@@ -77,3 +77,34 @@ def generate_from_compression(
 
     texts = tokenizer.batch_decode(generated_token_ids, skip_special_tokens=True)
     return texts
+
+
+@torch.no_grad()
+def calculate_logits(
+    model: PreTrainedModel,
+    compressed_embeddings: torch.Tensor,  # [1, mem, hidden]
+    sequence_embeddings: torch.Tensor,  # [1, sequence, hidden]
+    attention_mask: torch.Tensor,  # [1, sequence]
+) -> torch.Tensor:
+    """Calculate logits for a sequence."""
+    # Cast to the same device
+    device = compressed_embeddings.device
+    if model.device != device:
+        model = model.to(device)
+    model.eval()
+
+    united_embeddings = torch.cat(
+        (compressed_embeddings, sequence_embeddings),
+        dim=1,
+    )  # [1, mem + sequence, hidden]
+    united_attention_mask = torch.cat(
+        (torch.ones(1, compressed_embeddings.size(1), dtype=torch.int64, device=device), attention_mask),
+        dim=1,
+    )  # [1, mem + sequence]
+    # TODO: position_ids?
+    outputs = model(
+        inputs_embeds=united_embeddings,
+        attention_mask=united_attention_mask,
+    )
+    logits = outputs.logits  # [batch, mem + sequence, vocabulary]
+    return logits

@@ -15,17 +15,10 @@ from transformers import (
 
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer
-
-
-class NvidiaSMIError(Exception):
-    """A custom exception for validating nvidia-smi availability."""
-
-    def __init__(self, message: str):
-        self.message = message
-        super().__init__(self.message)
-
+from compression_horizon.utils.exceptions import NvidiaSMIError
 
 if __name__ == "__main__":
+    # Check for nvidia-smi availability
     try:
         subprocess.check_output(["nvidia-smi"], shell=True)
     except subprocess.CalledProcessError:
@@ -108,9 +101,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
 
     raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
-
-    if training_args.limit_dataset_items is not None:
-        train_dataset = raw_dataset.select(range(training_args.limit_dataset_items))
+    train_dataset = raw_dataset.select(range(training_args.limit_dataset_items))
     # eval_dataset = raw_dataset.select(range(10, 20))
 
     tokenizer.pad_token = tokenizer.eos_token

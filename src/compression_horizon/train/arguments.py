@@ -51,7 +51,7 @@ class MyTrainingArguments(TrainingArguments):
     fix_position_ids: bool = field(
         default=False,
     )
-    limit_dataset_items: int | None = field(default=1)
+    limit_dataset_items: int = field(default=1)
 
     # Overrides with changed defaults
     # optim: str = field(
@@ -131,6 +131,7 @@ class MyTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Whether to persist intermediate compression tokens for each stage."},
     )
+
     # Precision control
     dtype: str = field(
         default="float32",
