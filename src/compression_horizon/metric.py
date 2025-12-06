@@ -76,7 +76,7 @@ def calculate_perplexity(
         if eos_token_id is not None:
             if next_token_id.item() == eos_token_id:
                 break
-        generated_token_logits.append(logits)
+        generated_token_logits.append(logits.cpu())
         # Increment sequence embeddings and attention mask
         next_token_embedding = input_embeddings(next_token_id).unsqueeze(dim=1)  # [1, 1, hidden]
         print("10", next_token_embedding.device)
