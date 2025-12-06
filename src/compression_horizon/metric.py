@@ -36,6 +36,10 @@ def calculate_perplexity(
     if model.device != device:
         model = model.to(device)
     model.eval()
+    print("1", device)
+    print("2", compressed_embeddings.device)
+    print("3", sequence_embeddings.device)
+    print("4", attention_mask.device)
 
     # Add pad_token to a tokenizer
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
@@ -53,15 +57,20 @@ def calculate_perplexity(
     for _ in range(n):
         # Embeddings
         united_token_embeddings = torch.cat((compressed_embeddings, sequence_embeddings), dim=1)  # [1, mem + sequence, hidden]
+        print("5", united_token_embeddings.device)
         united_token_embeddings = united_token_embeddings.to(torch_dtype)
+        print("6", united_token_embeddings.device)
 
         # Attention mask
         compression_attention_mask = torch.ones((1, num_compression_tokens), dtype=torch.long, device=device)  # [1, mem]
+        print("7", compression_attention_mask.device)
         united_attention_mask = torch.cat((compression_attention_mask, attention_mask), dim=1)  # [1, mem + sequence]
+        print("8", united_attention_mask.device)
 
         outputs = model(inputs_embeds=united_token_embeddings, attention_mask=united_attention_mask)
         logits = outputs.logits[:, -1, :]  # [1, vocabulary]
         next_token_id = torch.argmax(logits, dim=-1)  # [1]
+        print("9", next_token_id.device)
 
         # Stop if a sequence already reached EOS token
         if eos_token_id is not None:
@@ -70,13 +79,18 @@ def calculate_perplexity(
         generated_token_logits.append(logits)
         # Increment sequence embeddings and attention mask
         next_token_embedding = input_embeddings(next_token_id).unsqueeze(dim=1)  # [1, 1, hidden]
+        print("10", next_token_embedding.device)
         sequence_embeddings = torch.cat((sequence_embeddings, next_token_embedding), dim=1)  # [1, sequence + 1, hidden]
+        print("11", sequence_embeddings.device)
         attention_mask = torch.cat(
             (attention_mask, torch.ones((1, 1), dtype=torch.long, device=device)), dim=1
         )  # [1, sequence + 1]
+        print("12", sequence_embeddings.device)
 
     generated_token_logits = torch.cat(generated_token_logits, dim=0)
+    print(generated_token_logits.shape)
     generated_token_log_probs = F.log_softmax(generated_token_logits, dim=1)
+    print(generated_token_log_probs.argmax(dim=1).shape, generated_token_log_probs.argmax(dim=1).view(-1, 1).shape)
     cross_entropy = -1 * generated_token_log_probs[generated_token_log_probs.argmax(dim=1).view(-1, 1)].mean()
     perplexity = torch.exp(cross_entropy).item()
     return perplexity
