@@ -87,10 +87,17 @@ def calculate_perplexity(
         )  # [1, sequence + 1]
         print("12", sequence_embeddings.device)
 
-    generated_token_logits = torch.cat(generated_token_logits, dim=0)
+    generated_token_logits = torch.cat(generated_token_logits, dim=0)  # [n, vocabulary]
     print(generated_token_logits.shape)
     generated_token_log_probs = F.log_softmax(generated_token_logits, dim=1)
     print(generated_token_log_probs.argmax(dim=1).shape, generated_token_log_probs.argmax(dim=1).view(-1, 1).shape)
-    cross_entropy = -1 * generated_token_log_probs[generated_token_log_probs.argmax(dim=1).view(-1, 1)].mean()
+    cross_entropy = (
+        -1
+        * torch.gather(
+            generated_token_log_probs,
+            1,
+            generated_token_log_probs.argmax(dim=1).view(-1, 1),
+        ).mean()
+    )
     perplexity = torch.exp(cross_entropy).item()
     return perplexity
