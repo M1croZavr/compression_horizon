@@ -23,6 +23,7 @@ def calculate_perplexity(
     compressed_embeddings: torch.Tensor,  # [1, mem, hidden]
     sequence_embeddings: torch.Tensor,  # [1, sequence, hidden]
     attention_mask: torch.Tensor,  # [1, sequence]
+    *,
     n: int = 128,
 ) -> float:
     """Entropy measures the level of uncertainty in the model's output.
@@ -70,7 +71,9 @@ def calculate_perplexity(
         # Increment sequence embeddings and attention mask
         next_token_embedding = input_embeddings(next_token_id).unsqueeze(dim=1)  # [1, 1, hidden]
         sequence_embeddings = torch.cat((sequence_embeddings, next_token_embedding), dim=1)  # [1, sequence + 1, hidden]
-        attention_mask = torch.cat((attention_mask, torch.LongTensor([[1]])))  # [1, sequence + 1]
+        attention_mask = torch.cat(
+            (attention_mask, torch.ones((1, 1), dtype=torch.long, device=device)), dim=1
+        )  # [1, sequence + 1]
 
     generated_token_logits = torch.cat(generated_token_logits, dim=0)
     generated_token_log_probs = F.log_softmax(generated_token_logits, dim=1)
