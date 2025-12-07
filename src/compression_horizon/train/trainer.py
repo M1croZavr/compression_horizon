@@ -281,7 +281,7 @@ class MyTrainer:
         output_dir = self.args.output_dir
         if output_dir and len(rows) > 0:
             os.makedirs(output_dir, exist_ok=True)
-            save_path = os.path.join(output_dir, "compression_embeddings.pt")
+            save_path = os.path.join(output_dir, "compressed_embeddings.pt")
             torch.save(compression_token_embeddings, save_path)
             save_path = os.path.join(output_dir, subdir_name)
             ds = Dataset.from_list(rows)
