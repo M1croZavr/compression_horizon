@@ -98,7 +98,7 @@ def calculate_logits(
         dim=1,
     )  # [1, mem + sequence, hidden]
     united_attention_mask = torch.cat(
-        (torch.ones(1, compressed_embeddings.size(1), dtype=torch.int64, device=device), attention_mask),
+        (torch.ones(1, compressed_embeddings.size(1), dtype=torch.long, device=device), attention_mask),
         dim=1,
     )  # [1, mem + sequence]
     # TODO: position_ids?
