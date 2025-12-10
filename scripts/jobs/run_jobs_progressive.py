@@ -10,9 +10,17 @@ if __name__ == "__main__":
 
     author_name = "d.tarasov"
 
-    checkpoints = ["HuggingFaceTB/SmolLM2-1.7B", "unsloth/Llama-3.2-3B", "Qwen/Qwen3-4B"]
+    checkpoints = [
+        "HuggingFaceTB/SmolLM2-1.7B",
+        "unsloth/Llama-3.2-3B",
+        "Qwen/Qwen3-4B",
+        "unsloth/Meta-Llama-3.1-8B",
+        "Qwen/Qwen3-8B",
+    ]
+    # checkpoints = []
 
     max_seq_len = 2048
+    max_optimization_steps_per_sample = 2500
 
     for model_checkpoint in checkpoints:
         exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[1]}"
@@ -23,7 +31,7 @@ if __name__ == "__main__":
 
         result = client.run_job(
             payload={
-                "script": f" cd {workdir} && {python_path} scripts/interpolation.py scripts/activation_distillation.py  --remove_unused_columns False  --num_alignment_layers 1 --loss_type cross_entropy --max_sequence_length {max_seq_len} --warmup_steps 100 --model_checkpoint HuggingFaceTB/SmolLM2-1.7B --per_device_train_batch_size 1 --max_optimization_steps_per_sample 1000 --learning_rate 0.01  --progressive_train 1 --embedding_init_method random0.02 --output_dir {out_dir_name}",
+                "script": f" cd {workdir} && {python_path} scripts/activation_distillation.py  --remove_unused_columns False  --num_alignment_layers 1 --loss_type cross_entropy --max_sequence_length {max_seq_len} --warmup_steps 100 --model_checkpoint {model_checkpoint} --per_device_train_batch_size 1 --max_optimization_steps_per_sample {max_optimization_steps_per_sample} --learning_rate 0.01  --progressive_train 1 --embedding_init_method random0.02 --output_dir {out_dir_name} --limit_dataset_items 10",
                 "job_desc": f"CH: progressive {exp_suffix} #{author_name} #multimodal @mrsndmn",
                 "env_variables": {
                     "PYTHONPATH": "./src",
