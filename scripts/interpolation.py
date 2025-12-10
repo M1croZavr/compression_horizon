@@ -40,12 +40,18 @@ def load_progressive_dataset(dataset_path: str) -> Dataset:
 
 def filter_records(
     ds: Dataset,
-    sample_id: Optional[int] = None,
+    sample_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+
+    sample_ids = None
+    if sample_id is not None:
+        sample_ids = set(int(sid) for sid in sample_id.split(","))
+
+    print("sample_ids", sample_ids)
     for i in range(len(ds)):
         r = ds[i]
-        if sample_id is not None and int(r.get("sample_id", -1)) != int(sample_id):
+        if i not in sample_ids:
             continue
         rows.append(r)
     return rows
@@ -66,7 +72,7 @@ def collate_stages_by_sample(
 
 
 def to_tensor_embedding(row: Dict[str, Any], device: torch.device) -> torch.Tensor:
-    emb = torch.tensor(row["embedding"], dtype=torch.float32, device=device)
+    emb = torch.tensor(row["embedding"], dtype=torch.bfloat16, device=device)
     return emb
 
 
@@ -95,6 +101,7 @@ def prepare_model(model_name: str, device: torch.device, use_flash_attention_2: 
         model_kwargs["attn_implementation"] = attn_implementation
 
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs).to(device)
+    model.to(torch.bfloat16)
     model.eval()
 
     if use_torch_compile and device.type == "cuda":
@@ -122,7 +129,7 @@ def compute_convergence(
         dtype=attention_mask.dtype,
         device=attention_mask.device,
     )
-    inputs_embeds_with_ct = torch.cat([compression_tokens, inputs_embeds], dim=1)
+    inputs_embeds_with_ct = torch.cat([compression_tokens, inputs_embeds], dim=1).to(torch.bfloat16)
     attention_mask_with_ct = torch.cat([attn_ct, attention_mask], dim=1)
     outputs = model(inputs_embeds=inputs_embeds_with_ct, attention_mask=attention_mask_with_ct)
     preds = outputs.logits[:, 0:-1].argmax(dim=-1)
@@ -184,7 +191,7 @@ def learn_bezier_and_evaluate(
     lr: float = 1e-2,
     batch_t: int = 16,
     seed: int = 42,
-    evaluate_every: int = 100,
+    evaluate_every: int = 0,
 ) -> Tuple[torch.Tensor, np.ndarray, np.ndarray, float]:
     torch.manual_seed(int(seed))
     device = e0.device
@@ -226,7 +233,7 @@ def learn_bezier_and_evaluate(
         attn_b = attention_mask.expand(B, -1)
         ids_b = input_ids.expand(B, -1)
         attn_ct = torch.ones((B, C), dtype=attn_b.dtype, device=device)
-        x = torch.cat([ct, inputs_b], dim=1)
+        x = torch.cat([ct, inputs_b], dim=1).to(torch.bfloat16)
         m = torch.cat([attn_ct, attn_b], dim=1)
         out = model(inputs_embeds=x, attention_mask=m)
         return cross_entropy_loss_for_batch(out.logits, ids_b, attn_b)
@@ -242,17 +249,21 @@ def learn_bezier_and_evaluate(
         opt.step()
         lr_scheduler.step()
 
-        if iter_i % evaluate_every == 0:
+        if evaluate_every > 0 and iter_i % evaluate_every == 0:
             ts_np = np.linspace(0.0, 1.0, num_points, dtype=np.float32)
             accs: List[float] = []
+            curve_pts: List[torch.Tensor] = []
             with torch.no_grad():
                 for tval in tqdm(ts_np, desc="Evaluating Bezier curve"):
-                    t_t = torch.tensor([tval], device=device, dtype=torch.float32)
+                    t_t = torch.tensor([tval], device=device, dtype=torch.bfloat16)
                     ct = _bezier_points(t_t)
                     acc = compute_convergence(model, ct, inputs_embeds, attention_mask, input_ids)
                     accs.append(acc)
+                    curve_pts.append(ct.squeeze(0))  # [C, D]
+            bezier_points = torch.stack(curve_pts, dim=0)  # [K, C, D]
+            bezier_length = curve_length_from_points(bezier_points)
             print(
-                f"Iteration {iter_i}, mean accuracy: {torch.tensor(accs).mean().item()}, min accuracy: {torch.tensor(accs).min().item()}, max accuracy: {torch.tensor(accs).max().item()}"
+                f"Iteration {iter_i}, mean accuracy: {torch.tensor(accs).mean().item()}, min accuracy: {torch.tensor(accs).min().item()}, max accuracy: {torch.tensor(accs).max().item()}, curve length: {bezier_length:.4f}"
             )
             plt.plot(ts_np, accs, label="Bezier (learned)", linewidth=2)
             plt.xlabel("t")
@@ -269,7 +280,7 @@ def learn_bezier_and_evaluate(
     curve_pts: List[torch.Tensor] = []
     with torch.no_grad():
         for tval in tqdm(ts_np, desc="Evaluating Bezier curve"):
-            t_t = torch.tensor([tval], device=device, dtype=torch.float32)
+            t_t = torch.tensor([tval], device=device, dtype=torch.bfloat16)
             ct = _bezier_points(t_t)
             acc = compute_convergence(model, ct, inputs_embeds, attention_mask, input_ids)
             accs.append(acc)
@@ -298,7 +309,7 @@ def main():
     parser = argparse.ArgumentParser(description="Interpolate compression embeddings and evaluate accuracies")
     parser.add_argument("--dataset_path1", type=str, required=True, help="Path to progressive_prefixes dataset")
     parser.add_argument("--dataset_path2", type=str, required=True, help="Path to progressive_prefixes dataset")
-    parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
+    parser.add_argument("--sample_id", type=str, default=None, help="Optional sample_id filter")
     parser.add_argument("--model_checkpoint", type=str, default=None, help="HF model name; inferred if omitted")
     parser.add_argument("--num_points", type=int, default=300, help="Number of evaluation points along t  [0,1]")
     parser.add_argument("--bezier_steps", type=int, default=5000, help="Optimization steps for Bezier control point")
@@ -358,6 +369,8 @@ def main():
     all_bez_accs: List[np.ndarray] = []
     all_lin_lengths: List[float] = []
     all_bez_lengths: List[float] = []
+
+    print("by_sid", len(by_sid), by_sid.keys())
 
     for sid, stages in by_sid.items():
         first = stages[0]

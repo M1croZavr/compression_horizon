@@ -130,6 +130,80 @@ def plot_pca(X: np.ndarray, labels: List[str], outfile: str):
     plt.close()
 
 
+def plot_pca_4_components(X: np.ndarray, labels: List[str], outfile: str):
+    """Plot all pairs of the 4 main PCA components in subplots.
+
+    Args:
+        X: Input data array [n_samples, n_features]
+        labels: List of labels for each sample
+        outfile: Output file path
+    """
+    if X.shape[0] < 2 or X.shape[1] < 2:
+        return
+
+    n_components = min(4, X.shape[0] - 1, X.shape[1])
+    if n_components < 2:
+        return
+
+    pca = PCA(n_components=n_components, random_state=42)
+    pca_data = pca.fit_transform(X)
+    explained_var = pca.explained_variance_ratio_
+
+    # Create all pairs: (0,1), (0,2), (0,3), (1,2), (1,3), (2,3)
+    pairs = [(i, j) for i in range(n_components) for j in range(i + 1, n_components)]
+    n_pairs = len(pairs)
+
+    # Arrange subplots in a grid: 2 rows x 3 columns for 6 pairs
+    n_cols = 3
+    n_rows = (n_pairs + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
+    if n_pairs == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+
+    for idx, (i, j) in enumerate(pairs):
+        ax = axes[idx]
+        x_data = pca_data[:, i]
+        y_data = pca_data[:, j]
+
+        # Plot scatter points
+        ax.scatter(x_data, y_data, s=60)
+
+        # Add labels with collision detection
+        labeled_positions = []
+        for k, lab in enumerate(labels):
+            if k >= len(x_data):
+                continue
+            # Check if there's already a labeled point within distance < 0.5
+            should_label = True
+            for labeled_pos in labeled_positions:
+                dist = np.linalg.norm([x_data[k] - labeled_pos[0], y_data[k] - labeled_pos[1]])
+                if dist < 0.5:
+                    should_label = False
+                    break
+            if should_label:
+                ax.text(x_data[k], y_data[k], lab, fontsize=10, ha="left", va="bottom")
+                labeled_positions.append([x_data[k], y_data[k]])
+
+        ax.set_xlabel(f"PC{i+1} ({explained_var[i]:.3f})", fontsize=10)
+        ax.set_ylabel(f"PC{j+1} ({explained_var[j]:.3f})", fontsize=10)
+        ax.set_title(f"PC{i+1} vs PC{j+1}", fontsize=12)
+        ax.grid(True, alpha=0.3)
+        ax.axis("equal")
+
+    # Hide unused subplots
+    for idx in range(n_pairs, len(axes)):
+        axes[idx].axis("off")
+
+    plt.suptitle(f"PCA: All Component Pairs (4 components, cumulative variance: {explained_var.sum():.4f})", fontsize=14)
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=300)
+    plt.close()
+    print(f"plot_pca_4_components: {outfile}")
+
+
 def plot_cumulative_explained_variance(X: np.ndarray, title: str, outfile: str, max_components: Optional[int] = None):
     """Plot cumulative explained variance as a function of number of PCA components.
 
@@ -440,6 +514,7 @@ def main():
             outfile=os.path.join(out_dir, f"sid{sid}_cosine.png"),
         )
         plot_pca(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca.png"))
+        plot_pca_4_components(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca4.png"))
         plot_cumulative_explained_variance(
             X,
             max_components=16,

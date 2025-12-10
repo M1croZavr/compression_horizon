@@ -142,7 +142,7 @@ class MyTrainer:
 
             # Accuracy by autoregressive generation
             # Generate tokens from compressed trained embedding
-            if self.global_step % 100 == 0:
+            if self.global_step % 100 == 0 and self.args.generate_in_compute_loss:
                 generated_text: Optional[list] = generate_from_compression(
                     model,
                     self.processing_class,
@@ -342,8 +342,9 @@ class MyTrainer:
         output_dir = self.args.output_dir
         if output_dir and len(rows) > 0:
             os.makedirs(output_dir, exist_ok=True)
-            save_path = os.path.join(output_dir, "compression_embeddings.pt")
-            torch.save(compression_token_embeddings, save_path)
+            if compression_token_embeddings is not None:
+                save_path = os.path.join(output_dir, "compression_embeddings.pt")
+                torch.save(compression_token_embeddings, save_path)
             save_path = os.path.join(output_dir, subdir_name)
             ds = Dataset.from_list(rows)
             ds.save_to_disk(save_path)
@@ -911,11 +912,11 @@ class MyTrainer:
 
         dataloader = self._create_dataloader()
 
-        num_compression_tokens = getattr(self.args, "number_of_mem_tokens", 1)
-        threshold = getattr(self.args, "progressive_convergence_threshold", 0.99)
-        step_increment = getattr(self.args, "progressive_step", 16)
-        min_len = getattr(self.args, "progressive_min_seq_len", 16)
-        max_stages_cap = getattr(self.args, "progressive_max_stages", 0)
+        num_compression_tokens = self.args.number_of_mem_tokens
+        threshold = self.args.progressive_convergence_threshold
+        step_increment = self.args.progressive_step
+        min_len = self.args.progressive_min_seq_len
+        max_stages_cap = self.args.progressive_max_stages
 
         collected_rows = []
         sample_id_counter = 0
@@ -961,6 +962,7 @@ class MyTrainer:
                 last_loss_val = None
                 last_conv = None
                 steps_taken = 0
+                converged = False
 
                 for i in pbar:
                     model_tokens_with_compression_tokens = torch.cat(
@@ -969,6 +971,7 @@ class MyTrainer:
                     attention_mask_with_compression_tokens = torch.cat(
                         [compression_tokens_attention_mask, attention_mask], dim=1
                     )
+                    # print("input_ids.shape", input_ids.shape)
                     loss, alignment_loss, convergece_per_sample, generated_text, ground_truth_text = self.compute_loss(
                         model,
                         input_ids,
@@ -1008,6 +1011,7 @@ class MyTrainer:
                     last_conv = convergece_per_sample.detach().cpu()
 
                     if convergece_per_sample.mean().item() >= threshold:
+                        converged = True
                         break
 
                 # Save snapshot for this stage
@@ -1052,6 +1056,9 @@ class MyTrainer:
                     break
                 if max_stages_cap and stage_index >= max_stages_cap:
                     break
+                if not converged:
+                    print("Not converged in max_optimization_steps_per_sample. Stop at seq_len =", seq_len)
+                    break
                 seq_len = min(seq_len + step_increment, max_len)
 
             sample_id_counter += batch_size
@@ -1061,7 +1068,7 @@ class MyTrainer:
             self.writer.flush()
             self.writer.close()
 
-        save_path = self._save_artifacts(collected_rows, "progressive_prefixes")
+        save_path = self._save_artifacts(None, collected_rows, "progressive_prefixes")
         if save_path is not None:
             return save_path
         return None

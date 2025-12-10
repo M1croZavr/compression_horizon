@@ -51,6 +51,9 @@ class MyTrainingArguments(TrainingArguments):
     fix_position_ids: bool = field(
         default=False,
     )
+    generate_in_compute_loss: bool = field(
+        default=False,
+    )
     limit_dataset_items: int | None = field(default=1)
 
     # Overrides with changed defaults
