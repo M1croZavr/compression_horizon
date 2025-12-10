@@ -126,10 +126,68 @@ def plot_pca(X: np.ndarray, labels: List[str], outfile: str):
     )
     plt.tight_layout()
     plt.savefig(outfile, dpi=300)
+    print("plot_pca", outfile)
     plt.close()
 
 
-def plot_correlation(x: np.ndarray, y: np.ndarray, xlabel: str, ylabel: str, title: str, outfile: str):
+def plot_cumulative_explained_variance(X: np.ndarray, title: str, outfile: str, max_components: Optional[int] = None):
+    """Plot cumulative explained variance as a function of number of PCA components.
+
+    Args:
+        X: Input data array [n_samples, n_features]
+        title: Plot title
+        outfile: Output file path
+        max_components: Maximum number of components to compute (default: min(n_samples, n_features))
+    """
+    if X.shape[0] < 2 or X.shape[1] < 2:
+        return
+
+    n_samples, n_features = X.shape
+    max_comp = max_components if max_components is not None else min(n_samples - 1, n_features)
+    max_comp = min(max_comp, n_samples - 1, n_features)
+
+    if max_comp < 1:
+        return
+
+    pca = PCA(n_components=max_comp, random_state=42)
+    pca.fit(X)
+    explained_var_ratio = pca.explained_variance_ratio_
+    cumulative_var = np.cumsum(explained_var_ratio)
+
+    n_components = np.arange(1, len(cumulative_var) + 1)
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(n_components, cumulative_var, marker="o", linewidth=2, markersize=4)
+    plt.axhline(y=0.95, color="r", linestyle="--", alpha=0.7, label="95% variance")
+    plt.axhline(y=0.99, color="g", linestyle="--", alpha=0.7, label="99% variance")
+    plt.xlabel("Number of PCA Components", fontsize=14)
+    plt.ylabel("Cumulative Explained Variance", fontsize=14)
+    plt.title(title, fontsize=16)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.xlim(left=0)
+    # plt.ylim(bottom=0, top=1.05)
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150)
+    print("plot_cumulative_explained_variance", outfile)
+    plt.close()
+
+    # Print summary statistics
+    n_95 = np.argmax(cumulative_var >= 0.95) + 1 if np.any(cumulative_var >= 0.95) else len(cumulative_var)
+    n_99 = np.argmax(cumulative_var >= 0.99) + 1 if np.any(cumulative_var >= 0.99) else len(cumulative_var)
+    print(f"Cumulative explained variance: {n_95} components explain 95%, {n_99} components explain 99%")
+
+
+def plot_correlation(
+    x: np.ndarray,
+    y: np.ndarray,
+    xlabel: str,
+    ylabel: str,
+    title: str,
+    outfile: str,
+    label_y_threshold: Optional[float] = None,
+    point_labels: Optional[List[str]] = None,
+):
     plt.figure(figsize=(6, 4))
     # Create gradient colors based on position (first to last)
     n_points = len(x)
@@ -151,6 +209,24 @@ def plot_correlation(x: np.ndarray, y: np.ndarray, xlabel: str, ylabel: str, tit
     plt.title(f"{title} (r={corr:.3f})")
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
+
+    # Add labels for points meeting the threshold condition
+    if label_y_threshold is not None:
+        mask = y > label_y_threshold
+        if np.any(mask):
+            for i in np.where(mask)[0]:
+                label_text = (
+                    point_labels[i] if point_labels is not None and i < len(point_labels) else f"({x[i]:.1f}, {y[i]:.1f})"
+                )
+                plt.annotate(
+                    label_text,
+                    (x[i], y[i]),
+                    xytext=(5, 5),
+                    textcoords="offset points",
+                    fontsize=8,
+                    alpha=0.7,
+                )
+
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
     plt.close()
@@ -345,6 +421,7 @@ def main():
     ppl_all: List[float] = []
     seq_len_all: List[int] = []
     sid_all: List[int] = []
+    length_vs_steps_labels: List[str] = []
 
     for sid, stages in by_sid.items():
         labels = [f"L{int(s.get('stage_seq_len', -1))}" for s in stages]
@@ -363,15 +440,23 @@ def main():
             outfile=os.path.join(out_dir, f"sid{sid}_cosine.png"),
         )
         plot_pca(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca.png"))
+        plot_cumulative_explained_variance(
+            X,
+            max_components=16,
+            title=f"Sample {sid}: Cumulative Explained Variance",
+            outfile=os.path.join(out_dir, f"sid{sid}_cumulative_variance.png"),
+        )
 
         # Collect per-stage stats
         for s in stages:
             steps = int(s.get("steps_taken", 0))
             conv = float(s.get("final_convergence", np.nan)) if s.get("final_convergence") is not None else np.nan
             seql = int(s.get("stage_seq_len", -1))
+            # stage_idx = int(s.get("stage_index", -1))
             summary_steps.append(steps)
             summary_conv.append(conv)
             summary_seq_len.append(seql)
+            length_vs_steps_labels.append(f"L{seql}")
 
         # Per-sample distance metrics
         for i in range(X.shape[0] - 1):
@@ -462,6 +547,8 @@ def main():
             ylabel="steps_taken",
             title="Length vs Steps",
             outfile=os.path.join(out_dir, "length_vs_steps.png"),
+            label_y_threshold=50,
+            point_labels=length_vs_steps_labels if len(length_vs_steps_labels) == len(summary_steps) else None,
         )
 
     if len(ppl_all) > 1:

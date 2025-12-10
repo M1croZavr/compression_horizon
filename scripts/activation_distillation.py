@@ -238,7 +238,7 @@ if __name__ == "__main__":
     )
 
     if training_args.progressive_train:
-        training_artifacts = trainer.train()
+        training_artifacts = trainer.progressive_train()
     elif training_args.noop_train:
         training_artifacts = trainer.train_noop()
     else:

@@ -11,6 +11,14 @@ from datasets import Dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+# Check if flash-attn is available
+# try:
+#     import flash_attn
+
+#     FLASH_ATTN_AVAILABLE = True
+# except ImportError:
+FLASH_ATTN_AVAILABLE = False
+
 
 def curve_length_from_points(points: torch.Tensor) -> float:
     """Compute polyline length given sampled points along a curve.
@@ -62,9 +70,39 @@ def to_tensor_embedding(row: Dict[str, Any], device: torch.device) -> torch.Tens
     return emb
 
 
-def prepare_model(model_name: str, device: torch.device):
-    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+def prepare_model(model_name: str, device: torch.device, use_flash_attention_2: bool = True, use_torch_compile: bool = True):
+    """Prepare model with optional flash attention 2 and torch.compile for faster training.
+
+    Args:
+        model_name: HuggingFace model checkpoint name
+        device: Target device (cuda/cpu)
+        use_flash_attention_2: Whether to use flash attention 2 (if available)
+        use_torch_compile: Whether to compile the model with torch.compile
+
+    Returns:
+        Tuple of (model, tokenizer)
+    """
+    attn_implementation = None
+    if use_flash_attention_2 and FLASH_ATTN_AVAILABLE:
+        attn_implementation = "flash_attention_2"
+        print("Using flash_attention_2 for faster training")
+    elif use_flash_attention_2 and not FLASH_ATTN_AVAILABLE:
+        print("Warning: flash_attention_2 requested but not available. Install with: pip install flash-attn")
+        print("Falling back to default attention implementation")
+
+    model_kwargs = {}
+    if attn_implementation:
+        model_kwargs["attn_implementation"] = attn_implementation
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs).to(device)
     model.eval()
+
+    if use_torch_compile and device.type == "cuda":
+        print("Compiling model with torch.compile for faster training")
+        model = torch.compile(model, mode="reduce-overhead")
+    elif use_torch_compile and device.type != "cuda":
+        print("Warning: torch.compile requested but device is not CUDA. Skipping compilation.")
+
     tok = AutoTokenizer.from_pretrained(model_name)
     if tok.pad_token is None and tok.eos_token is not None:
         tok.pad_token = tok.eos_token
@@ -270,6 +308,19 @@ def main():
     parser.add_argument("--bezier_weight_decay", type=float, default=0.0, help="Weight decay for Bezier control point")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default="/tmp", help="Where to save plots and parameters")
+    parser.add_argument(
+        "--use_flash_attention_2",
+        action="store_true",
+        default=True,
+        help="Use flash attention 2 for faster training (if available)",
+    )
+    parser.add_argument(
+        "--no_flash_attention_2", dest="use_flash_attention_2", action="store_false", help="Disable flash attention 2"
+    )
+    parser.add_argument(
+        "--use_torch_compile", action="store_true", default=True, help="Compile model with torch.compile for faster training"
+    )
+    parser.add_argument("--no_torch_compile", dest="use_torch_compile", action="store_false", help="Disable torch.compile")
 
     args = parser.parse_args()
 
@@ -290,7 +341,12 @@ def main():
     model_name = args.model_checkpoint or pick_model_name(rows)
     if not model_name:
         raise ValueError("Could not infer model checkpoint from dataset; please pass --model_checkpoint")
-    model, tok = prepare_model(model_name, device)
+    model, tok = prepare_model(
+        model_name,
+        device,
+        use_flash_attention_2=args.use_flash_attention_2,
+        use_torch_compile=args.use_torch_compile,
+    )
     # Freeze model weights; we only optimize Bezier control points
     for p in model.parameters():
         p.requires_grad_(False)

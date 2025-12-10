@@ -903,9 +903,10 @@ class MyTrainer:
 
     def progressive_train(self):
         device = get_device()
-        self._set_seed_if_any()
+        set_launch_seed(self.args.random_seed)
+
         model = self.model.to(device)
-        self._freeze_model_params(model)
+        freeze_model_parameters(model)
         init_method, mvn_dist = self._prepare_embedding_init(model)
 
         dataloader = self._create_dataloader()
@@ -968,7 +969,7 @@ class MyTrainer:
                     attention_mask_with_compression_tokens = torch.cat(
                         [compression_tokens_attention_mask, attention_mask], dim=1
                     )
-                    loss, convergece_per_sample = self.compute_loss(
+                    loss, alignment_loss, convergece_per_sample, generated_text, ground_truth_text = self.compute_loss(
                         model,
                         input_ids,
                         inputs_embeds,
@@ -989,7 +990,15 @@ class MyTrainer:
                         lr=lr_scheduler.get_last_lr()[0],
                     )
 
-                    self._log_step(loss, convergece_per_sample, compression_tokens, lr_scheduler)
+                    self._log_step(
+                        loss,
+                        alignment_loss,
+                        convergece_per_sample,
+                        compression_tokens,
+                        lr_scheduler,
+                        generated_text,
+                        ground_truth_text,
+                    )
 
                     optimizer.step()
                     lr_scheduler.step()
