@@ -253,6 +253,217 @@ def plot_cumulative_explained_variance(X: np.ndarray, title: str, outfile: str, 
     print(f"Cumulative explained variance: {n_95} components explain 95%, {n_99} components explain 99%")
 
 
+def compute_pca_components_for_sample(
+    stages: List[Dict[str, Any]],
+    target_seq_lengths: List[int] = [4, 16, 32, 48, 64, 96, 128],
+) -> Dict[int, Optional[int]]:
+    """Compute number of PCA components explaining 99% variance for each sequence length for a sample.
+
+    Args:
+        stages: List of stage records for a sample
+        target_seq_lengths: List of sequence lengths to analyze
+
+    Returns:
+        Dictionary mapping sequence length to number of components (or None if not computable)
+    """
+    # Group stages by sequence length
+    stages_by_seq_len: Dict[int, List[Dict[str, Any]]] = {}
+    for tsl in target_seq_lengths:
+        stages_by_seq_len[tsl] = []
+
+    max_seq_len = 0
+    for stage in stages:
+        seq_len = int(stage.get("stage_seq_len", -1))
+        max_seq_len = max(max_seq_len, seq_len)
+        for tsl in target_seq_lengths:
+            if seq_len <= tsl:
+                stages_by_seq_len[tsl].append(stage)
+
+    for tsl in list(stages_by_seq_len.keys()):
+        if tsl > max_seq_len:
+            del stages_by_seq_len[tsl]
+
+    results: Dict[int, Optional[int]] = {}
+
+    for seq_len in sorted(target_seq_lengths):
+        if seq_len not in stages_by_seq_len:
+            results[seq_len] = None
+            continue
+
+        stage_list = stages_by_seq_len[seq_len]
+        if len(stage_list) < 1:
+            results[seq_len] = None
+            continue
+
+        # Extract and flatten embeddings for this sequence length
+        embeddings_list = [flatten_embedding(s) for s in stage_list]
+        if len(embeddings_list) == 0:
+            results[seq_len] = None
+            continue
+
+        # Stack embeddings: [n_stages, n_features]
+        X = np.stack(embeddings_list, axis=0)
+
+        # Need at least 2 samples for PCA
+        if X.shape[0] < 2:
+            results[seq_len] = None
+            continue
+
+        # Compute PCA with maximum possible components
+        n_samples, n_features = X.shape
+        max_comp = min(n_samples - 1, n_features)
+        if max_comp < 1:
+            results[seq_len] = None
+            continue
+
+        pca = PCA(n_components=max_comp, random_state=42)
+        pca.fit(X)
+        explained_var_ratio = pca.explained_variance_ratio_
+        cumulative_var = np.cumsum(explained_var_ratio)
+
+        # Find number of components explaining 99% variance
+        n_99 = np.argmax(cumulative_var >= 0.99) + 1 if np.any(cumulative_var >= 0.99) else len(cumulative_var)
+        results[seq_len] = n_99
+
+    return results
+
+
+def plot_pca_components_vs_sequence_length(
+    stages: List[Dict[str, Any]],
+    sample_id: int,
+    outfile: str,
+    target_seq_lengths: List[int] = [4, 16, 32, 48, 64, 96, 128],
+):
+    """Plot number of PCA components explaining 99% variance vs sequence length for a sample.
+
+    Args:
+        stages: List of stage records for a sample
+        sample_id: Sample ID for title
+        outfile: Output file path
+        target_seq_lengths: List of sequence lengths to analyze
+    """
+    results = compute_pca_components_for_sample(stages, target_seq_lengths)
+
+    seq_lengths: List[int] = []
+    n_components_99: List[int] = []
+
+    for seq_len in sorted(target_seq_lengths):
+        if results.get(seq_len) is not None:
+            seq_lengths.append(seq_len)
+            n_components_99.append(results[seq_len])
+
+    if len(seq_lengths) == 0:
+        print(f"No valid data points for sample {sample_id}")
+        return
+
+    # Plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(seq_lengths, n_components_99, marker="o", linewidth=2, markersize=8, label="99% variance")
+    plt.xlabel("Sequence Length", fontsize=14)
+    plt.ylabel("Number of PCA Components", fontsize=14)
+    plt.title(f"Sample {sample_id}: PCA Components Explaining 99% Variance vs Sequence Length", fontsize=16)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.xlim(left=0)
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150)
+    print(f"plot_pca_components_vs_sequence_length: {outfile}")
+    plt.close()
+
+
+def plot_pca_components_vs_sequence_length_aggregate(
+    by_sid: Dict[int, List[Dict[str, Any]]],
+    outfile: str,
+    target_seq_lengths: List[int] = [4, 16, 32, 48, 64, 96, 128],
+):
+    """Plot number of PCA components explaining 99% variance vs sequence length aggregated across all samples.
+
+    Shows quantiles (10th-90th percentile, 25th-75th IQR) and mean across samples.
+
+    Args:
+        by_sid: Dictionary mapping sample_id to list of stage records
+        outfile: Output file path
+        target_seq_lengths: List of sequence lengths to analyze
+    """
+    # Collect PCA component counts for each sequence length across all samples
+    components_by_seq_len: Dict[int, List[int]] = {}
+    for seq_len in target_seq_lengths:
+        components_by_seq_len[seq_len] = []
+
+    for sid, stages in tqdm(by_sid.items(), desc="Computing PCA components per sample"):
+        results = compute_pca_components_for_sample(stages, target_seq_lengths)
+        for seq_len, n_components in results.items():
+            if n_components is not None:
+                components_by_seq_len[seq_len].append(n_components)
+
+    # Filter out sequence lengths with no data
+    seq_lengths: List[int] = []
+    all_components_per_seq_len: List[List[int]] = []
+
+    for seq_len in sorted(target_seq_lengths):
+        if seq_len in components_by_seq_len and len(components_by_seq_len[seq_len]) > 0:
+            seq_lengths.append(seq_len)
+            all_components_per_seq_len.append(components_by_seq_len[seq_len])
+
+    if len(seq_lengths) == 0:
+        print("No valid data points for aggregate PCA components vs sequence length")
+        return
+
+    # Compute statistics for plotting
+    mean_components = [np.mean(comps) for comps in all_components_per_seq_len]
+    q25_components = [np.percentile(comps, 25) for comps in all_components_per_seq_len]
+    q75_components = [np.percentile(comps, 75) for comps in all_components_per_seq_len]
+    q10_components = [np.percentile(comps, 10) for comps in all_components_per_seq_len]
+    q90_components = [np.percentile(comps, 90) for comps in all_components_per_seq_len]
+
+    plt.figure(figsize=(10, 7))
+    # Plot shaded regions showing distribution
+    # Outer region: 10th-90th percentile
+    plt.fill_between(
+        seq_lengths,
+        q10_components,
+        q90_components,
+        alpha=0.15,
+        color="blue",
+        label="10th-90th percentile",
+    )
+    # Inner region: 25th-75th percentile (IQR)
+    plt.fill_between(
+        seq_lengths,
+        q25_components,
+        q75_components,
+        alpha=0.3,
+        color="blue",
+        label="Interquartile range (25th-75th)",
+    )
+    # Plot mean line
+    plt.plot(
+        seq_lengths,
+        mean_components,
+        marker="o",
+        linewidth=2.5,
+        markersize=6,
+        color="darkblue",
+        label="Mean",
+    )
+    # Plot individual points with transparency to show density
+    for seq_len, comps in zip(seq_lengths, all_components_per_seq_len):
+        plt.scatter([seq_len] * len(comps), comps, alpha=0.2, s=20, color="blue", zorder=0)
+
+    plt.xlabel("Sequence Length", fontsize=14)
+    plt.ylabel("Number of PCA Components", fontsize=14)
+    plt.title("PCA Components Explaining 99% Variance vs Sequence Length (All Samples)", fontsize=16)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="best", fontsize=11)
+    plt.xlim(left=0)
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150)
+    print(f"plot_pca_components_vs_sequence_length_aggregate: {outfile}")
+    plt.close()
+
+
 def plot_pca_reconstruction_accuracy(
     rows: List[Dict[str, Any]],
     model: AutoModelForCausalLM,
@@ -325,7 +536,12 @@ def plot_pca_reconstruction_accuracy(
 
         with torch.no_grad():
             for i, (row, text, orig_shape) in enumerate(
-                tqdm(zip(valid_rows, texts, original_shapes), desc=f"Computing accuracy (n_comp={n_comp})", leave=False)
+                tqdm(
+                    zip(valid_rows, texts, original_shapes),
+                    desc=f"Computing accuracy (n_comp={n_comp})",
+                    leave=False,
+                    total=len(rows),
+                )
             ):
                 # Reconstruct compression embedding and reshape to original shape
                 comp_emb_flat = torch.tensor(X_reconstructed[i], dtype=torch.float32, device=device)
@@ -953,6 +1169,12 @@ def main():
     all_compression_embeddings: List[np.ndarray] = []
     all_rows_for_pca: List[Dict[str, Any]] = []
 
+    for sid, stages in tqdm(by_sid.items(), desc="Processing samples for aggragate"):
+        # Collect compression embeddings for aggregate analysis
+        for s in stages:
+            all_compression_embeddings.append(flatten_embedding(s))
+            all_rows_for_pca.append(s)
+
     for sid, stages in tqdm(by_sid.items(), desc="Processing samples"):
         labels = [f"L{int(s.get('stage_seq_len', -1))}" for s in stages]
         X = np.stack([flatten_embedding(s) for s in stages], axis=0)
@@ -977,6 +1199,12 @@ def main():
             title=f"Sample {sid}: Cumulative Explained Variance",
             outfile=os.path.join(out_dir, f"sid{sid}_cumulative_variance.png"),
         )
+        # plot_pca_components_vs_sequence_length(
+        #     stages,
+        #     sample_id=sid,
+        #     outfile=os.path.join(out_dir, f"sid{sid}_pca_components_vs_seq_len.png"),
+        #     target_seq_lengths=[4, 16, 32, 48, 64, 96, 128],
+        # )
         # if model is not None and tok is not None:
         #     plot_pca_reconstruction_accuracy(
         #         stages,
@@ -987,11 +1215,6 @@ def main():
         #         outfile=os.path.join(out_dir, f"sid{sid}_pca_reconstruction_accuracy.png"),
         #         max_components=16,
         #     )
-
-        # Collect compression embeddings for aggregate analysis
-        for s in stages:
-            all_compression_embeddings.append(flatten_embedding(s))
-            all_rows_for_pca.append(s)
 
         # Collect per-stage stats
         for s in stages:
@@ -1085,6 +1308,14 @@ def main():
             title="Aggregate: PCA Reconstruction Accuracy (All Compression Embeddings)",
             outfile=os.path.join(out_dir, "aggregate_pca_reconstruction_accuracy.png"),
             max_components=16,
+        )
+
+    # Aggregate PCA components vs sequence length across all samples
+    if len(by_sid) > 0:
+        plot_pca_components_vs_sequence_length_aggregate(
+            by_sid,
+            outfile=os.path.join(out_dir, "aggregate_pca_components_vs_seq_len.png"),
+            target_seq_lengths=[4, 16, 32, 48, 64, 96, 128],
         )
 
     # Visualize PCA component similarity across samples
