@@ -236,6 +236,16 @@ class MyTrainer:
                 # assert batch_size == 1
                 single_random_embedding = single_random_embedding.repeat(batch_size, 1, 1)
                 trainable_embeddings = torch.nn.Parameter(single_random_embedding)
+        elif init_method == "single_random0.02":
+            if single_compressed_embeddings_initialization is not None:
+                trainable_embeddings = torch.nn.Parameter(
+                    single_compressed_embeddings_initialization.detach().clone().repeat(batch_size, 1, 1)
+                )
+            else:
+                single_random_embedding = torch.rand([1, num_tokens, hidden_size], dtype=torch.float32)
+                # assert batch_size == 1
+                single_random_embedding = single_random_embedding.repeat(batch_size, 1, 1)
+                trainable_embeddings = torch.nn.Parameter(single_random_embedding)
         elif init_method == "random":
             trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32))
         elif init_method == "random0.2":
@@ -401,6 +411,8 @@ class MyTrainer:
                 single_compressed_embeddings_initialization=single_compressed_embeddings_initialization,
                 token_embeddings=token_embeddings,
             )  # [batch, mem, hidden]
+            # Save initialization embedding (before optimization)
+            initialization_embeddings = compression_token_embeddings.detach().clone().cpu()  # [batch, mem, hidden]
             compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
             )  # [batch, mem]
@@ -546,6 +558,7 @@ class MyTrainer:
                     sample_input_ids = input_ids[j][sample_attention_mask]
                     sample_text = tokenizer.decode(sample_input_ids, skip_special_tokens=True)
                     embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
+                    initialization_embedding = initialization_embeddings[j].to(torch.float32).numpy().tolist()
                     compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
                     compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
                     item_convergence_per_sample = total_per_sample_convergence_sum[j].item()
@@ -554,6 +567,7 @@ class MyTrainer:
                             "sample_id": sample_id_counter,
                             "text": sample_text,
                             "embedding": embedding,  # [mem, hidden]
+                            "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization
                             "final_loss": last_loss,
                             "final_convergence": last_convergence_per_sample[j].item(),
                             "convergence_after_steps": item_convergence_per_sample,
@@ -666,6 +680,8 @@ class MyTrainer:
             token_embeddings=None,
             single_compressed_embeddings_initialization=None,
         )
+        # Save initialization embedding (before optimization) - shared across all samples in train_noop
+        initialization_embedding_single = compression_token_embeddings_single.detach().clone().cpu()  # [1, mem, hidden]
 
         dataloader = self._create_dataloader()
         num_training_steps = self.args.num_train_epochs * len(dataloader) / self.args.gradient_accumulation_steps
@@ -853,11 +869,13 @@ class MyTrainer:
                     sample_input_ids = input_ids[j][sample_attention_mask]
                     sample_text = tokenizer.decode(sample_input_ids, skip_special_tokens=True)
                     embedding = compression_token_embeddings_cpu.to(torch.float32).numpy().tolist()
+                    initialization_embedding = initialization_embedding_single[0].to(torch.float32).numpy().tolist()
                     collected_rows.append(
                         {
                             "sample_id": sample_id_counter,
                             "text": sample_text,
                             "embedding": embedding,
+                            "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization
                             "final_loss": None,  # Loss not computed in final eval
                             "final_convergence": convergence_per_sample[j].item(),
                             "compression_tokens_mean": float(compression_token_embeddings_cpu.mean().item()),
@@ -936,6 +954,8 @@ class MyTrainer:
                 init_method,
                 mvn_dist,
             )
+            # Save initialization embedding (before optimization)
+            initialization_embeddings = compression_tokens.detach().clone().cpu()  # [batch, mem, hidden]
             compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
             )
@@ -1023,6 +1043,7 @@ class MyTrainer:
                         ids = input_ids[j][attn]
                         text = tokenizer.decode(ids.tolist(), skip_special_tokens=True) if tokenizer is not None else ""
                         embedding = comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
+                        initialization_embedding = initialization_embeddings[j].to(torch.float32).numpy().tolist()
                         collected_rows.append(
                             {
                                 "sample_id": int(sample_id_counter + j),
@@ -1030,6 +1051,7 @@ class MyTrainer:
                                 "stage_seq_len": int(seq_len),
                                 "text": text,
                                 "embedding": embedding,
+                                "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization
                                 "final_loss": (float(last_loss_val) if last_loss_val is not None else None),
                                 "final_convergence": (float(last_conv[j].item()) if last_conv is not None else None),
                                 "num_input_tokens": int(attn.sum().item()),

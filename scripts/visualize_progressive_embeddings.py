@@ -315,7 +315,7 @@ def plot_pca_reconstruction_accuracy(
     n_components_list = []
     all_accuracies_per_component = []  # Store all accuracies for each component count
 
-    for n_comp in tqdm(range(1, max_comp + 1), desc="pca_reconstruction_accuracy"):
+    for n_comp in tqdm(range(1, max_comp + 1, 2), desc="pca_reconstruction_accuracy"):
         # Fit PCA with n_comp components
         pca = PCA(n_components=n_comp, random_state=42)
         X_transformed = pca.fit_transform(X)
@@ -422,6 +422,285 @@ def plot_pca_reconstruction_accuracy(
     plt.close()
 
 
+def plot_pca_components_similarity_across_samples(
+    by_sid: Dict[int, List[Dict[str, Any]]],
+    outfile: str,
+    n_components: int = 4,
+):
+    """Visualize how much PCA components differ across different samples.
+
+    For each sample, fits PCA individually and compares principal components across samples.
+    Shows similarity/difference between PC vectors from different samples.
+
+    Args:
+        by_sid: Dictionary mapping sample_id to list of stage records
+        outfile: Output file path
+        n_components: Number of principal components to compare
+    """
+    if len(by_sid) < 2:
+        print("Need at least 2 samples to compare PCA components")
+        return
+
+    # Extract embeddings for each sample (use all stages to fit PCA)
+    sample_embeddings_list = {}
+    sample_labels = []
+    for sid, stages in by_sid.items():
+        # Use all stages from this sample to fit PCA
+        embeddings_list = [flatten_embedding(s) for s in stages]
+        if len(embeddings_list) == 0:
+            continue
+        sample_embeddings_list[sid] = embeddings_list
+        sample_labels.append(f"Sample {sid}")
+
+    if len(sample_embeddings_list) < 2:
+        return
+
+    # Fit PCA on each sample individually (using all stages)
+    pca_models = {}
+    pca_components = {}
+    sample_ids = sorted(sample_embeddings_list.keys())
+
+    for sid in tqdm(sample_ids, desc="Fitting PCA per sample"):
+        embeddings_list = sample_embeddings_list[sid]
+        # Stack all stage embeddings for this sample
+        emb_2d = np.stack(embeddings_list, axis=0)  # [n_stages, n_features]
+
+        n_comp = min(n_components, emb_2d.shape[1], emb_2d.shape[0] - 1)
+        if n_comp < 1:
+            continue
+
+        pca = PCA(n_components=n_comp, random_state=42)
+        pca.fit(emb_2d)
+        pca_models[sid] = pca
+        # Store components (each row is a PC)
+        pca_components[sid] = pca.components_  # [n_components, n_features]
+
+    if len(pca_models) < 2:
+        return
+
+    # Normalize all PC vectors for cosine similarity computation
+    normalized_pcs = {}
+    for sid in sample_ids:
+        if sid in pca_components:
+            normalized_pcs[sid] = []
+            for pc_idx in range(pca_components[sid].shape[0]):
+                pc_vec = pca_components[sid][pc_idx]
+                pc_vec_norm = pc_vec / (np.linalg.norm(pc_vec) + 1e-12)
+                normalized_pcs[sid].append(pc_vec_norm)
+            normalized_pcs[sid] = np.array(normalized_pcs[sid])  # [n_components, n_features]
+
+    # Get the maximum number of components across all samples
+    max_n_comp = max([len(normalized_pcs[sid]) for sid in sample_ids])
+    n_comp_actual = min(max_n_comp, n_components)
+
+    # Create comprehensive similarity matrices: for each pair of samples, compare ALL their PCs
+    n_samples = len(sample_ids)
+    # _ = n_samples * (n_samples - 1) // 2 + n_samples  # Include self-comparisons
+
+    # Create figure with subplots for each sample pair
+    n_cols = min(3, n_samples)
+    n_rows = (n_samples + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows))
+    if n_samples == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten() if n_rows > 1 else [axes] if n_cols == 1 else axes.flatten()
+
+    for plot_idx, sid_i in enumerate(sample_ids):
+        if plot_idx >= len(axes):
+            break
+        ax = axes[plot_idx]
+
+        # For sample sid_i, compare its PCs with PCs from all other samples
+        if sid_i not in normalized_pcs:
+            ax.axis("off")
+            continue
+
+        pcs_i = normalized_pcs[sid_i]  # [n_comp_i, n_features]
+        n_comp_i = min(pcs_i.shape[0], n_comp_actual)
+
+        # Build similarity matrix: rows = PCs of sample i, cols = PCs of all other samples
+        all_pcs_other = []
+        other_labels = []
+        for sid_j in sample_ids:
+            if sid_j in normalized_pcs:
+                pcs_j = normalized_pcs[sid_j]
+                n_comp_j = min(pcs_j.shape[0], n_comp_actual)
+                for pc_j_idx in range(n_comp_j):
+                    all_pcs_other.append(pcs_j[pc_j_idx])
+                    other_labels.append(f"S{sid_j}-PC{pc_j_idx + 1}")
+
+        if len(all_pcs_other) == 0:
+            ax.axis("off")
+            continue
+
+        all_pcs_other = np.array(all_pcs_other)  # [total_other_pcs, n_features]
+
+        # Compute similarity matrix: [n_comp_i, total_other_pcs]
+        similarity_matrix = np.zeros((n_comp_i, len(all_pcs_other)))
+        for i in range(n_comp_i):
+            for j in range(len(all_pcs_other)):
+                sim = np.clip(np.dot(pcs_i[i], all_pcs_other[j]), -1.0, 1.0)
+                similarity_matrix[i, j] = sim
+
+        # Plot heatmap
+        im = ax.imshow(similarity_matrix, cmap="RdYlGn", vmin=-1, vmax=1, aspect="auto")
+        ax.set_xticks(np.arange(len(all_pcs_other)))
+        ax.set_yticks(np.arange(n_comp_i))
+        ax.set_xticklabels(other_labels, fontsize=8, rotation=45, ha="right")
+        ax.set_yticklabels([f"PC{i+1}" for i in range(n_comp_i)], fontsize=10)
+        ax.set_title(f"Sample {sid_i} PCs vs All Other PCs", fontsize=11, fontweight="bold")
+        ax.set_xlabel("Other Sample PCs", fontsize=9)
+        ax.set_ylabel(f"Sample {sid_i} PCs", fontsize=9)
+
+        # Add colorbar
+        plt.colorbar(im, ax=ax, label="Cosine Similarity")
+
+    # Hide unused subplots
+    for idx in range(len(sample_ids), len(axes)):
+        axes[idx].axis("off")
+
+    plt.suptitle(
+        "Cross-Sample PCA Component Similarity\n(Each subplot: one sample's PCs vs all other samples' PCs)",
+        fontsize=14,
+        fontweight="bold",
+    )
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150)
+    print(f"plot_pca_components_similarity_across_samples: {outfile}")
+    plt.close()
+
+    # Create a comprehensive cross-component similarity matrix
+    # For each sample pair, create a matrix showing similarity between all their PCs
+    # n_pairs_plot = min(n_samples * (n_samples - 1) // 2, 6)  # Limit to 6 pairs for readability
+    pair_idx = 0
+    _, axes2 = plt.subplots(2, 3, figsize=(18, 12))
+    axes2 = axes2.flatten()
+
+    for i, sid_i in enumerate(sample_ids):
+        if pair_idx >= len(axes2):
+            break
+        for j, sid_j in enumerate(sample_ids):
+            if i >= j or pair_idx >= len(axes2):
+                continue
+
+            ax = axes2[pair_idx]
+
+            if sid_i not in normalized_pcs or sid_j not in normalized_pcs:
+                ax.axis("off")
+                pair_idx += 1
+                continue
+
+            pcs_i = normalized_pcs[sid_i]
+            pcs_j = normalized_pcs[sid_j]
+            n_comp_i = min(pcs_i.shape[0], n_comp_actual)
+            n_comp_j = min(pcs_j.shape[0], n_comp_actual)
+
+            # Compute similarity matrix: [n_comp_i, n_comp_j]
+            similarity_matrix = np.zeros((n_comp_i, n_comp_j))
+            for pc_i_idx in range(n_comp_i):
+                for pc_j_idx in range(n_comp_j):
+                    sim = np.clip(np.dot(pcs_i[pc_i_idx], pcs_j[pc_j_idx]), -1.0, 1.0)
+                    similarity_matrix[pc_i_idx, pc_j_idx] = sim
+
+            # Plot heatmap
+            im = ax.imshow(similarity_matrix, cmap="RdYlGn", vmin=-1, vmax=1, aspect="auto")
+            ax.set_xticks(np.arange(n_comp_j))
+            ax.set_yticks(np.arange(n_comp_i))
+            ax.set_xticklabels([f"PC{k+1}" for k in range(n_comp_j)], fontsize=9)
+            ax.set_yticklabels([f"PC{k+1}" for k in range(n_comp_i)], fontsize=9)
+            ax.set_xlabel(f"Sample {sid_j} PCs", fontsize=10)
+            ax.set_ylabel(f"Sample {sid_i} PCs", fontsize=10)
+            ax.set_title(f"S{sid_i} vs S{sid_j}", fontsize=11, fontweight="bold")
+
+            # Add text annotations (only if matrix is small enough)
+            if n_comp_i <= 8 and n_comp_j <= 8:
+                for pi in range(n_comp_i):
+                    for pj in range(n_comp_j):
+                        _ = ax.text(
+                            pj, pi, f"{similarity_matrix[pi, pj]:.2f}", ha="center", va="center", color="black", fontsize=8
+                        )
+
+            plt.colorbar(im, ax=ax, label="Cosine Similarity")
+            pair_idx += 1
+
+    # Hide unused subplots
+    for idx in range(pair_idx, len(axes2)):
+        axes2[idx].axis("off")
+
+    plt.suptitle(
+        "Pairwise Cross-Component Similarity\n(All PCs of sample A vs all PCs of sample B)", fontsize=14, fontweight="bold"
+    )
+    plt.tight_layout()
+    pairwise_outfile = outfile.replace(".png", "_pairwise.png")
+    plt.savefig(pairwise_outfile, dpi=150)
+    print(f"plot_pca_components_similarity_across_samples (pairwise): {pairwise_outfile}")
+    plt.close()
+
+    # Create summary: average similarity between matching and non-matching PC indices
+    matching_similarities = []
+    non_matching_similarities = []
+
+    for i, sid_i in enumerate(sample_ids):
+        if sid_i not in normalized_pcs:
+            continue
+        for j, sid_j in enumerate(sample_ids):
+            if i >= j or sid_j not in normalized_pcs:
+                continue
+
+            pcs_i = normalized_pcs[sid_i]
+            pcs_j = normalized_pcs[sid_j]
+            n_comp_i = min(pcs_i.shape[0], n_comp_actual)
+            n_comp_j = min(pcs_j.shape[0], n_comp_actual)
+
+            for pc_i_idx in range(n_comp_i):
+                for pc_j_idx in range(n_comp_j):
+                    sim = np.clip(np.dot(pcs_i[pc_i_idx], pcs_j[pc_j_idx]), -1.0, 1.0)
+                    if pc_i_idx == pc_j_idx:
+                        matching_similarities.append(sim)
+                    else:
+                        non_matching_similarities.append(sim)
+
+    # Plot summary comparison
+    summary_outfile = outfile.replace(".png", "_summary.png")
+    plt.figure(figsize=(10, 6))
+    categories = ["Matching PC indices\n(e.g., PC1 vs PC1)", "Non-matching PC indices\n(e.g., PC1 vs PC2)"]
+    means = [
+        np.mean(matching_similarities) if matching_similarities else 0.0,
+        np.mean(non_matching_similarities) if non_matching_similarities else 0.0,
+    ]
+    stds = [
+        np.std(matching_similarities) if matching_similarities else 0.0,
+        np.std(non_matching_similarities) if non_matching_similarities else 0.0,
+    ]
+
+    x_pos = np.arange(len(categories))
+    _ = plt.bar(x_pos, means, yerr=stds, alpha=0.7, color=["steelblue", "coral"], edgecolor="black", linewidth=1.5, capsize=5)
+    plt.axhline(y=0, color="black", linestyle="-", linewidth=0.5)
+    plt.xlabel("Comparison Type", fontsize=14)
+    plt.ylabel("Average Cosine Similarity", fontsize=14)
+    plt.title("PCA Component Similarity: Matching vs Non-Matching Indices", fontsize=14, fontweight="bold")
+    plt.xticks(x_pos, categories, fontsize=11)
+    plt.grid(True, alpha=0.3, axis="y")
+    plt.ylim(-1, 1)
+
+    # Add value labels on bars
+    for i, (mean, std) in enumerate(zip(means, stds)):
+        plt.text(
+            i,
+            mean + std + 0.05 if mean >= 0 else mean - std - 0.05,
+            f"{mean:.3f}±{std:.3f}",
+            ha="center",
+            va="bottom" if mean >= 0 else "top",
+            fontsize=11,
+        )
+
+    plt.tight_layout()
+    plt.savefig(summary_outfile, dpi=150)
+    print(f"plot_pca_components_similarity_across_samples (summary): {summary_outfile}")
+    plt.close()
+
+
 def plot_correlation(
     x: np.ndarray,
     y: np.ndarray,
@@ -432,6 +711,11 @@ def plot_correlation(
     label_y_threshold: Optional[float] = None,
     point_labels: Optional[List[str]] = None,
 ):
+    # Ensure x and y have the same length
+    if len(x) != len(y):
+        print(f"Warning: Skipping {title} - x and y have different lengths ({len(x)} vs {len(y)})")
+        return
+
     plt.figure(figsize=(6, 4))
     # Create gradient colors based on position (first to last)
     n_points = len(x)
@@ -693,16 +977,16 @@ def main():
             title=f"Sample {sid}: Cumulative Explained Variance",
             outfile=os.path.join(out_dir, f"sid{sid}_cumulative_variance.png"),
         )
-        if model is not None and tok is not None:
-            plot_pca_reconstruction_accuracy(
-                stages,
-                model,
-                tok,
-                device,
-                title=f"Sample {sid}: PCA Reconstruction Accuracy",
-                outfile=os.path.join(out_dir, f"sid{sid}_pca_reconstruction_accuracy.png"),
-                max_components=16,
-            )
+        # if model is not None and tok is not None:
+        #     plot_pca_reconstruction_accuracy(
+        #         stages,
+        #         model,
+        #         tok,
+        #         device,
+        #         title=f"Sample {sid}: PCA Reconstruction Accuracy",
+        #         outfile=os.path.join(out_dir, f"sid{sid}_pca_reconstruction_accuracy.png"),
+        #         max_components=16,
+        #     )
 
         # Collect compression embeddings for aggregate analysis
         for s in stages:
@@ -803,6 +1087,14 @@ def main():
             max_components=16,
         )
 
+    # Visualize PCA component similarity across samples
+    if len(by_sid) >= 2:
+        plot_pca_components_similarity_across_samples(
+            by_sid,
+            outfile=os.path.join(out_dir, "pca_components_similarity_across_samples.png"),
+            n_components=8,
+        )
+
     # Correlation plots across all stages
     if len(summary_steps) > 1 and len(summary_conv) == len(summary_steps):
         plot_correlation(
@@ -825,10 +1117,12 @@ def main():
             point_labels=length_vs_steps_labels if len(length_vs_steps_labels) == len(summary_steps) else None,
         )
 
-    if len(ppl_all) > 1:
+    # Note: ppl_all is per-sample, summary_steps is per-stage
+    # They have different structures, so we can only plot if lengths happen to match
+    if len(ppl_all) > 1 and len(ppl_all) == len(summary_steps):
         plot_correlation(
             np.array(ppl_all),
-            np.array(summary_steps[1:]),
+            np.array(summary_steps),
             xlabel="ppl",
             ylabel="steps_taken",
             title="PPL vs Steps",
