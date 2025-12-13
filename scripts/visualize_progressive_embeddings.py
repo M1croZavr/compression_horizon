@@ -10,6 +10,7 @@ import seaborn as sns
 import torch
 from datasets import Dataset
 from sklearn.decomposition import PCA
+from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -23,7 +24,7 @@ def filter_records(
     stage_index: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-    for i in range(len(ds)):
+    for i in tqdm(range(len(ds)), desc="Filtering records"):
         r = ds[i]
         if sample_id is not None and int(r.get("sample_id", -1)) != int(sample_id):
             continue
@@ -252,6 +253,175 @@ def plot_cumulative_explained_variance(X: np.ndarray, title: str, outfile: str, 
     print(f"Cumulative explained variance: {n_95} components explain 95%, {n_99} components explain 99%")
 
 
+def plot_pca_reconstruction_accuracy(
+    rows: List[Dict[str, Any]],
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    device: torch.device,
+    title: str,
+    outfile: str,
+    max_components: Optional[int] = None,
+):
+    """Plot reconstruction accuracy (with teacher forcing) vs number of PCA components.
+
+    For each number of PCA components, reconstructs compression embeddings from PCA and computes
+    token prediction accuracy using model forward pass.
+
+    Args:
+        rows: List of dataset rows containing 'embedding' and 'text' fields
+        model: Language model for forward pass
+        tokenizer: Tokenizer for text processing
+        device: Device to run computations on
+        title: Plot title
+        outfile: Output file path
+        max_components: Maximum number of components to compute
+    """
+    if len(rows) == 0:
+        return
+
+    # Extract compression embeddings and their original shapes
+    compression_embeddings = []
+    original_shapes = []
+    texts = []
+    valid_rows = []
+    print("len rows", len(rows))
+    for row in rows:
+        text = row.get("text", "")
+        if not isinstance(text, str) or text.strip() == "":
+            continue
+        emb = torch.tensor(row["embedding"], dtype=torch.float32)
+        if emb.ndim == 1:
+            emb = emb.unsqueeze(0)
+        original_shapes.append(emb.shape)  # [num_compression_tokens, hidden_dim]
+        compression_embeddings.append(emb.reshape(-1).detach().cpu().numpy())
+        texts.append(text)
+        valid_rows.append(row)
+
+    if len(compression_embeddings) == 0:
+        return
+
+    # Stack flattened embeddings for PCA
+    X = np.stack(compression_embeddings, axis=0)
+    n_samples, n_features = X.shape
+    max_comp = max_components if max_components is not None else min(n_samples - 1, n_features)
+    max_comp = min(max_comp, n_samples - 1, n_features)
+
+    if max_comp < 1:
+        return
+
+    model.eval()
+    input_embeddings_layer = model.get_input_embeddings()
+
+    n_components_list = []
+    all_accuracies_per_component = []  # Store all accuracies for each component count
+
+    for n_comp in tqdm(range(1, max_comp + 1), desc="pca_reconstruction_accuracy"):
+        # Fit PCA with n_comp components
+        pca = PCA(n_components=n_comp, random_state=42)
+        X_transformed = pca.fit_transform(X)
+        X_reconstructed = pca.inverse_transform(X_transformed)
+
+        accuracies_per_sample = []
+
+        with torch.no_grad():
+            for i, (row, text, orig_shape) in enumerate(
+                tqdm(zip(valid_rows, texts, original_shapes), desc=f"Computing accuracy (n_comp={n_comp})", leave=False)
+            ):
+                # Reconstruct compression embedding and reshape to original shape
+                comp_emb_flat = torch.tensor(X_reconstructed[i], dtype=torch.float32, device=device)
+                compression_embedding = comp_emb_flat.reshape(orig_shape).to(device)
+
+                # Tokenize text
+                enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+                input_ids = enc["input_ids"].to(device)
+                attention_mask = enc["attention_mask"].to(device)
+
+                # Get input text embeddings
+                input_text_embeds = input_embeddings_layer(input_ids)
+
+                # Concatenate compression embedding with input text embeddings
+                num_compression_tokens = compression_embedding.shape[0]
+                input_embeds = torch.cat([compression_embedding.unsqueeze(0), input_text_embeds], dim=1)
+
+                # Extend attention mask to include compression tokens
+                comp_attention = torch.ones(
+                    (attention_mask.shape[0], num_compression_tokens), device=device, dtype=attention_mask.dtype
+                )
+                extended_attention_mask = torch.cat([comp_attention, attention_mask], dim=1)
+
+                # Forward pass
+                compression_outputs = model(inputs_embeds=input_embeds, attention_mask=extended_attention_mask)
+
+                # Compute accuracy: compare predicted tokens with input_ids
+                # logits[:, num_compression_tokens - 1 : -1] corresponds to predictions for input tokens
+                pred_logits = compression_outputs.logits[:, num_compression_tokens - 1 : -1]
+                pred_tokens = pred_logits.argmax(dim=-1)
+
+                # Compare with input_ids (full sequence, as logits predict next token)
+                # The logits at position num_compression_tokens - 1 predict input_ids[0], etc.
+                convergence_numerator = (pred_tokens == input_ids).sum(dim=-1)
+                convergence_per_sample = convergence_numerator.float() / attention_mask.sum(dim=-1).float()
+
+                if attention_mask.sum().item() > 0:
+                    accuracy = convergence_per_sample.item()
+                    accuracies_per_sample.append(accuracy)
+
+        if len(accuracies_per_sample) > 0:
+            n_components_list.append(n_comp)
+            all_accuracies_per_component.append(accuracies_per_sample)
+
+    if len(n_components_list) == 0:
+        return
+
+    # Compute statistics for plotting
+    mean_accuracies = [np.mean(accs) for accs in all_accuracies_per_component]
+    # std_accuracies = [np.std(accs) for accs in all_accuracies_per_component]
+    q25_accuracies = [np.percentile(accs, 25) for accs in all_accuracies_per_component]
+    q75_accuracies = [np.percentile(accs, 75) for accs in all_accuracies_per_component]
+    q10_accuracies = [np.percentile(accs, 10) for accs in all_accuracies_per_component]
+    q90_accuracies = [np.percentile(accs, 90) for accs in all_accuracies_per_component]
+
+    plt.figure(figsize=(10, 7))
+    # Plot shaded regions showing distribution
+    # Outer region: 10th-90th percentile
+    plt.fill_between(
+        n_components_list,
+        q10_accuracies,
+        q90_accuracies,
+        alpha=0.15,
+        color="blue",
+        label="10th-90th percentile",
+    )
+    # Inner region: 25th-75th percentile (IQR)
+    plt.fill_between(
+        n_components_list,
+        q25_accuracies,
+        q75_accuracies,
+        alpha=0.3,
+        color="blue",
+        label="Interquartile range (25th-75th)",
+    )
+    # Plot mean line
+    plt.plot(
+        n_components_list, mean_accuracies, marker="o", linewidth=2.5, markersize=6, color="darkblue", label="Mean accuracy"
+    )
+    # Plot individual points with transparency to show density
+    for n_comp, accs in zip(n_components_list, all_accuracies_per_component):
+        plt.scatter([n_comp] * len(accs), accs, alpha=0.2, s=20, color="blue", zorder=0)
+
+    plt.xlabel("Number of PCA Components", fontsize=14)
+    plt.ylabel("Reconstruction Accuracy (Token Prediction)", fontsize=14)
+    plt.title(title, fontsize=16)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="best", fontsize=11)
+    plt.xlim(left=0)
+    plt.ylim(bottom=0, top=1.05)
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150)
+    print(f"plot_pca_reconstruction_accuracy: {outfile}")
+    plt.close()
+
+
 def plot_correlation(
     x: np.ndarray,
     y: np.ndarray,
@@ -397,7 +567,7 @@ def maybe_compute_perplexity(
     seq_lens: List[int] = []
     ppls: List[float] = []
     with torch.no_grad():
-        for r in rows[:max_eval_samples]:
+        for r in tqdm(rows[:max_eval_samples], desc="Computing perplexity"):
             text = r.get("text", "")
             if not isinstance(text, str) or text.strip() == "":
                 continue
@@ -496,8 +666,10 @@ def main():
     seq_len_all: List[int] = []
     sid_all: List[int] = []
     length_vs_steps_labels: List[str] = []
+    all_compression_embeddings: List[np.ndarray] = []
+    all_rows_for_pca: List[Dict[str, Any]] = []
 
-    for sid, stages in by_sid.items():
+    for sid, stages in tqdm(by_sid.items(), desc="Processing samples"):
         labels = [f"L{int(s.get('stage_seq_len', -1))}" for s in stages]
         X = np.stack([flatten_embedding(s) for s in stages], axis=0)
         l2, cos_d = compute_pairwise_similarities(X)
@@ -521,6 +693,21 @@ def main():
             title=f"Sample {sid}: Cumulative Explained Variance",
             outfile=os.path.join(out_dir, f"sid{sid}_cumulative_variance.png"),
         )
+        if model is not None and tok is not None:
+            plot_pca_reconstruction_accuracy(
+                stages,
+                model,
+                tok,
+                device,
+                title=f"Sample {sid}: PCA Reconstruction Accuracy",
+                outfile=os.path.join(out_dir, f"sid{sid}_pca_reconstruction_accuracy.png"),
+                max_components=16,
+            )
+
+        # Collect compression embeddings for aggregate analysis
+        for s in stages:
+            all_compression_embeddings.append(flatten_embedding(s))
+            all_rows_for_pca.append(s)
 
         # Collect per-stage stats
         for s in stages:
@@ -602,6 +789,18 @@ def main():
             ylabel="token L1 norm",
             title=f"Sample {sid}: token L1 norms across stages",
             outfile=os.path.join(out_dir, f"sid{sid}_token_norms_l1.png"),
+        )
+
+    # Aggregate PCA reconstruction accuracy across all compression embeddings
+    if len(all_rows_for_pca) > 0 and model is not None and tok is not None:
+        plot_pca_reconstruction_accuracy(
+            all_rows_for_pca,
+            model,
+            tok,
+            device,
+            title="Aggregate: PCA Reconstruction Accuracy (All Compression Embeddings)",
+            outfile=os.path.join(out_dir, "aggregate_pca_reconstruction_accuracy.png"),
+            max_components=16,
         )
 
     # Correlation plots across all stages
