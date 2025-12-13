@@ -1,9 +1,11 @@
 import os
 from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
+from sklearn.decomposition import PCA
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -167,7 +169,58 @@ class MyTrainer:
     def _prepare_embedding_init(self, model):
         init_method = self.args.embedding_init_method
         mvn_dist = None
-        if init_method == "mvnormal":
+        pca_components = None
+        pca_mean = None
+
+        if init_method == "pretrained_pca":
+            # Load PCA components from pretrained progressive dataset
+            if not self.args.pretrained_pca_path:
+                raise ValueError("pretrained_pca_path must be specified when using embedding_init_method=pretrained_pca")
+            if not os.path.exists(self.args.pretrained_pca_path):
+                raise ValueError(f"pretrained_pca_path does not exist: {self.args.pretrained_pca_path}")
+
+            # Load progressive dataset
+            progressive_ds = Dataset.load_from_disk(self.args.pretrained_pca_path)
+
+            # Get first sample's embeddings across all stages
+            first_sample_embeddings = []
+            for i in range(len(progressive_ds)):
+                row = progressive_ds[i]
+                if int(row.get("sample_id", -1)) == 0:  # First sample (sample_id=0)
+                    embedding = row.get("embedding")
+                    if embedding is not None:
+                        # Convert to numpy array and flatten if needed
+                        if isinstance(embedding, list):
+                            emb_tensor = torch.tensor(embedding, dtype=torch.float32)
+                        else:
+                            emb_tensor = torch.tensor(embedding, dtype=torch.float32)
+                        # Flatten: [num_compression_tokens, hidden_size] -> [num_compression_tokens * hidden_size]
+                        emb_flat = emb_tensor.reshape(-1).to(torch.float32).detach().cpu().numpy()
+                        first_sample_embeddings.append(emb_flat)
+
+            if len(first_sample_embeddings) == 0:
+                raise ValueError(f"No embeddings found for sample_id=0 in {self.args.pretrained_pca_path}")
+
+            # Stack embeddings: [n_stages, flattened_dim]
+            X = np.stack(first_sample_embeddings, axis=0)
+
+            # Fit PCA
+            n_components = min(self.args.pretrained_pca_num_components, X.shape[0] - 1, X.shape[1])
+            if n_components < 1:
+                raise ValueError(f"Cannot fit PCA: need at least 2 samples, got {X.shape[0]}")
+
+            pca = PCA(n_components=n_components, random_state=42)
+            pca.fit(X)
+
+            # Store PCA components and mean for later use
+            pca_components = torch.tensor(pca.components_, dtype=torch.float32)  # [n_components, flattened_dim]
+            pca_mean = torch.tensor(pca.mean_, dtype=torch.float32)  # [flattened_dim]
+            print(
+                f"Loaded PCA from {self.args.pretrained_pca_path}: {n_components} components, "
+                f"explained variance: {pca.explained_variance_ratio_.sum():.4f}"
+            )
+
+        elif init_method == "mvnormal":
             with torch.no_grad():
                 emb_weight = None
                 try:
@@ -201,7 +254,7 @@ class MyTrainer:
                         )
                 else:
                     raise ValueError("cant run mv normal initialization method")
-        return init_method, mvn_dist
+        return init_method, mvn_dist, pca_components, pca_mean
 
     def _create_dataloader(self):
         return DataLoader(
@@ -220,6 +273,8 @@ class MyTrainer:
         mvn_dist,
         token_embeddings=None,
         single_compressed_embeddings_initialization=None,
+        pca_components=None,
+        pca_mean=None,
     ):
         if init_method == "mvnormal" and mvn_dist is not None:
             samples = mvn_dist.sample((batch_size, num_tokens))
@@ -283,6 +338,32 @@ class MyTrainer:
         elif init_method == "mean_token_embeds":
             assert token_embeddings is not None, "token_embeddings is required for `mean_token_embeds` init method"
             trainable_embeddings = torch.nn.Parameter(token_embeddings.mean(1, keepdim=True).repeat(1, num_tokens, 1))
+        elif init_method == "pretrained_pca":
+            assert pca_components is not None, "pca_components is required for `pretrained_pca` init method"
+            assert pca_mean is not None, "pca_mean is required for `pretrained_pca` init method"
+            # pca_components: [n_components, flattened_dim]
+            # pca_mean: [flattened_dim]
+            # flattened_dim = num_tokens * hidden_size (from the pretrained dataset)
+
+            # Check if dimensions match
+            flattened_dim = pca_mean.shape[0]
+            expected_flattened_dim = num_tokens * hidden_size
+            if flattened_dim != expected_flattened_dim:
+                raise ValueError(
+                    f"PCA dimension mismatch: pretrained has {flattened_dim} (num_tokens * hidden_size), "
+                    f"but current needs {expected_flattened_dim} (num_tokens={num_tokens}, hidden_size={hidden_size})"
+                )
+
+            # Use PCA components to initialize: sample random coefficients in PCA space
+            n_components_to_use = min(pca_components.shape[0], num_tokens)
+            # Sample random coefficients: [batch_size, n_components_to_use]
+            pca_coeffs = torch.randn([batch_size, n_components_to_use], dtype=torch.float32) * 0.1
+            # Reconstruct: [batch, n_components] @ [n_components, flattened_dim] -> [batch, flattened_dim]
+            reconstructed_flat = torch.matmul(pca_coeffs, pca_components[:n_components_to_use])  # [batch, flattened_dim]
+            # Add mean
+            reconstructed_flat = reconstructed_flat + pca_mean.unsqueeze(0)  # [batch, flattened_dim]
+            # Reshape to [batch, num_tokens, hidden_size]
+            trainable_embeddings = torch.nn.Parameter(reconstructed_flat.reshape(batch_size, num_tokens, hidden_size))
         else:
             raise ValueError(f"unsupported init method: {init_method}")
         return trainable_embeddings
@@ -366,7 +447,7 @@ class MyTrainer:
         device = get_device()
         model = self.model.to(device)
         freeze_model_parameters(model)
-        init_method, mvn_dist = self._prepare_embedding_init(model)
+        init_method, mvn_dist, pca_components, pca_mean = self._prepare_embedding_init(model)
         num_compression_tokens = self.args.number_of_mem_tokens
 
         # Collect per-sample artifacts for optional saving
@@ -385,6 +466,8 @@ class MyTrainer:
                 mvn_dist,
                 token_embeddings=None,
                 single_compressed_embeddings_initialization=None,
+                pca_components=pca_components,
+                pca_mean=pca_mean,
             )
             single_compressed_embeddings_initialization = (
                 single_compressed_embeddings_initialization.data.detach().clone()
@@ -401,23 +484,58 @@ class MyTrainer:
             with torch.no_grad():
                 token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
 
-            # Trainable compression tokens per sample
-            compression_token_embeddings = self._init_compression_tokens(
-                batch_size,
-                num_compression_tokens,
-                hidden_size,
-                init_method,
-                mvn_dist,
-                single_compressed_embeddings_initialization=single_compressed_embeddings_initialization,
-                token_embeddings=token_embeddings,
-            )  # [batch, mem, hidden]
-            # Save initialization embedding (before optimization)
-            initialization_embeddings = compression_token_embeddings.detach().clone().cpu()  # [batch, mem, hidden]
+            # Handle pretrained_pca initialization: optimize only coefficients
+            if init_method == "pretrained_pca":
+                assert pca_components is not None, "pca_components is required for pretrained_pca"
+                assert pca_mean is not None, "pca_mean is required for pretrained_pca"
+
+                # Move PCA components and mean to device
+                pca_components_device = pca_components.to(device)  # [n_components, flattened_dim]
+                pca_mean_device = pca_mean.to(device)  # [flattened_dim]
+
+                # Validate dimensions
+                flattened_dim = pca_mean_device.shape[0]
+                expected_flattened_dim = num_compression_tokens * hidden_size
+                if flattened_dim != expected_flattened_dim:
+                    raise ValueError(
+                        f"PCA dimension mismatch: pretrained has {flattened_dim}, "
+                        f"but current needs {expected_flattened_dim} (num_tokens={num_compression_tokens}, hidden_size={hidden_size})"
+                    )
+
+                # Initialize coefficients: [batch_size, n_components]
+                n_components = pca_components_device.shape[0]
+                pca_coefficients = torch.nn.Parameter(
+                    torch.randn([batch_size, n_components], dtype=torch.float32, device=device) * 0.1
+                )
+
+                # Reconstruct initial compression tokens for saving initialization
+                reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(0)
+                initialization_embeddings = (
+                    reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size).detach().cpu()
+                )
+
+                # Optimizer only optimizes coefficients
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(pca_coefficients)
+            else:
+                # Standard initialization: optimize full compression tokens
+                compression_token_embeddings = self._init_compression_tokens(
+                    batch_size,
+                    num_compression_tokens,
+                    hidden_size,
+                    init_method,
+                    mvn_dist,
+                    single_compressed_embeddings_initialization=single_compressed_embeddings_initialization,
+                    token_embeddings=token_embeddings,
+                    pca_components=pca_components,
+                    pca_mean=pca_mean,
+                )  # [batch, mem, hidden]
+                # Save initialization embedding (before optimization)
+                initialization_embeddings = compression_token_embeddings.detach().clone().cpu()  # [batch, mem, hidden]
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
+
             compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
             )  # [batch, mem]
-
-            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
 
             (
                 loss,
@@ -457,6 +575,13 @@ class MyTrainer:
             )
 
             for step_i in progress_bar:
+                # Reconstruct compression tokens from PCA coefficients if using pretrained_pca
+                if init_method == "pretrained_pca":
+                    # Reconstruct: [batch, n_components] @ [n_components, flattened_dim] + [flattened_dim] -> [batch, flattened_dim]
+                    reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(0)
+                    compression_token_embeddings = reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size)
+                # else: compression_token_embeddings is already defined in the outer scope
+
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
                 united_token_embeddings = torch.cat(
                     [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings],
@@ -486,7 +611,12 @@ class MyTrainer:
 
                 if prev_convergence is not None:
                     # Zero gradients for converged items
-                    compression_token_embeddings.grad[prev_convergence] = 0
+                    if init_method == "pretrained_pca":
+                        # Zero gradients for converged items' coefficients
+                        pca_coefficients.grad[prev_convergence] = 0
+                    else:
+                        # Zero gradients for converged items' compression tokens
+                        compression_token_embeddings.grad[prev_convergence] = 0
                     # print(
                     #     "Non zero gradients:",
                     #     (compression_token_embeddings.grad.sum(-1) != 0).sum(),
@@ -496,13 +626,23 @@ class MyTrainer:
                     #     prev_convergence_per_sample,
                     # )
 
-                compression_token_embeddings_clone = compression_token_embeddings.detach().clone()
+                if init_method == "pretrained_pca":
+                    pca_coefficients_clone = pca_coefficients.detach().clone()
+                else:
+                    compression_token_embeddings_clone = compression_token_embeddings.detach().clone()
 
                 optimizer.step()
 
                 if prev_convergence is not None:
                     with torch.no_grad():
-                        compression_token_embeddings[prev_convergence] = compression_token_embeddings_clone[prev_convergence]
+                        if init_method == "pretrained_pca":
+                            # Restore converged items' coefficients
+                            pca_coefficients[prev_convergence] = pca_coefficients_clone[prev_convergence]
+                        else:
+                            # Restore converged items' compression tokens
+                            compression_token_embeddings[prev_convergence] = compression_token_embeddings_clone[
+                                prev_convergence
+                            ]
 
                 # Log current step progress
                 with torch.no_grad():
@@ -552,7 +692,16 @@ class MyTrainer:
                 tokenizer = self.processing_class
                 last_loss = loss.item()
                 last_convergence_per_sample = convergence_per_sample.cpu()
-                compression_token_embeddings_cpu = compression_token_embeddings.detach().cpu()
+                # Reconstruct compression tokens if using PCA (for saving)
+                pca_coefficients_to_save = None
+                if init_method == "pretrained_pca":
+                    reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(0)
+                    compression_token_embeddings_cpu = (
+                        reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size).detach().cpu()
+                    )
+                    pca_coefficients_to_save = pca_coefficients.clone().detach().to(torch.float32).cpu().numpy().tolist()
+                else:
+                    compression_token_embeddings_cpu = compression_token_embeddings.detach().cpu()
                 for j in range(batch_size):
                     sample_attention_mask = attention_mask[j].bool()
                     sample_input_ids = input_ids[j][sample_attention_mask]
@@ -567,6 +716,7 @@ class MyTrainer:
                             "sample_id": sample_id_counter,
                             "text": sample_text,
                             "embedding": embedding,  # [mem, hidden]
+                            "pca_coefficients": pca_coefficients_to_save[j] if pca_coefficients_to_save is not None else None,
                             "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization
                             "final_loss": last_loss,
                             "final_convergence": last_convergence_per_sample[j].item(),
@@ -589,6 +739,8 @@ class MyTrainer:
                         }
                     )
                     sample_id_counter += 1
+                    # Store final compression tokens for saving (from last batch)
+                    final_compression_token_embeddings_cpu = compression_token_embeddings_cpu
 
         # Close TensorBoard writer
         if self.writer is not None:
@@ -596,7 +748,7 @@ class MyTrainer:
             self.writer.close()
 
         # Persist artifacts
-        save_path = self._save_artifacts(compression_token_embeddings_cpu, collected_rows, "compressed_prefixes")
+        save_path = self._save_artifacts(final_compression_token_embeddings_cpu, collected_rows, "compressed_prefixes")
         if save_path is not None:
             return save_path
         return None
@@ -662,7 +814,7 @@ class MyTrainer:
         device = get_device()
         model = self.model.to(device)
         freeze_model_parameters(model)
-        init_method, mvn_dist = self._prepare_embedding_init(model)
+        init_method, mvn_dist, pca_components, pca_mean = self._prepare_embedding_init(model)
         num_compression_tokens = self.args.number_of_mem_tokens
 
         # Collect per-sample artifacts for optional saving
@@ -679,6 +831,8 @@ class MyTrainer:
             mvn_dist,
             token_embeddings=None,
             single_compressed_embeddings_initialization=None,
+            pca_components=pca_components,
+            pca_mean=pca_mean,
         )
         # Save initialization embedding (before optimization) - shared across all samples in train_noop
         initialization_embedding_single = compression_token_embeddings_single.detach().clone().cpu()  # [1, mem, hidden]
@@ -926,7 +1080,7 @@ class MyTrainer:
 
         model = self.model.to(device)
         freeze_model_parameters(model)
-        init_method, mvn_dist = self._prepare_embedding_init(model)
+        init_method, mvn_dist, pca_components, pca_mean = self._prepare_embedding_init(model)
 
         dataloader = self._create_dataloader()
 
@@ -947,20 +1101,58 @@ class MyTrainer:
             full_attention_mask = batch.attention_mask.squeeze(1)
 
             hidden_size = full_model_token_embeddings.shape[-1]
-            compression_tokens = self._init_compression_tokens(
-                batch_size,
-                num_compression_tokens,
-                hidden_size,
-                init_method,
-                mvn_dist,
-            )
-            # Save initialization embedding (before optimization)
-            initialization_embeddings = compression_tokens.detach().clone().cpu()  # [batch, mem, hidden]
+            device = full_model_token_embeddings.device
+
+            # Handle pretrained_pca initialization: optimize only coefficients
+            if init_method == "pretrained_pca":
+                assert pca_components is not None, "pca_components is required for pretrained_pca"
+                assert pca_mean is not None, "pca_mean is required for pretrained_pca"
+
+                # Move PCA components and mean to device
+                pca_components_device = pca_components.to(device)  # [n_components, flattened_dim]
+                pca_mean_device = pca_mean.to(device)  # [flattened_dim]
+
+                # Validate dimensions
+                flattened_dim = pca_mean_device.shape[0]
+                expected_flattened_dim = num_compression_tokens * hidden_size
+                if flattened_dim != expected_flattened_dim:
+                    raise ValueError(
+                        f"PCA dimension mismatch: pretrained has {flattened_dim}, "
+                        f"but current needs {expected_flattened_dim} (num_tokens={num_compression_tokens}, hidden_size={hidden_size})"
+                    )
+
+                # Initialize coefficients: [batch_size, n_components]
+                n_components = pca_components_device.shape[0]
+                pca_coefficients = torch.nn.Parameter(
+                    torch.randn([batch_size, n_components], dtype=torch.float32, device=device) * 0.1
+                )
+
+                # Reconstruct initial compression tokens for saving initialization
+                reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(0)
+                initialization_embeddings = (
+                    reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size).detach().cpu()
+                )
+
+                # Optimizer only optimizes coefficients
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(pca_coefficients)
+            else:
+                # Standard initialization: optimize full compression tokens
+                compression_tokens = self._init_compression_tokens(
+                    batch_size,
+                    num_compression_tokens,
+                    hidden_size,
+                    init_method,
+                    mvn_dist,
+                    pca_components=pca_components,
+                    pca_mean=pca_mean,
+                )
+                # Save initialization embedding (before optimization)
+                initialization_embeddings = compression_tokens.detach().clone().cpu()  # [batch, mem, hidden]
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_tokens)
+
             compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
             )
-
-            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_tokens)
 
             # Determine maximum effective length present in this batch (exclude padding)
             per_sample_lengths = full_attention_mask.sum(dim=1).tolist()
@@ -985,6 +1177,15 @@ class MyTrainer:
                 converged = False
 
                 for i in pbar:
+                    # Reconstruct compression tokens from PCA coefficients if using pretrained_pca
+                    if init_method == "pretrained_pca":
+                        # Reconstruct: [batch, n_components] @ [n_components, flattened_dim] + [flattened_dim] -> [batch, flattened_dim]
+                        reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(
+                            0
+                        )
+                        compression_tokens = reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size)
+                    # else: compression_tokens is already defined in the outer scope
+
                     model_tokens_with_compression_tokens = torch.cat(
                         [compression_tokens.to(inputs_embeds.dtype), inputs_embeds], dim=1
                     )
@@ -1004,15 +1205,27 @@ class MyTrainer:
                     loss.backward()
                     steps_taken += 1
                     pbar.update(1)
+
+                    # Get gradient norm from coefficients or compression_tokens
+                    if init_method == "pretrained_pca":
+                        grad_norm = pca_coefficients.grad.norm(2).item() if pca_coefficients.grad is not None else 0.0
+                        comp_mean = compression_tokens.mean().item()
+                        comp_std = compression_tokens.std().item()
+                    else:
+                        grad_norm = compression_tokens.grad.norm(2).item() if compression_tokens.grad is not None else 0.0
+                        comp_mean = compression_tokens.mean().item()
+                        comp_std = compression_tokens.std().item()
+
                     pbar.set_postfix(
                         loss=loss.item(),
                         convergece_per_sample=convergece_per_sample.mean().item(),
-                        compression_tokens_mean=compression_tokens.mean().item(),
-                        compression_tokens_std=compression_tokens.std().item(),
-                        grad=compression_tokens.grad.norm(2).item(),
+                        compression_tokens_mean=comp_mean,
+                        compression_tokens_std=comp_std,
+                        grad=grad_norm,
                         lr=lr_scheduler.get_last_lr()[0],
                     )
 
+                    # For logging, use compression_tokens (reconstructed if using PCA)
                     self._log_step(
                         loss,
                         alignment_loss,
@@ -1037,7 +1250,18 @@ class MyTrainer:
                 # Save snapshot for this stage
                 with torch.no_grad():
                     tokenizer = self.processing_class
-                    comp_tokens_cpu = compression_tokens.detach().cpu()
+                    # Reconstruct compression tokens if using PCA (for saving)
+                    pca_coefficients_to_save = None
+                    if init_method == "pretrained_pca":
+                        reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(
+                            0
+                        )
+                        pca_coefficients_to_save = pca_coefficients.clone().detach().to(torch.float32).cpu().numpy().tolist()
+                        comp_tokens_cpu = (
+                            reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size).detach().cpu()
+                        )
+                    else:
+                        comp_tokens_cpu = compression_tokens.detach().cpu()
                     for j in range(batch_size):
                         attn = attention_mask[j].bool()
                         ids = input_ids[j][attn]
@@ -1051,6 +1275,7 @@ class MyTrainer:
                                 "stage_seq_len": int(seq_len),
                                 "text": text,
                                 "embedding": embedding,
+                                "pca_coefficients_to_save": pca_coefficients_to_save,
                                 "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization
                                 "final_loss": (float(last_loss_val) if last_loss_val is not None else None),
                                 "final_convergence": (float(last_conv[j].item()) if last_conv is not None else None),

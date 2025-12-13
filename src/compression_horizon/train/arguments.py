@@ -16,7 +16,17 @@ class MyTrainingArguments(TrainingArguments):
     )
     embedding_init_method: str = field(
         default="random",
-        metadata={"help": 'Initialization method for compression embeddings: "random" or "mvnormal".'},
+        metadata={"help": 'Initialization method for compression embeddings: "random", "mvnormal", or "pretrained_pca".'},
+    )
+    pretrained_pca_num_components: int = field(
+        default=16,
+        metadata={"help": "Number of PCA components to use when embedding_init_method=pretrained_pca."},
+    )
+    pretrained_pca_path: str = field(
+        default="",
+        metadata={
+            "help": "Path to progressive_prefixes dataset for PCA initialization (when embedding_init_method=pretrained_pca)."
+        },
     )
     number_of_mem_tokens: int = field(
         default=1,
