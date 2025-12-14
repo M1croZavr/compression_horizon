@@ -564,6 +564,7 @@ def plot_pca_reconstruction_accuracy(
 
     n_components_list = []
     all_accuracies_per_component = []  # Store all accuracies for each component count
+    all_first_error_indices_per_component = []  # Store first error indices for each component count
 
     # Determine max components across all samples
     max_comp_global = 0
@@ -581,6 +582,7 @@ def plot_pca_reconstruction_accuracy(
 
     for n_comp in tqdm(range(1, max_comp_global + 1, 2), desc="pca_reconstruction_accuracy"):
         accuracies_per_sample = []
+        first_error_indices_per_sample = []
 
         for sample_info in sample_data:
             all_emb = sample_info["all_embeddings"]
@@ -641,9 +643,22 @@ def plot_pca_reconstruction_accuracy(
                     accuracy = convergence_per_sample.item()
                     accuracies_per_sample.append(accuracy)
 
+                    # Find first error index: first position where prediction is wrong
+                    # Compare pred_tokens[0, i] with input_ids[0, i] for valid positions
+                    seq_len = int(attention_mask.sum().item())
+                    first_error_idx = seq_len  # Default: no error (error at sequence length)
+                    for i in range(seq_len):
+                        if pred_tokens[0, i].item() != input_ids[0, i].item():
+                            first_error_idx = i
+                            break
+                    first_error_indices_per_sample.append(first_error_idx)
+
         if len(accuracies_per_sample) > 0:
             n_components_list.append(n_comp)
             all_accuracies_per_component.append(accuracies_per_sample)
+            all_first_error_indices_per_component.append(first_error_indices_per_sample)
+
+    breakpoint()
 
     if len(n_components_list) == 0:
         print("len(n_components_list) == 0")
@@ -697,6 +712,62 @@ def plot_pca_reconstruction_accuracy(
     plt.savefig(outfile, dpi=150)
     print(f"plot_pca_reconstruction_accuracy: {outfile}")
     plt.close()
+
+    # Plot first error index vs number of PCA components
+    if len(all_first_error_indices_per_component) > 0:
+        # Compute statistics for first error indices
+        mean_first_error_indices = [np.mean(indices) for indices in all_first_error_indices_per_component]
+        q25_first_error_indices = [np.percentile(indices, 25) for indices in all_first_error_indices_per_component]
+        q75_first_error_indices = [np.percentile(indices, 75) for indices in all_first_error_indices_per_component]
+        q10_first_error_indices = [np.percentile(indices, 10) for indices in all_first_error_indices_per_component]
+        q90_first_error_indices = [np.percentile(indices, 90) for indices in all_first_error_indices_per_component]
+
+        plt.figure(figsize=(10, 7))
+        # Plot shaded regions showing distribution
+        # Outer region: 10th-90th percentile
+        plt.fill_between(
+            n_components_list,
+            q10_first_error_indices,
+            q90_first_error_indices,
+            alpha=0.15,
+            color="red",
+            label="10th-90th percentile",
+        )
+        # Inner region: 25th-75th percentile (IQR)
+        plt.fill_between(
+            n_components_list,
+            q25_first_error_indices,
+            q75_first_error_indices,
+            alpha=0.3,
+            color="red",
+            label="Interquartile range (25th-75th)",
+        )
+        # Plot mean line
+        plt.plot(
+            n_components_list,
+            mean_first_error_indices,
+            marker="o",
+            linewidth=2.5,
+            markersize=6,
+            color="darkred",
+            label="Mean first error index",
+        )
+        # Plot individual points with transparency to show density
+        for n_comp, indices in zip(n_components_list, all_first_error_indices_per_component):
+            plt.scatter([n_comp] * len(indices), indices, alpha=0.2, s=20, color="red", zorder=0)
+
+        plt.xlabel("Number of PCA Components", fontsize=14)
+        plt.ylabel("First Error Index (Sequence Position)", fontsize=14)
+        plt.title(f"{title} - First Error Index", fontsize=16)
+        plt.grid(True, alpha=0.3)
+        plt.legend(loc="best", fontsize=11)
+        plt.xlim(left=0)
+        plt.ylim(bottom=0)
+        plt.tight_layout()
+        error_index_outfile = outfile.replace(".png", "_first_error_index.png")
+        plt.savefig(error_index_outfile, dpi=150)
+        print(f"plot_pca_reconstruction_accuracy (first error index): {error_index_outfile}")
+        plt.close()
 
 
 def plot_pca_components_similarity_across_samples(
