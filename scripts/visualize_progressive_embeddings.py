@@ -476,10 +476,11 @@ def plot_pca_reconstruction_accuracy(
     """Plot reconstruction accuracy (with teacher forcing) vs number of PCA components.
 
     For each number of PCA components, reconstructs compression embeddings from PCA and computes
-    token prediction accuracy using model forward pass.
+    token prediction accuracy using model forward pass. Only computes accuracy once on the max seq length per unique sample_id.
+    PCA is applied separately for each sample.
 
     Args:
-        rows: List of dataset rows containing 'embedding' and 'text' fields
+        rows: List of dataset rows containing 'embedding', 'text', and 'sample_id' fields
         model: Language model for forward pass
         tokenizer: Tokenizer for text processing
         device: Device to run computations on
@@ -490,35 +491,73 @@ def plot_pca_reconstruction_accuracy(
     if len(rows) == 0:
         return
 
-    # Extract compression embeddings and their original shapes
-    compression_embeddings = []
-    original_shapes = []
-    texts = []
-    valid_rows = []
-    print("len rows", len(rows))
+    # Group rows by sample_id
+    rows_by_sample_id: Dict[int, List[Dict[str, Any]]] = {}
     for row in rows:
-        text = row.get("text", "")
+        sample_id = row.get("sample_id", None)
+        if sample_id is None:
+            continue
+        sample_id = int(sample_id)
+        if sample_id not in rows_by_sample_id:
+            rows_by_sample_id[sample_id] = []
+        rows_by_sample_id[sample_id].append(row)
+
+    # Prepare data structures for each sample
+    # For each sample: collect all embeddings for PCA, and identify longest sequence row for accuracy
+    sample_data: List[Dict[str, Any]] = []
+    for sample_id, sample_rows in rows_by_sample_id.items():
+        # Find max sequence length for this sample and collect all embeddings
+        max_seq_len = -1
+        longest_row = None
+        longest_row_idx = -1
+        all_embeddings_for_sample = []
+        all_rows_ordered = []
+
+        for idx, row in enumerate(sample_rows):
+            seq_len = int(row.get("stage_seq_len", -1))
+            if seq_len > max_seq_len:
+                max_seq_len = seq_len
+                longest_row = row
+                longest_row_idx = idx
+
+            # Collect all embeddings for this sample (for PCA)
+            emb = torch.tensor(row["embedding"], dtype=torch.float32)
+            if emb.ndim == 1:
+                emb = emb.unsqueeze(0)
+            flattened_embedding = emb.reshape(-1).detach().cpu().numpy()
+            all_embeddings_for_sample.append(flattened_embedding)
+            all_rows_ordered.append(row)
+
+        if longest_row is None or len(all_embeddings_for_sample) < 2:
+            # Need at least 2 embeddings for PCA
+            continue
+
+        text = longest_row.get("text", "")
         if not isinstance(text, str) or text.strip() == "":
             continue
-        emb = torch.tensor(row["embedding"], dtype=torch.float32)
-        if emb.ndim == 1:
-            emb = emb.unsqueeze(0)
-        original_shapes.append(emb.shape)  # [num_compression_tokens, hidden_dim]
-        compression_embeddings.append(emb.reshape(-1).detach().cpu().numpy())
-        texts.append(text)
-        valid_rows.append(row)
 
-    if len(compression_embeddings) == 0:
+        emb_longest = torch.tensor(longest_row["embedding"], dtype=torch.float32)
+        if emb_longest.ndim == 1:
+            emb_longest = emb_longest.unsqueeze(0)
+        original_shape = emb_longest.shape  # [num_compression_tokens, hidden_dim]
+
+        # Get the embedding corresponding to the longest sequence
+        longest_embedding = all_embeddings_for_sample[longest_row_idx]
+
+        sample_data.append(
+            {
+                "sample_id": sample_id,
+                "text": text,
+                "original_shape": original_shape,
+                "all_embeddings": np.stack(all_embeddings_for_sample, axis=0),  # All embeddings for PCA
+                "longest_embedding": longest_embedding,  # Embedding from longest sequence
+            }
+        )
+
+    if len(sample_data) == 0:
         return
 
-    # Stack flattened embeddings for PCA
-    X = np.stack(compression_embeddings, axis=0)
-    n_samples, n_features = X.shape
-    max_comp = max_components if max_components is not None else min(n_samples - 1, n_features)
-    max_comp = min(max_comp, n_samples - 1, n_features)
-
-    if max_comp < 1:
-        return
+    print(f"Processing {len(sample_data)} samples, each with PCA learned on all its embeddings")
 
     model.eval()
     input_embeddings_layer = model.get_input_embeddings()
@@ -526,26 +565,46 @@ def plot_pca_reconstruction_accuracy(
     n_components_list = []
     all_accuracies_per_component = []  # Store all accuracies for each component count
 
-    for n_comp in tqdm(range(1, max_comp + 1, 2), desc="pca_reconstruction_accuracy"):
-        # Fit PCA with n_comp components
-        pca = PCA(n_components=n_comp, random_state=42)
-        X_transformed = pca.fit_transform(X)
-        X_reconstructed = pca.inverse_transform(X_transformed)
+    # Determine max components across all samples
+    max_comp_global = 0
+    for sample_info in sample_data:
+        all_emb = sample_info["all_embeddings"]
+        n_samples_for_pca, n_features = all_emb.shape
+        max_comp_for_sample = min(n_samples_for_pca - 1, n_features)
+        max_comp_global = max(max_comp_global, max_comp_for_sample)
 
+    if max_components is not None:
+        max_comp_global = min(max_comp_global, max_components)
+
+    if max_comp_global < 1:
+        return
+
+    for n_comp in tqdm(range(1, max_comp_global + 1, 2), desc="pca_reconstruction_accuracy"):
         accuracies_per_sample = []
 
-        with torch.no_grad():
-            for i, (row, text, orig_shape) in enumerate(
-                tqdm(
-                    zip(valid_rows, texts, original_shapes),
-                    desc=f"Computing accuracy (n_comp={n_comp})",
-                    leave=False,
-                    total=len(rows),
-                )
-            ):
+        for sample_info in sample_data:
+            all_emb = sample_info["all_embeddings"]
+            n_samples_for_pca, n_features = all_emb.shape
+            max_comp_for_sample = min(n_samples_for_pca - 1, n_features)
+
+            if n_comp > max_comp_for_sample:
+                continue
+
+            # Fit PCA with n_comp components on all embeddings for this sample
+            pca = PCA(n_components=n_comp, random_state=42)
+            pca.fit(all_emb)
+
+            # Transform the longest sequence embedding
+            longest_emb = sample_info["longest_embedding"].reshape(1, -1)
+            longest_transformed = pca.transform(longest_emb)
+            longest_reconstructed = pca.inverse_transform(longest_transformed)
+
+            with torch.no_grad():
                 # Reconstruct compression embedding and reshape to original shape
-                comp_emb_flat = torch.tensor(X_reconstructed[i], dtype=torch.float32, device=device)
-                compression_embedding = comp_emb_flat.reshape(orig_shape).to(device)
+                comp_emb_flat = torch.tensor(longest_reconstructed[0], dtype=torch.float32, device=device)
+                compression_embedding = comp_emb_flat.reshape(sample_info["original_shape"]).to(device)
+
+                text = sample_info["text"]
 
                 # Tokenize text
                 enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
@@ -587,7 +646,9 @@ def plot_pca_reconstruction_accuracy(
             all_accuracies_per_component.append(accuracies_per_sample)
 
     if len(n_components_list) == 0:
-        return
+        print("len(n_components_list) == 0")
+        raise ValueError("len(n_components_list) == 0")
+        # return
 
     # Compute statistics for plotting
     mean_accuracies = [np.mean(accs) for accs in all_accuracies_per_component]
@@ -1091,6 +1152,7 @@ def main():
     )
     parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
     parser.add_argument("--stage_index", type=int, default=None, help="Optional stage filter")
+    parser.add_argument("--process_samples", default=False, action="store_true")
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -1175,128 +1237,129 @@ def main():
             all_compression_embeddings.append(flatten_embedding(s))
             all_rows_for_pca.append(s)
 
-    for sid, stages in tqdm(by_sid.items(), desc="Processing samples"):
-        labels = [f"L{int(s.get('stage_seq_len', -1))}" for s in stages]
-        X = np.stack([flatten_embedding(s) for s in stages], axis=0)
-        l2, cos_d = compute_pairwise_similarities(X)
-        plot_heatmap(
-            l2,
-            labels,
-            title=f"Sample {sid}: L2 by stage",
-            outfile=os.path.join(out_dir, f"sid{sid}_l2.png"),
-        )
-        plot_heatmap(
-            cos_d,
-            labels,
-            title=f"Sample {sid}: cosine distance by stage",
-            outfile=os.path.join(out_dir, f"sid{sid}_cosine.png"),
-        )
-        plot_pca(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca.png"))
-        plot_pca_4_components(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca4.png"))
-        plot_cumulative_explained_variance(
-            X,
-            max_components=16,
-            title=f"Sample {sid}: Cumulative Explained Variance",
-            outfile=os.path.join(out_dir, f"sid{sid}_cumulative_variance.png"),
-        )
-        # plot_pca_components_vs_sequence_length(
-        #     stages,
-        #     sample_id=sid,
-        #     outfile=os.path.join(out_dir, f"sid{sid}_pca_components_vs_seq_len.png"),
-        #     target_seq_lengths=[4, 16, 32, 48, 64, 96, 128],
-        # )
-        # if model is not None and tok is not None:
-        #     plot_pca_reconstruction_accuracy(
-        #         stages,
-        #         model,
-        #         tok,
-        #         device,
-        #         title=f"Sample {sid}: PCA Reconstruction Accuracy",
-        #         outfile=os.path.join(out_dir, f"sid{sid}_pca_reconstruction_accuracy.png"),
-        #         max_components=16,
-        #     )
+    if args.process_samples:
+        for sid, stages in tqdm(by_sid.items(), desc="Processing samples"):
+            labels = [f"L{int(s.get('stage_seq_len', -1))}" for s in stages]
+            X = np.stack([flatten_embedding(s) for s in stages], axis=0)
+            l2, cos_d = compute_pairwise_similarities(X)
+            plot_heatmap(
+                l2,
+                labels,
+                title=f"Sample {sid}: L2 by stage",
+                outfile=os.path.join(out_dir, f"sid{sid}_l2.png"),
+            )
+            plot_heatmap(
+                cos_d,
+                labels,
+                title=f"Sample {sid}: cosine distance by stage",
+                outfile=os.path.join(out_dir, f"sid{sid}_cosine.png"),
+            )
+            plot_pca(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca.png"))
+            plot_pca_4_components(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca4.png"))
+            plot_cumulative_explained_variance(
+                X,
+                max_components=16,
+                title=f"Sample {sid}: Cumulative Explained Variance",
+                outfile=os.path.join(out_dir, f"sid{sid}_cumulative_variance.png"),
+            )
+            # plot_pca_components_vs_sequence_length(
+            #     stages,
+            #     sample_id=sid,
+            #     outfile=os.path.join(out_dir, f"sid{sid}_pca_components_vs_seq_len.png"),
+            #     target_seq_lengths=[4, 16, 32, 48, 64, 96, 128],
+            # )
+            # if model is not None and tok is not None:
+            #     plot_pca_reconstruction_accuracy(
+            #         stages,
+            #         model,
+            #         tok,
+            #         device,
+            #         title=f"Sample {sid}: PCA Reconstruction Accuracy",
+            #         outfile=os.path.join(out_dir, f"sid{sid}_pca_reconstruction_accuracy.png"),
+            #         max_components=16,
+            #     )
 
-        # Collect per-stage stats
-        for s in stages:
-            steps = int(s.get("steps_taken", 0))
-            conv = float(s.get("final_convergence", np.nan)) if s.get("final_convergence") is not None else np.nan
-            seql = int(s.get("stage_seq_len", -1))
-            # stage_idx = int(s.get("stage_index", -1))
-            summary_steps.append(steps)
-            summary_conv.append(conv)
-            summary_seq_len.append(seql)
-            length_vs_steps_labels.append(f"L{seql}")
-
-        # Per-sample distance metrics
-        for i in range(X.shape[0] - 1):
-            # Compute L1 distance
-            l1_dist = float(np.linalg.norm(X[i + 1] - X[i], ord=1))
-            dist_l1_all.append(l1_dist)
-            # Compute L2 distance
-            l2_dist = float(np.linalg.norm(X[i + 1] - X[i], ord=2))
-            dist_l2_all.append(l2_dist)
-            # Compute cosine distance: 1 - cosine_similarity
-            v1 = X[i + 1] / (np.linalg.norm(X[i + 1]) + 1e-12)
-            v2 = X[i] / (np.linalg.norm(X[i]) + 1e-12)
-            cos_sim = np.clip(np.dot(v1, v2), -1.0, 1.0)
-            cos_dist = 1.0 - cos_sim
-            dist_cosine_all.append(float(cos_dist))
-
-        # Per-sample perplexity (optional)
-        if model is not None and tok is not None:
-            sample_text = None
+            # Collect per-stage stats
             for s in stages:
-                sample_text = s.get("text", None)
-                if sample_text is not None:
-                    seql, ppl = compute_ppl_for_text(model, tok, device, sample_text)
-                    if math.isnan(ppl):
-                        continue
+                steps = int(s.get("steps_taken", 0))
+                conv = float(s.get("final_convergence", np.nan)) if s.get("final_convergence") is not None else np.nan
+                seql = int(s.get("stage_seq_len", -1))
+                # stage_idx = int(s.get("stage_index", -1))
+                summary_steps.append(steps)
+                summary_conv.append(conv)
+                summary_seq_len.append(seql)
+                length_vs_steps_labels.append(f"L{seql}")
 
-                    seq_len_all.append(seql)
-                    ppl_all.append(float(ppl))
-                    sid_all.append(int(sid))
+            # Per-sample distance metrics
+            for i in range(X.shape[0] - 1):
+                # Compute L1 distance
+                l1_dist = float(np.linalg.norm(X[i + 1] - X[i], ord=1))
+                dist_l1_all.append(l1_dist)
+                # Compute L2 distance
+                l2_dist = float(np.linalg.norm(X[i + 1] - X[i], ord=2))
+                dist_l2_all.append(l2_dist)
+                # Compute cosine distance: 1 - cosine_similarity
+                v1 = X[i + 1] / (np.linalg.norm(X[i + 1]) + 1e-12)
+                v2 = X[i] / (np.linalg.norm(X[i]) + 1e-12)
+                cos_sim = np.clip(np.dot(v1, v2), -1.0, 1.0)
+                cos_dist = 1.0 - cos_sim
+                dist_cosine_all.append(float(cos_dist))
 
-        # Per-sample token norm trajectories across stages
-        mean_l2_by_stage: List[float] = []
-        max_l2_by_stage: List[float] = []
-        mean_l1_by_stage: List[float] = []
-        max_l1_by_stage: List[float] = []
-        for s in stages:
-            try:
-                l1_tok, l2_tok = compute_token_norm_stats_from_row(s)
-                if l1_tok.size == 0 or l2_tok.size == 0:
+            # Per-sample perplexity (optional)
+            if model is not None and tok is not None:
+                sample_text = None
+                for s in stages:
+                    sample_text = s.get("text", None)
+                    if sample_text is not None:
+                        seql, ppl = compute_ppl_for_text(model, tok, device, sample_text)
+                        if math.isnan(ppl):
+                            continue
+
+                        seq_len_all.append(seql)
+                        ppl_all.append(float(ppl))
+                        sid_all.append(int(sid))
+
+            # Per-sample token norm trajectories across stages
+            mean_l2_by_stage: List[float] = []
+            max_l2_by_stage: List[float] = []
+            mean_l1_by_stage: List[float] = []
+            max_l1_by_stage: List[float] = []
+            for s in stages:
+                try:
+                    l1_tok, l2_tok = compute_token_norm_stats_from_row(s)
+                    if l1_tok.size == 0 or l2_tok.size == 0:
+                        mean_l1_by_stage.append(float("nan"))
+                        max_l1_by_stage.append(float("nan"))
+                        mean_l2_by_stage.append(float("nan"))
+                        max_l2_by_stage.append(float("nan"))
+                    else:
+                        mean_l1_by_stage.append(float(np.mean(l1_tok)))
+                        max_l1_by_stage.append(float(np.max(l1_tok)))
+                        mean_l2_by_stage.append(float(np.mean(l2_tok)))
+                        max_l2_by_stage.append(float(np.max(l2_tok)))
+                except Exception:
                     mean_l1_by_stage.append(float("nan"))
                     max_l1_by_stage.append(float("nan"))
                     mean_l2_by_stage.append(float("nan"))
                     max_l2_by_stage.append(float("nan"))
-                else:
-                    mean_l1_by_stage.append(float(np.mean(l1_tok)))
-                    max_l1_by_stage.append(float(np.max(l1_tok)))
-                    mean_l2_by_stage.append(float(np.mean(l2_tok)))
-                    max_l2_by_stage.append(float(np.max(l2_tok)))
-            except Exception:
-                mean_l1_by_stage.append(float("nan"))
-                max_l1_by_stage.append(float("nan"))
-                mean_l2_by_stage.append(float("nan"))
-                max_l2_by_stage.append(float("nan"))
 
-        # Plot L2 and L1 norm trajectories for this sample
-        plot_norms_over_stages(
-            labels,
-            mean_l2_by_stage,
-            max_l2_by_stage,
-            ylabel="token L2 norm",
-            title=f"Sample {sid}: token L2 norms across stages",
-            outfile=os.path.join(out_dir, f"sid{sid}_token_norms_l2.png"),
-        )
-        plot_norms_over_stages(
-            labels,
-            mean_l1_by_stage,
-            max_l1_by_stage,
-            ylabel="token L1 norm",
-            title=f"Sample {sid}: token L1 norms across stages",
-            outfile=os.path.join(out_dir, f"sid{sid}_token_norms_l1.png"),
-        )
+            # Plot L2 and L1 norm trajectories for this sample
+            plot_norms_over_stages(
+                labels,
+                mean_l2_by_stage,
+                max_l2_by_stage,
+                ylabel="token L2 norm",
+                title=f"Sample {sid}: token L2 norms across stages",
+                outfile=os.path.join(out_dir, f"sid{sid}_token_norms_l2.png"),
+            )
+            plot_norms_over_stages(
+                labels,
+                mean_l1_by_stage,
+                max_l1_by_stage,
+                ylabel="token L1 norm",
+                title=f"Sample {sid}: token L1 norms across stages",
+                outfile=os.path.join(out_dir, f"sid{sid}_token_norms_l1.png"),
+            )
 
     # Aggregate PCA reconstruction accuracy across all compression embeddings
     if len(all_rows_for_pca) > 0 and model is not None and tok is not None:
@@ -1307,7 +1370,7 @@ def main():
             device,
             title="Aggregate: PCA Reconstruction Accuracy (All Compression Embeddings)",
             outfile=os.path.join(out_dir, "aggregate_pca_reconstruction_accuracy.png"),
-            max_components=16,
+            max_components=32,
         )
 
     # Aggregate PCA components vs sequence length across all samples
