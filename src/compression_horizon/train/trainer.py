@@ -311,6 +311,16 @@ class MyTrainer:
             trainable_embeddings = torch.nn.Parameter(
                 torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.02
             )
+        elif init_method == "random_norm":
+            trainable_embeddings = torch.nn.Parameter(torch.randn([batch_size, num_tokens, hidden_size], dtype=torch.float32))
+        elif init_method == "random_norm_0.2":
+            trainable_embeddings = torch.nn.Parameter(
+                torch.randn([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.2
+            )
+        elif init_method == "random_norm_0.02":
+            trainable_embeddings = torch.nn.Parameter(
+                torch.randn([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.02
+            )
         elif init_method == "random0.002":
             trainable_embeddings = torch.nn.Parameter(
                 torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32) * 0.002
@@ -375,15 +385,15 @@ class MyTrainer:
             weight_decay=self.args.weight_decay,
         )
 
-        if num_training_steps is None:
-            num_training_steps = self.args.max_optimization_steps_per_sample
+        lr_scheduler = None
+        if num_training_steps is not None:
+            lr_scheduler = get_scheduler(
+                name=self.args.lr_scheduler_type,
+                optimizer=optimizer,
+                num_warmup_steps=self.args.warmup_steps,
+                num_training_steps=num_training_steps,
+            )
 
-        lr_scheduler = get_scheduler(
-            name=self.args.lr_scheduler_type,
-            optimizer=optimizer,
-            num_warmup_steps=self.args.warmup_steps,
-            num_training_steps=num_training_steps,
-        )
         return optimizer, lr_scheduler
 
     def _log_step(
@@ -414,8 +424,9 @@ class MyTrainer:
         )
         grad_norm = compression_token_embeddings.grad.norm(2).item() if compression_token_embeddings.grad is not None else 0.0
         self.writer.add_scalar("train/grad_norm", grad_norm, self.global_step)
-        lr_val = lr_scheduler.get_last_lr()[0]
-        self.writer.add_scalar("train/lr", lr_val, self.global_step)
+        if lr_scheduler is not None:
+            lr_val = lr_scheduler.get_last_lr()[0]
+            self.writer.add_scalar("train/lr", lr_val, self.global_step)
         if generated_text:
             self.writer.add_text("train/generated_text", " | ".join(generated_text), self.global_step)
         if ground_truth_text:
@@ -1148,7 +1159,9 @@ class MyTrainer:
                 )
                 # Save initialization embedding (before optimization)
                 initialization_embeddings = compression_tokens.detach().clone().cpu()  # [batch, mem, hidden]
-                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_tokens)
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
+                    compression_tokens, num_training_steps=self.args.max_optimization_steps_per_sample
+                )
 
             compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
@@ -1222,7 +1235,7 @@ class MyTrainer:
                         compression_tokens_mean=comp_mean,
                         compression_tokens_std=comp_std,
                         grad=grad_norm,
-                        lr=lr_scheduler.get_last_lr()[0],
+                        lr=self.args.learning_rate,  # lr_scheduler.get_last_lr()[0],
                     )
 
                     # For logging, use compression_tokens (reconstructed if using PCA)
@@ -1237,7 +1250,8 @@ class MyTrainer:
                     )
 
                     optimizer.step()
-                    lr_scheduler.step()
+                    if lr_scheduler is not None:
+                        lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
                     last_loss_val = float(loss.item())

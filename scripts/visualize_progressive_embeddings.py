@@ -658,7 +658,7 @@ def plot_pca_reconstruction_accuracy(
             all_accuracies_per_component.append(accuracies_per_sample)
             all_first_error_indices_per_component.append(first_error_indices_per_sample)
 
-    breakpoint()
+    # breakpoint()
 
     if len(n_components_list) == 0:
         print("len(n_components_list) == 0")
