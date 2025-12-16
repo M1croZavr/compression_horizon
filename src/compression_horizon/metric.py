@@ -27,10 +27,12 @@ def calculate_perplexity(
     n: int = 128,
 ) -> float:
     """Entropy measures the level of uncertainty in the model's output.
+
     Lower entropy means the model is more certain about its predictions and therefore, the perplexity is lower.
     Perplexity indicates the level of confidence the model has in its prediction—lower perplexity suggests higher
     confidence and better performance in predicting the next word,
-    while higher perplexity signals more uncertainty and less reliability."""
+    while higher perplexity signals more uncertainty and less reliability.
+    """
     # Cast to the same device
     device = compressed_embeddings.device
     if model.device != device:
@@ -85,6 +87,57 @@ def calculate_perplexity(
             generated_token_log_probs,
             1,
             generated_token_log_probs.argmax(dim=1).view(-1, 1),
+        ).mean()
+    )
+    perplexity = torch.exp(cross_entropy).item()
+    return perplexity
+
+
+@torch.no_grad()
+def calculate_perplexity_logits(
+    model: PreTrainedModel,
+    compressed_embeddings: torch.Tensor,  # [1, mem, hidden]
+    input_ids: torch.Tensor,  # [1, sequence]
+    sequence_embeddings: torch.Tensor,  # [1, sequence, hidden]
+    attention_mask: torch.Tensor,  # [1, sequence]
+) -> float:
+    """Entropy measures the level of uncertainty in the model's output.
+
+    Lower entropy means the model is more certain about its predictions and therefore, the perplexity is lower.
+    Perplexity indicates the level of confidence the model has in its prediction—lower perplexity suggests higher
+    confidence and better performance in predicting the next word,
+    while higher perplexity signals more uncertainty and less reliability.
+    """
+    # Cast to the same device
+    device = compressed_embeddings.device
+    if model.device != device:
+        model = model.to(device)
+    model.eval()
+
+    _, num_compression_tokens, _ = compressed_embeddings.shape
+
+    torch_dtype = next(model.parameters()).dtype
+
+    # Embeddings
+    united_token_embeddings = torch.cat((compressed_embeddings, sequence_embeddings), dim=1)  # [1, mem + sequence, hidden]
+    united_token_embeddings = united_token_embeddings.to(torch_dtype)
+
+    # Attention mask
+    compression_attention_mask = torch.ones((1, num_compression_tokens), dtype=torch.long, device=device)  # [1, mem]
+    united_attention_mask = torch.cat((compression_attention_mask, attention_mask), dim=1)  # [1, mem + sequence]
+
+    # Model result
+    outputs = model(inputs_embeds=united_token_embeddings, attention_mask=united_attention_mask)
+    logits = outputs.logits[:, num_compression_tokens - 1 : -1, :].squeeze(dim=0)  # [sequence, vocabulary]
+
+    # Perplexity by logits
+    log_probs = F.log_softmax(logits, dim=1)  # [sequence, vocabulary]
+    cross_entropy = (
+        -1
+        * torch.gather(
+            log_probs,
+            1,
+            input_ids.view(-1, 1),  # [sequence, 1]
         ).mean()
     )
     perplexity = torch.exp(cross_entropy).item()

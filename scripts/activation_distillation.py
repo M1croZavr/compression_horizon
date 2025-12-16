@@ -1,10 +1,8 @@
 import hashlib
-import json
 import os
 import subprocess
 import sys
 
-import torch
 import transformers
 from datasets import load_dataset
 from transformers import (
@@ -16,6 +14,7 @@ from transformers import (
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer
 from compression_horizon.utils.exceptions import NvidiaSMIError
+from compression_horizon.utils.launch import resolve_torch_dtype
 
 if __name__ == "__main__":
     # Check for nvidia-smi availability
@@ -24,21 +23,9 @@ if __name__ == "__main__":
     except subprocess.CalledProcessError:
         raise NvidiaSMIError("nvidia-smi is not available")
 
+    # Parse command-line arguments and defaults
     hf_parser = transformers.HfArgumentParser(MyTrainingArguments)
     (training_args,) = hf_parser.parse_args_into_dataclasses()
-
-    def _resolve_torch_dtype(dtype_str: str):
-        s = (dtype_str or "").lower()
-        if s in {"auto"}:
-            return "auto"
-        if s in {"float32", "fp32"}:
-            return torch.float32
-        if s in {"bfloat16", "bf16"}:
-            return torch.bfloat16
-        if s in {"float16", "fp16"}:
-            return torch.float16
-        # Fallback to float32 for unknown values
-        return torch.float32
 
     # Determine output directory:
     # - If user provided --output_dir, respect it.
@@ -46,35 +33,19 @@ if __name__ == "__main__":
     #   ch_{essential_params}_{hash8}, where hash8 is derived from training args.
     default_base = "artifacts/experiments_progressive" if training_args.progressive_train else "artifacts/experiments"
     os.makedirs(default_base, exist_ok=True)
-
     # Build short, human-readable prefix
-    loss_type = getattr(training_args, "loss_type", "l2")
-    hybrid_alpha = getattr(training_args, "hybrid_alpha", None)
+    loss_type = training_args.loss_type
+    hybrid_alpha = training_args.hybrid_alpha
     prefix = (
-        f"ch_{loss_type}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
+        f"mem_{training_args.number_of_mem_tokens}_ch_{loss_type}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
         if training_args.progressive_train
-        else f"ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
+        else f"mem_{training_args.number_of_mem_tokens}_ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
     )
-
-    # Compute stable hash from training arguments (excluding volatile dirs)
-    args_dict = training_args.to_dict()
-    args_dict.pop("output_dir", None)
-    args_dict.pop("logging_dir", None)
-    args_json = json.dumps(args_dict, sort_keys=True, ensure_ascii=False, default=str)
-
     # If output_dir not provided, compose it using the prefix + args_hash
-    output_dir = training_args.output_dir
-    if not output_dir:
-        output_dir = os.path.join(default_base, f"{prefix}")
-
+    output_dir = os.path.join(default_base, f"{prefix}")
     os.makedirs(output_dir, exist_ok=True)
-
-    # Ensure logging_dir is set; default to output_dir if not provided
-    if not getattr(training_args, "logging_dir", None):
-        training_args.logging_dir = output_dir
     # Attach to args so trainer can save artifacts there (respecting any user-provided output_dir)
     training_args.output_dir = output_dir
-
     # Also persist raw CLI (excluding --output_dir) and its hash for auditability
     argv = sys.argv[1:]
     filtered_argv: list[str] = []
@@ -96,15 +67,15 @@ if __name__ == "__main__":
     with open(os.path.join(output_dir, "cmd_hash.txt"), "w", encoding="utf-8") as f:
         f.write(cmd_hash8 + "\n")
 
-    torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
+    # Initializing the model and its tokenizer
+    torch_dtype = resolve_torch_dtype(training_args.dtype)
     model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
+    tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
 
+    # Load samples to compress
     raw_dataset = load_dataset("mrsndmn/pg19", split="test", num_proc=4)
     train_dataset = raw_dataset.select(range(training_args.limit_dataset_items))
-    # eval_dataset = raw_dataset.select(range(10, 20))
-
-    tokenizer.pad_token = tokenizer.eos_token
     train_dataset = train_dataset.map(
         lambda x: tokenizer(
             x["text"],
@@ -115,15 +86,10 @@ if __name__ == "__main__":
         ),
         remove_columns=train_dataset.column_names,
     )
-
-    print("train_dataset", len(train_dataset))
-    print("train_dataset", train_dataset)
-    # print("eval_dataset", len(eval_dataset))
-
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
+    # Train
     transformers.logging.set_verbosity_info()
-
     trainer = MyTrainer(
         model,
         processing_class=tokenizer,
@@ -131,9 +97,8 @@ if __name__ == "__main__":
         train_dataset=train_dataset,
         data_collator=data_collator,
     )
-
     if training_args.progressive_train:
         training_artifacts = trainer.progressive_train()
     else:
         training_artifacts = trainer.train()
-    print(f"Saved compressed prefixes to: {training_artifacts}")
+    print(f"Saved compressed prefixes to: {training_artifacts}.")

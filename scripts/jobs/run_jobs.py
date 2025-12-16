@@ -214,9 +214,7 @@ if __name__ == "__main__":
 
         # Compose full command with explicit output_dir
         base_cmd = (
-            f"cd {workdir} && {python_path} scripts/activation_distillation.py "
-            f"{args_for_hash} "
-            f"--output_dir {output_dir} "
+            f"cd {workdir} && {python_path} scripts/activation_distillation.py {args_for_hash} --output_dir {output_dir} "
         )
 
         job_desc = (

@@ -58,10 +58,8 @@ def generate_from_compression(
         united_attention_mask = torch.cat((compression_attention_mask, attention_mask), dim=1)  # [batch, mem + sequence]
 
         if random_position_ids:
-            position_ids = torch.randperm(generated_embeddings.size(1), device=device).unsqueeze(dim=0).repeat(batch_size, 1)
-            position_ids = torch.cat(
-                (torch.zeros(batch_size, num_compression_tokens, dtype=torch.long, device=device), position_ids),
-                dim=1,
+            position_ids = (
+                torch.randperm(united_token_embeddings.size(1), device=device).unsqueeze(dim=0).repeat(batch_size, 1)
             )  # [batch, mem + sequence]
             outputs = model(
                 inputs_embeds=united_token_embeddings,
@@ -115,10 +113,12 @@ def calculate_logits(
         dim=1,
     )  # [1, mem + sequence, hidden]
     united_attention_mask = torch.cat(
-        (torch.ones(1, compressed_embeddings.size(1), dtype=torch.long, device=device), attention_mask),
+        (
+            torch.ones(compressed_embeddings.size(0), compressed_embeddings.size(1), dtype=torch.long, device=device),
+            attention_mask,
+        ),
         dim=1,
     )  # [1, mem + sequence]
-    # TODO: position_ids?
     outputs = model(
         inputs_embeds=united_embeddings,
         attention_mask=united_attention_mask,
@@ -138,6 +138,9 @@ def calculate_outputs(
     device = compressed_embeddings.device
     if model.device != device:
         model = model.to(device)
+
+    # Required to enable output_attentions
+    model.set_attn_implementation("eager")
     model.eval()
 
     united_embeddings = torch.cat(
@@ -145,7 +148,10 @@ def calculate_outputs(
         dim=1,
     )
     united_attention_mask = torch.cat(
-        (torch.ones(1, compressed_embeddings.size(1), dtype=torch.long, device=device), attention_mask),
+        (
+            torch.ones(compressed_embeddings.size(0), compressed_embeddings.size(1), dtype=torch.long, device=device),
+            attention_mask,
+        ),
         dim=1,
     )
     outputs = model(

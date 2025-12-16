@@ -11,6 +11,7 @@ Supported artifact layouts:
 - Non-progressive runs in: artifacts/experiments/<run_name>/compressed_prefixes
 - Progressive runs in:     artifacts/experiments_progressive/<run_name>/progressive_prefixes
 """
+
 from __future__ import annotations
 
 import argparse

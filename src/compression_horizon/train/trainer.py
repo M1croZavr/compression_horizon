@@ -56,15 +56,16 @@ class MyTrainer:
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
-        # Hidden state: [batch, mem + sequence, hidden]
+
         extra_kwargs = {}
         if self.args.fix_position_ids:
-            position_ids = torch.arange(-1, token_embeddings.shape[1], device=token_embeddings.device)
-            position_ids[0] = 0
-            position_ids = position_ids.unsqueeze(0)
-            # print('position_ids', position_ids)
+            position_ids = torch.arange(
+                -num_compression_tokens, token_embeddings.size(1), device=token_embeddings.device
+            )  # [mem + sequence]
+            position_ids[:num_compression_tokens] = 0
+            position_ids = position_ids.repeat(token_embeddings.size(0), 1)  # [batch, mem + sequence]
             extra_kwargs["position_ids"] = position_ids
-
+        # Hidden state: [batch, mem + sequence, hidden]
         compression_outputs = model(
             inputs_embeds=united_token_embeddings,
             attention_mask=united_attention_mask,
@@ -143,14 +144,14 @@ class MyTrainer:
             # Accuracy by autoregressive generation
             # Generate tokens from compressed trained embedding
             if self.global_step % 100 == 0:
-                generated_text: Optional[list] = generate_from_compression(
+                generated_text: Optional[list[str]] = generate_from_compression(
                     model,
                     self.processing_class,
                     united_token_embeddings[:, :num_compression_tokens],
                     max_new_tokens=self.args.max_sequence_length,
                     num_return_sequences=1,
                 )
-                ground_truth_text: Optional[list] = self.processing_class.batch_decode(input_ids, skip_special_tokens=True)
+                ground_truth_text: Optional[list[str]] = self.processing_class.batch_decode(input_ids, skip_special_tokens=True)
             else:
                 generated_text = None
                 ground_truth_text = None
@@ -215,9 +216,9 @@ class MyTrainer:
     def _init_compression_tokens(batch_size, num_tokens, hidden_size, init_method, mvn_dist, dtype):
         if init_method == "mvnormal" and mvn_dist is not None:
             samples = mvn_dist.sample((batch_size, num_tokens))
-            trainable_embeddings = torch.nn.Parameter(samples.to(dtype=torch.float32))
+            trainable_embeddings = torch.nn.Parameter(samples.to(dtype=dtype))
         else:
-            trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=torch.float32))
+            trainable_embeddings = torch.nn.Parameter(torch.rand([batch_size, num_tokens, hidden_size], dtype=dtype))
         return trainable_embeddings
 
     def _build_optimizer_and_scheduler(self, compression_token_embeddings):
@@ -300,20 +301,18 @@ class MyTrainer:
         # Collect per-sample artifacts for optional saving
         collected_rows = []
         sample_id_counter = 0
-
         dataloader = self._create_dataloader()
         for batch in dataloader:
             model.train()
-            input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
-            # print("input_ids", input_ids.shape)
 
+            input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
-            batch_size = input_ids.shape[0]
             with torch.no_grad():
                 token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+                batch_size = input_ids.shape[0]
                 hidden_size = token_embeddings.shape[-1]
 
-            # Trainable compression tokens per sample
+            # Trainable compression tokens per a single sample
             compression_token_embeddings = self._init_compression_tokens(
                 batch_size,
                 num_compression_tokens,
@@ -335,40 +334,37 @@ class MyTrainer:
                 generated_text,
                 ground_truth_text,
             ) = (None, None, None, None, None)
-            progress_bar = tqdm(
-                range(self.args.max_optimization_steps_per_sample),
-                total=self.args.max_optimization_steps_per_sample,
-            )
-            progress_bar.set_description("Training")
-
             total_per_sample_convergence = torch.zeros(
                 [
                     self.args.max_optimization_steps_per_sample,
-                    input_ids.shape[0],
+                    batch_size,
                 ],
                 dtype=torch.long,
             )
             prev_convergence = None
-            # prev_convergence_per_sample = None
             total_per_sample_convergence_099 = torch.zeros(
                 [
                     self.args.max_optimization_steps_per_sample,
-                    input_ids.shape[0],
+                    batch_size,
                 ],
                 dtype=torch.long,
             )
             total_per_sample_convergence_095 = torch.zeros(
                 [
                     self.args.max_optimization_steps_per_sample,
-                    input_ids.shape[0],
+                    batch_size,
                 ],
                 dtype=torch.long,
             )
-
+            progress_bar = tqdm(
+                range(self.args.max_optimization_steps_per_sample),
+                total=self.args.max_optimization_steps_per_sample,
+            )
+            progress_bar.set_description("Training")
             for step_i in progress_bar:
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
                 united_token_embeddings = torch.cat(
-                    [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings],
+                    [compression_token_embeddings, token_embeddings],
                     dim=1,
                 )  # [batch, mem + sequence, hidden]
                 united_attention_mask = torch.cat(
@@ -396,15 +392,6 @@ class MyTrainer:
                 if prev_convergence is not None:
                     # Zero gradients for converged items
                     compression_token_embeddings.grad[prev_convergence] = 0
-                    # print(
-                    #     "Non zero gradients:",
-                    #     (compression_token_embeddings.grad.sum(-1) != 0).sum(),
-                    #     "/",
-                    #     united_token_embeddings.shape[0],
-                    #     "prev_convergence_per_sample",
-                    #     prev_convergence_per_sample,
-                    # )
-
                 compression_token_embeddings_clone = compression_token_embeddings.detach().clone()
 
                 optimizer.step()
@@ -439,8 +426,6 @@ class MyTrainer:
                 total_per_sample_convergence_099[step_i, :] = convergence_per_sample < 0.99
                 total_per_sample_convergence_095[step_i, :] = convergence_per_sample < 0.95
                 prev_convergence = convergence_per_sample == 1.0
-                # prev_convergence_per_sample = convergence_per_sample
-
                 if (convergence_per_sample == 1.0).all():
                     print(f"Early stopping: compression converged in {step_i} steps")
                     break
