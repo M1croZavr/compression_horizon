@@ -485,7 +485,7 @@ class MyTrainer:
             )  # [batch, mem, hidden]
 
         dataloader = self._create_dataloader()
-        for batch in dataloader:
+        for batch in tqdm(dataloader):
             model.train()
             input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
             # print("input_ids", input_ids.shape)
@@ -526,7 +526,9 @@ class MyTrainer:
                 )
 
                 # Optimizer only optimizes coefficients
-                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(pca_coefficients)
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
+                    pca_coefficients, num_training_steps=self.args.max_optimization_steps_per_sample
+                )
             else:
                 # Standard initialization: optimize full compression tokens
                 compression_token_embeddings = self._init_compression_tokens(
@@ -542,7 +544,9 @@ class MyTrainer:
                 )  # [batch, mem, hidden]
                 # Save initialization embedding (before optimization)
                 initialization_embeddings = compression_token_embeddings.detach().clone().cpu()  # [batch, mem, hidden]
-                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
+                    compression_token_embeddings, num_training_steps=self.args.max_optimization_steps_per_sample
+                )
 
             compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
                 batch_size, num_compression_tokens
@@ -558,6 +562,7 @@ class MyTrainer:
             progress_bar = tqdm(
                 range(self.args.max_optimization_steps_per_sample),
                 total=self.args.max_optimization_steps_per_sample,
+                disable=True,
             )
             progress_bar.set_description("Training")
 
@@ -1104,7 +1109,9 @@ class MyTrainer:
         collected_rows = []
         sample_id_counter = 0
 
-        for batch in dataloader:
+        # model = torch.compile(model, mode='reduce-overhead')
+
+        for batch in tqdm(dataloader):
             batch_size = batch["input_ids"].shape[0]
             full_input_ids = batch.input_ids.squeeze(1)
             with torch.no_grad():
@@ -1182,6 +1189,8 @@ class MyTrainer:
                 pbar = tqdm(
                     range(self.args.max_optimization_steps_per_sample),
                     total=self.args.max_optimization_steps_per_sample,
+                    # disable=True,
+                    leave=False,
                 )
                 pbar.set_description(f"Stage L={seq_len}")
                 last_loss_val = None

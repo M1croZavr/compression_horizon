@@ -156,7 +156,7 @@ class MyTrainingArguments(TrainingArguments):
     )
     # Precision control
     dtype: str = field(
-        default="float32",
+        default="bf16",
         metadata={
             "help": (
                 "Torch dtype for model and training. "
