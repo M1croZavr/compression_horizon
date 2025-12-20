@@ -49,6 +49,7 @@ class MyTrainer:
         united_attention_mask,
         num_compression_tokens,
     ):
+        model.train()
         with torch.no_grad():
             # Hidden state: [batch, sequence, hidden]
             outputs = model(
@@ -131,6 +132,7 @@ class MyTrainer:
                 else:
                     raise ValueError(f"Unsupported loss_type: {loss_type}")
                 alignment_loss = alignment_loss + layer_alignment_loss
+            alignment_loss /= len(alignment_layer_indices)
             loss = loss + hybrid_alpha * alignment_loss
 
         model.eval()

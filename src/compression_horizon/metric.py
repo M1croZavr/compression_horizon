@@ -33,6 +33,7 @@ def calculate_perplexity(
     confidence and better performance in predicting the next word,
     while higher perplexity signals more uncertainty and less reliability.
     """
+    # This function measures how confident the model is in its own greedy outputs, not perplexity, and the resulting number is mathematically meaningless for evaluation.
     # Cast to the same device
     device = compressed_embeddings.device
     if model.device != device:
@@ -47,7 +48,7 @@ def calculate_perplexity(
     _, num_compression_tokens, _ = compressed_embeddings.shape
 
     # Container for generated token logits
-    generated_token_logits = list()
+    generated_token_logits = []
     # Model's input embeddings layer
     input_embeddings = model.get_input_embeddings()
     torch_dtype = input_embeddings.weight.dtype
@@ -116,7 +117,7 @@ def calculate_perplexity_logits(
 
     _, num_compression_tokens, _ = compressed_embeddings.shape
 
-    torch_dtype = next(model.parameters()).dtype
+    torch_dtype = model.get_input_embeddings().weight.dtype
 
     # Embeddings
     united_token_embeddings = torch.cat((compressed_embeddings, sequence_embeddings), dim=1)  # [1, mem + sequence, hidden]

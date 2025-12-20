@@ -57,9 +57,6 @@ class MyTrainingArguments(TrainingArguments):
     )
 
     # Overrides with changed defaults
-    # optim: str = field(
-    #     default="sgd",
-    # )
     per_device_train_batch_size: int = field(
         default=1,
         metadata={"help": "Batch size per device accelerator core/CPU for training."},

@@ -37,15 +37,16 @@ if __name__ == "__main__":
     loss_type = training_args.loss_type
     hybrid_alpha = training_args.hybrid_alpha
     prefix = (
-        f"mem_{training_args.number_of_mem_tokens}_ch_{loss_type}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
-        if training_args.progressive_train
-        else f"mem_{training_args.number_of_mem_tokens}_ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
+        f"model_{training_args.model_checkpoint.replace('/', '_')}_mem_{training_args.number_of_mem_tokens}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
+        if not training_args.hybrid_alpha
+        else f"model_{training_args.model_checkpoint.replace('/', '_')}_mem_{training_args.number_of_mem_tokens}_ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
     )
     # If output_dir not provided, compose it using the prefix + args_hash
     output_dir = os.path.join(default_base, f"{prefix}")
     os.makedirs(output_dir, exist_ok=True)
     # Attach to args so trainer can save artifacts there (respecting any user-provided output_dir)
     training_args.output_dir = output_dir
+    training_args.logging_dir = output_dir
     # Also persist raw CLI (excluding --output_dir) and its hash for auditability
     argv = sys.argv[1:]
     filtered_argv: list[str] = []

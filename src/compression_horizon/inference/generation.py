@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer, PreTrainedTokenizerFast
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
 @torch.no_grad()
@@ -14,7 +15,7 @@ def generate_from_compression(
     *,
     random_position_ids: bool = False,
 ) -> list[str]:
-    """Generates a sequence using only compressed embeddings."""
+    """Generates a sequence starting from compressed embeddings."""
     # Cast to the same device
     device = compressed_embeddings.device
     if model.device != device:
@@ -44,7 +45,7 @@ def generate_from_compression(
         else:
             generated_embeddings = input_embeddings(generated_token_ids)  # [batch, sequence, hidden]
         united_token_embeddings = torch.cat(
-            [compressed_embeddings, generated_embeddings], dim=1
+            (compressed_embeddings, generated_embeddings), dim=1
         )  # [batch, mem + sequence, hidden]
         united_token_embeddings = united_token_embeddings.to(torch_dtype)
 
@@ -84,7 +85,7 @@ def generate_from_compression(
                     next_token_ids,
                 )
 
-        generated_token_ids = torch.cat([generated_token_ids, next_token_ids.unsqueeze(-1)], dim=-1)  # [batch, sequence]
+        generated_token_ids = torch.cat((generated_token_ids, next_token_ids.unsqueeze(-1)), dim=-1)  # [batch, sequence]
 
         # Stop early if all sequences just produced eos and had eos previously
         if eos_token_id is not None and torch.all(next_token_ids.eq(eos_token_id)):
@@ -133,7 +134,8 @@ def calculate_outputs(
     compressed_embeddings: torch.Tensor,
     sequence_embeddings: torch.Tensor,
     attention_mask: torch.Tensor,
-) -> torch.Tensor:
+) -> CausalLMOutputWithPast:
+    """Calculate outputs for a sequence."""
     # Cast to the same device
     device = compressed_embeddings.device
     if model.device != device:
