@@ -61,7 +61,9 @@ class MyTrainer:
         extra_kwargs = {}
         if self.args.fix_position_ids:
             position_ids = torch.arange(
-                -num_compression_tokens, token_embeddings.size(1), device=token_embeddings.device
+                -num_compression_tokens,
+                token_embeddings.size(1),
+                device=token_embeddings.device,
             )  # [mem + sequence]
             position_ids[:num_compression_tokens] = 0
             position_ids = position_ids.repeat(token_embeddings.size(0), 1)  # [batch, mem + sequence]
@@ -197,12 +199,14 @@ class MyTrainer:
                     covariance = 1e-5 * sigma
                     try:
                         mvn_dist = torch.distributions.MultivariateNormal(
-                            mvn_mu.to(torch.float32), covariance_matrix=covariance.to(torch.float32)
+                            mvn_mu.to(torch.float32),
+                            covariance_matrix=covariance.to(torch.float32),
                         )
                     except Exception:
                         diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
                         mvn_dist = torch.distributions.MultivariateNormal(
-                            mvn_mu.to(torch.float32), covariance_matrix=torch.diag(diag_cov).to(torch.float32)
+                            mvn_mu.to(torch.float32),
+                            covariance_matrix=torch.diag(diag_cov).to(torch.float32),
                         )
                 else:
                     init_method = "random"
@@ -443,9 +447,15 @@ class MyTrainer:
             total_per_sample_convergence_sum = total_per_sample_convergence.sum(dim=0)
             print("total_per_sample_convergence_sum", total_per_sample_convergence_sum)
             total_per_sample_convergence_099_sum = total_per_sample_convergence_099.sum(dim=0)
-            print("total_per_sample_convergence_099_sum", total_per_sample_convergence_099_sum)
+            print(
+                "total_per_sample_convergence_099_sum",
+                total_per_sample_convergence_099_sum,
+            )
             total_per_sample_convergence_095_sum = total_per_sample_convergence_095.sum(dim=0)
-            print("total_per_sample_convergence_095_sum", total_per_sample_convergence_095_sum)
+            print(
+                "total_per_sample_convergence_095_sum",
+                total_per_sample_convergence_095_sum,
+            )
 
             # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
             with torch.no_grad():
@@ -561,7 +571,8 @@ class MyTrainer:
 
                 for i in pbar:
                     model_tokens_with_compression_tokens = torch.cat(
-                        [compression_tokens.to(inputs_embeds.dtype), inputs_embeds], dim=1
+                        [compression_tokens.to(inputs_embeds.dtype), inputs_embeds],
+                        dim=1,
                     )
                     attention_mask_with_compression_tokens = torch.cat(
                         [compression_tokens_attention_mask, attention_mask], dim=1

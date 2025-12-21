@@ -164,7 +164,14 @@ if __name__ == "__main__":
     jobs_launched = 0
     jobs_dry = 0
 
-    for hybrid_alpha, embedding_init_method, random_seed, max_sequence_length, fix_position_ids, model_checkpoint in product(
+    for (
+        hybrid_alpha,
+        embedding_init_method,
+        random_seed,
+        max_sequence_length,
+        fix_position_ids,
+        model_checkpoint,
+    ) in product(
         hybrid_alpha_values,
         args.embedding_init_methods,
         args.random_seeds,

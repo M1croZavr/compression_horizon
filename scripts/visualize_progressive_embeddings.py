@@ -158,7 +158,12 @@ def plot_correlation(x: np.ndarray, y: np.ndarray, xlabel: str, ylabel: str, tit
 
 
 def plot_norms_over_stages(
-    labels: List[str], mean_vals: List[float], max_vals: List[float], ylabel: str, title: str, outfile: str
+    labels: List[str],
+    mean_vals: List[float],
+    max_vals: List[float],
+    ylabel: str,
+    title: str,
+    outfile: str,
 ):
     if len(mean_vals) == 0:
         return
@@ -211,7 +216,9 @@ def compute_distance_metrics(X: np.ndarray) -> float:
     return init_final, traj_len
 
 
-def compute_token_norm_stats_from_row(row: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+def compute_token_norm_stats_from_row(
+    row: Dict[str, Any],
+) -> Tuple[np.ndarray, np.ndarray]:
     # Returns (l1_per_token, l2_per_token) across all tokens in the embedding
     # Accepts embeddings of shape [..., hidden_dim]; flattens leading dims to tokens
     emb = torch.tensor(row["embedding"], dtype=torch.float32)

@@ -115,7 +115,12 @@ def calculate_logits(
     )  # [1, mem + sequence, hidden]
     united_attention_mask = torch.cat(
         (
-            torch.ones(compressed_embeddings.size(0), compressed_embeddings.size(1), dtype=torch.long, device=device),
+            torch.ones(
+                compressed_embeddings.size(0),
+                compressed_embeddings.size(1),
+                dtype=torch.long,
+                device=device,
+            ),
             attention_mask,
         ),
         dim=1,
@@ -151,7 +156,12 @@ def calculate_outputs(
     )
     united_attention_mask = torch.cat(
         (
-            torch.ones(compressed_embeddings.size(0), compressed_embeddings.size(1), dtype=torch.long, device=device),
+            torch.ones(
+                compressed_embeddings.size(0),
+                compressed_embeddings.size(1),
+                dtype=torch.long,
+                device=device,
+            ),
             attention_mask,
         ),
         dim=1,

@@ -241,7 +241,13 @@ def plot_bezier_pca_projection(
 
     # Plot
     plt.figure(figsize=(6, 5))
-    plt.plot(XY_curve[:, 0], XY_curve[:, 1], color="tab:blue", linewidth=2, label="Bezier curve")
+    plt.plot(
+        XY_curve[:, 0],
+        XY_curve[:, 1],
+        color="tab:blue",
+        linewidth=2,
+        label="Bezier curve",
+    )
     # Anchors: e0, control points, e1
     labels = (
         ["e0"] + [f"cp{i}" for i in range(control_points.shape[0])] + ["e1"] if control_points is not None else ["e0", "e1"]
@@ -253,10 +259,26 @@ def plot_bezier_pca_projection(
 
     # Plot other endpoints (from other params files)
     if XY_other.shape[0] > 0:
-        plt.scatter(XY_other[:, 0], XY_other[:, 1], s=40, color="tab:purple", marker="x", label="other endpoints", zorder=2)
+        plt.scatter(
+            XY_other[:, 0],
+            XY_other[:, 1],
+            s=40,
+            color="tab:purple",
+            marker="x",
+            label="other endpoints",
+            zorder=2,
+        )
         # annotate lightly
         for (x, y), name in zip(XY_other, other_labels):
-            plt.text(float(x), float(y), name, fontsize=7, ha="left", va="bottom", color="tab:purple")
+            plt.text(
+                float(x),
+                float(y),
+                name,
+                fontsize=7,
+                ha="left",
+                va="bottom",
+                color="tab:purple",
+            )
     plt.xlabel("PC1")
     plt.ylabel("PC2")
     plt.title("Bezier curve projection (PCA)")
@@ -293,7 +315,12 @@ def main() -> None:
         action="store_true",
         help="If set, plot PCA projection of Bezier curve using endpoints and control points",
     )
-    parser.add_argument("--num_points", type=int, default=200, help="Samples along the curve for plotting")
+    parser.add_argument(
+        "--num_points",
+        type=int,
+        default=200,
+        help="Samples along the curve for plotting",
+    )
     parser.add_argument("--output_dir", type=str, default=None, help="Optional directory to save plots")
     parser.add_argument(
         "--other_params_paths",
@@ -359,7 +386,10 @@ def main() -> None:
         other_eps: List[Tuple[str, torch.Tensor]] = []
         if args.other_params_paths:
             for opath in args.other_params_paths:
-                other = torch.load(os.path.abspath(os.path.join(opath, "bezier_params_sid0.pt")), map_location="cpu")
+                other = torch.load(
+                    os.path.abspath(os.path.join(opath, "bezier_params_sid0.pt")),
+                    map_location="cpu",
+                )
                 o_end = other.get("endpoints", {})
                 oe0 = o_end.get("e0")
                 oe1 = o_end.get("e1")
@@ -397,7 +427,10 @@ def main() -> None:
         ]
         endpoint_list.extend(other_eps)
         pairwise_csv = (
-            os.path.join(args.output_dir, os.path.splitext(os.path.basename(params_path))[0] + "_pairwise_endpoints_l2.csv")
+            os.path.join(
+                args.output_dir,
+                os.path.splitext(os.path.basename(params_path))[0] + "_pairwise_endpoints_l2.csv",
+            )
             if args.output_dir is not None
             else os.path.splitext(params_path)[0] + "_pairwise_endpoints_l2.csv"
         )
