@@ -140,8 +140,10 @@ class MyTrainer:
             # Accuracy by logits
             convergence_numerator = (
                 compression_outputs.logits[:, num_compression_tokens - 1 : -1].argmax(dim=-1) == input_ids
-            ).sum(dim=-1)
-            convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
+            ).sum(
+                dim=-1
+            )  # [batch]
+            convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)  # [batch]
 
             # Accuracy by autoregressive generation
             # Generate tokens from compressed trained embedding
@@ -212,6 +214,8 @@ class MyTrainer:
             batch_size=self.args.per_device_train_batch_size,
             shuffle=False,
             collate_fn=self.data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
         )
 
     @staticmethod
@@ -311,8 +315,8 @@ class MyTrainer:
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
             with torch.no_grad():
                 token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
-                batch_size = input_ids.shape[0]
-                hidden_size = token_embeddings.shape[-1]
+                batch_size = token_embeddings.size(0)
+                hidden_size = token_embeddings.size(-1)
 
             # Trainable compression tokens per a single sample
             compression_token_embeddings = self._init_compression_tokens(
@@ -336,28 +340,28 @@ class MyTrainer:
                 generated_text,
                 ground_truth_text,
             ) = (None, None, None, None, None)
+            prev_convergence = None
             total_per_sample_convergence = torch.zeros(
                 [
                     self.args.max_optimization_steps_per_sample,
                     batch_size,
                 ],
                 dtype=torch.long,
-            )
-            prev_convergence = None
+            )  # [max_steps, batch]
             total_per_sample_convergence_099 = torch.zeros(
                 [
                     self.args.max_optimization_steps_per_sample,
                     batch_size,
                 ],
                 dtype=torch.long,
-            )
+            )  # [max_steps, batch]
             total_per_sample_convergence_095 = torch.zeros(
                 [
                     self.args.max_optimization_steps_per_sample,
                     batch_size,
                 ],
                 dtype=torch.long,
-            )
+            )  # [max_steps, batch]
             progress_bar = tqdm(
                 range(self.args.max_optimization_steps_per_sample),
                 total=self.args.max_optimization_steps_per_sample,
@@ -392,7 +396,7 @@ class MyTrainer:
                 loss.backward()
 
                 if prev_convergence is not None:
-                    # Zero gradients for converged items
+                    # Zero gradients for converged sequences
                     compression_token_embeddings.grad[prev_convergence] = 0
                 compression_token_embeddings_clone = compression_token_embeddings.detach().clone()
 
