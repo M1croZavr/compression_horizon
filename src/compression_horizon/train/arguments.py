@@ -67,9 +67,9 @@ class MyTrainingArguments(TrainingArguments):
     limit_dataset_items: int | None = field(default=1)
 
     # Overrides with changed defaults
-    # optim: str = field(
-    #     default="sgd",
-    # )
+    optim: str = field(
+        default="adamw_torch",
+    )
     per_device_train_batch_size: int = field(
         default=1,
         metadata={"help": "Batch size per device accelerator core/CPU for training."},

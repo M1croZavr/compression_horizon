@@ -1,7 +1,51 @@
 import argparse
 import os
+import time
 
 from mls.manager.job.utils import training_job_api_from_profile
+
+
+def get_in_progress_jobs(client, region, statuses=None):
+    """
+    Example:
+        from sentence_attention.integration.job import get_in_progress_jobs
+        from mls.manager.job.utils import training_job_api_from_profile
+
+        client, extra_options = training_job_api_from_profile("default")
+        in_progress_jobs = get_in_progress_jobs(client, extra_options["region"])
+
+    """
+
+    all_in_progress_jobs = []
+
+    if statuses is None:
+        statuses = ["Pending", "Running"]
+
+    for non_final_status in statuses:
+        while True:
+            non_final_jobs = client.get_list_jobs(
+                region=region,
+                allocation_name="alloc-officecds-multimodal-2-sr004",
+                status=non_final_status,
+                limit=1000,
+                offset=0,
+            )
+            if "jobs" in non_final_jobs:
+                break
+            elif "error_code" in non_final_jobs and non_final_jobs["error_code"] == [
+                32,
+                20,
+            ]:  # no active session, access_token expired
+                print("Error:", non_final_jobs, "try again")
+                time.sleep(5)
+                client, _ = training_job_api_from_profile("default")
+            else:
+                raise ValueError("Unknown error in get_in_progress_jobs:", non_final_jobs)
+
+        all_in_progress_jobs.extend(non_final_jobs["jobs"])
+
+    return all_in_progress_jobs
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch progressive compression_horizon training jobs.")
@@ -26,7 +70,7 @@ if __name__ == "__main__":
         "--adam_beta2",
         type=float,
         default=None,
-        help="Adam beta2 parameter. Default: 0.9.",
+        help="Adam beta2 parameter. Default: 0.999.",
     )
     args = parser.parse_args()
     workdir = os.getcwd()
@@ -35,6 +79,11 @@ if __name__ == "__main__":
     client, extra_options = training_job_api_from_profile("default")
 
     author_name = "d.tarasov"
+
+    # Get in-progress jobs once at the start
+    region = extra_options["region"]
+    in_progress_jobs = get_in_progress_jobs(client, region)
+    in_progress_job_descs = {job.get("job_desc", "") for job in in_progress_jobs}
 
     checkpoints = [
         # "HuggingFaceTB/SmolLM2-1.7B",
@@ -49,11 +98,6 @@ if __name__ == "__main__":
 
     max_seq_len = 2048
     max_optimization_steps_per_sample = 2500
-
-    # Default values for optimizer parameters
-    default_optim = "adamw_torch"
-    default_adam_beta1 = 0.9
-    default_adam_beta2 = 0.9
 
     for model_checkpoint in checkpoints:
         exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[1]}"
@@ -74,23 +118,17 @@ if __name__ == "__main__":
             "--limit_dataset_items 10",
         ]
 
-        # Add optimizer parameters to command if specified
+        # Add optimizer parameters if specified (non-default)
         optim_params = []
         if args.optim is not None:
             cmd_args.append(f"--optim {args.optim}")
-            # Only add to output_dir suffix if non-default
-            if args.optim != default_optim:
-                optim_params.append(f"opt_{args.optim}")
+            optim_params.append(f"opt_{args.optim}")
         if args.adam_beta1 is not None:
             cmd_args.append(f"--adam_beta1 {args.adam_beta1}")
-            # Only add to output_dir suffix if non-default
-            if args.adam_beta1 != default_adam_beta1:
-                optim_params.append(f"b1_{args.adam_beta1}")
+            optim_params.append(f"b1_{args.adam_beta1}")
         if args.adam_beta2 is not None:
             cmd_args.append(f"--adam_beta2 {args.adam_beta2}")
-            # Only add to output_dir suffix if non-default
-            if args.adam_beta2 != default_adam_beta2:
-                optim_params.append(f"b2_{args.adam_beta2}")
+            optim_params.append(f"b2_{args.adam_beta2}")
 
         # Update exp_suffix if optimizer parameters are non-default
         if optim_params:
@@ -106,6 +144,11 @@ if __name__ == "__main__":
         cmd_args.append(f"--output_dir {out_dir_name}")
         script = f" cd {workdir} && {python_path} scripts/activation_distillation.py  {' '.join(cmd_args)}"
         job_desc = f"CH: progressive {exp_suffix} #{author_name} #multimodal @mrsndmn"
+
+        # Check if job with same description already exists in queue
+        if job_desc in in_progress_job_descs:
+            print(f"\033[33mSkipping: job already in queue with description:\033[0m {job_desc}")
+            continue
 
         payload = {
             "script": script,
