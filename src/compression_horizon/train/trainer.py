@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from datasets import Dataset
 from sklearn.decomposition import PCA
-from torch.optim import AdamW
+from torch.optim import SGD, AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
@@ -379,11 +379,21 @@ class MyTrainer:
         return trainable_embeddings
 
     def _build_optimizer_and_scheduler(self, compression_token_embeddings, num_training_steps=None):
-        optimizer = AdamW(
-            [compression_token_embeddings],
-            lr=self.args.learning_rate,
-            weight_decay=self.args.weight_decay,
-        )
+        if self.args.optim == "adamw_torch":
+            optimizer = AdamW(
+                [compression_token_embeddings],
+                lr=self.args.learning_rate,
+                weight_decay=self.args.weight_decay,
+                betas=(self.args.adam_beta1, self.args.adam_beta2),
+            )
+        elif self.args.optim == "sgd":
+            optimizer = SGD(
+                [compression_token_embeddings],
+                lr=self.args.learning_rate,
+                weight_decay=self.args.weight_decay,
+            )
+        else:
+            raise ValueError("Only SGD and adamw_torch are supported")
 
         lr_scheduler = None
         if num_training_steps is not None:
