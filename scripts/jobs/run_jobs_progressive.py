@@ -142,7 +142,8 @@ if __name__ == "__main__":
             sys.exit(0)
 
     max_seq_len = 2048
-    max_optimization_steps_per_sample = 2500
+    max_optimization_steps_per_sample = 10_000
+    max_optimization_steps_per_token = 1_000
 
     for model_checkpoint in checkpoints:
         exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[1]}"
@@ -158,6 +159,7 @@ if __name__ == "__main__":
             f"--model_checkpoint {model_checkpoint}",
             "--per_device_train_batch_size 1",
             f"--max_optimization_steps_per_sample {max_optimization_steps_per_sample}",
+            f"--max_optimization_steps_per_token {max_optimization_steps_per_token}",
             "--learning_rate 0.01",
             "--progressive_train 1",
             "--embedding_init_method random0.02",

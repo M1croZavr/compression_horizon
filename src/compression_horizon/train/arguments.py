@@ -18,6 +18,10 @@ class MyTrainingArguments(TrainingArguments):
         default=False,
         metadata={"help": "Low dim projection flag"},
     )
+    low_dim_projection_global: bool = field(
+        default=False,
+        metadata={"help": "when to optimize projection"},
+    )
     low_dim_size: int = field(
         default=32,
         metadata={"help": "Dimension of small space for embeddings regularization"},
@@ -70,6 +74,10 @@ class MyTrainingArguments(TrainingArguments):
     max_optimization_steps_per_sample: int = field(
         default=1_000,
         metadata={"help": "Max optimization steps for training 1 sample."},
+    )
+    max_optimization_steps_per_token: int = field(
+        default=1_000,
+        metadata={"help": "Max optimization steps for training 1 token (only applicable for progressive training)."},
     )
     random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)."})
     fix_position_ids: bool = field(

@@ -11,7 +11,7 @@ from torch.optim import SGD, AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
-from transformers import get_cosine_with_min_lr_schedule_with_warmup, get_scheduler
+from transformers import get_cosine_with_min_lr_schedule_with_warmup
 
 from compression_horizon.inference.generation import generate_from_compression
 from compression_horizon.utils.launch import (
@@ -399,11 +399,11 @@ class MyTrainer:
         lr_scheduler = None
         if num_training_steps is not None:
             print("self.args.lr_scheduler_type", self.args.lr_scheduler_type)
-            lr_scheduler = get_scheduler(
-                name=self.args.lr_scheduler_type,
+            lr_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
                 optimizer=optimizer,
                 num_warmup_steps=self.args.warmup_steps,
                 num_training_steps=num_training_steps,
+                min_lr=1e-3,
             )
 
         return optimizer, lr_scheduler
@@ -1125,7 +1125,7 @@ class MyTrainer:
 
         low_dim_prjoection = None
         low_dim_optim = None
-        if self.args.low_dim_projection:
+        if self.args.low_dim_projection and self.args.low_dim_projection_global:
             low_dim_prjoection = nn.Linear(self.args.low_dim_size, model.model.embed_tokens.embedding_dim)
             low_dim_optim = AdamW(
                 low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay
@@ -1133,7 +1133,7 @@ class MyTrainer:
             low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
                 optimizer=low_dim_optim,
                 num_warmup_steps=self.args.low_dim_warmup_steps,
-                num_training_steps=5000,
+                num_training_steps=self.args.max_optimization_steps_per_sample,
                 min_lr=1e-5,
             )
 
@@ -1149,6 +1149,18 @@ class MyTrainer:
                 hidden_size = self.args.low_dim_size
 
             device = full_model_token_embeddings.device
+
+            if self.args.low_dim_projection and not self.args.low_dim_projection_global:
+                low_dim_prjoection = nn.Linear(self.args.low_dim_size, model.model.embed_tokens.embedding_dim)
+                low_dim_optim = AdamW(
+                    low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay
+                )
+                low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+                    optimizer=low_dim_optim,
+                    num_warmup_steps=self.args.low_dim_warmup_steps,
+                    num_training_steps=self.args.max_optimization_steps_per_sample,
+                    min_lr=1e-5,
+                )
 
             # Handle pretrained_pca initialization: optimize only coefficients
             if init_method == "pretrained_pca":
@@ -1216,8 +1228,8 @@ class MyTrainer:
                 attention_mask = full_attention_mask[:, :seq_len]
 
                 pbar = tqdm(
-                    range(self.args.max_optimization_steps_per_sample),
-                    total=self.args.max_optimization_steps_per_sample,
+                    range(self.args.max_optimization_steps_per_token),
+                    total=self.args.max_optimization_steps_per_token,
                     # disable=True,
                     leave=False,
                 )
