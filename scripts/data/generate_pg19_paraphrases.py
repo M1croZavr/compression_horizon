@@ -105,22 +105,34 @@ def generate_paraphrase(
     else:
         raise ValueError(f"Unknown paraphrase_type: {paraphrase_type}")
 
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                max_tokens=2500,
-                temperature=0.5,
-                presence_penalty=0,
-                top_p=0.95,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"Error generating paraphrase: {e}")
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=2500,
+            temperature=0.5,
+            presence_penalty=0,
+            top_p=0.95,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = response.choices[0].message.content
+        if content is None:
+            print(f"Warning: API returned None content for {paraphrase_type} paraphrase")
             return ""
+        result = content.strip()
+        if not result:
+            print(f"Warning: API returned empty content for {paraphrase_type} paraphrase")
+        else:
+            print(f"Successfully generated {paraphrase_type} paraphrase ({len(result)} chars)")
+        return result
+    except Exception as e:
+        print(f"Error generating {paraphrase_type} paraphrase: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return ""
 
 
 def generate_paraphrases_for_dataset(
@@ -154,6 +166,10 @@ def generate_paraphrases_for_dataset(
             paraphrase_type="full",
         )
 
+        if not full_paraphrase:
+            print(f"Warning: Empty full paraphrase for sample {idx}")
+            full_paraphrase = None  # Store None to indicate failure
+
         # Generate partial paraphrase
         print("Generating partial paraphrase...")
         partial_paraphrase = generate_paraphrase(
@@ -165,24 +181,38 @@ def generate_paraphrases_for_dataset(
             prefix_tokens=prefix_tokens,
         )
 
+        if not partial_paraphrase:
+            print(f"Warning: Empty partial paraphrase for sample {idx}")
+            partial_paraphrase = None  # Store None to indicate failure
+
         # Add to full paraphrase dataset
+        # Use empty string instead of None to avoid null values in dataset
         full_result = {
             "sample_id": idx,
-            "text": full_paraphrase,
+            "text": full_paraphrase if full_paraphrase else "",
             "original_text": example["original_text"],
             "truncated_text": truncated_text,
             "num_tokens": example["num_tokens"],
         }
+        # Debug: verify text is not None
+        if full_result["text"] is None:
+            print(f"ERROR: full_result['text'] is None for sample {idx}, converting to empty string")
+            full_result["text"] = ""
         full_paraphrase_results.append(full_result)
 
         # Add to partial paraphrase dataset
+        # Use empty string instead of None to avoid null values in dataset
         partial_result = {
             "sample_id": idx,
-            "text": partial_paraphrase,
+            "text": partial_paraphrase if partial_paraphrase else "",
             "original_text": example["original_text"],
             "truncated_text": truncated_text,
             "num_tokens": example["num_tokens"],
         }
+        # Debug: verify text is not None
+        if partial_result["text"] is None:
+            print(f"ERROR: partial_result['text'] is None for sample {idx}, converting to empty string")
+            partial_result["text"] = ""
         partial_paraphrase_results.append(partial_result)
 
         # Save intermediate results periodically
