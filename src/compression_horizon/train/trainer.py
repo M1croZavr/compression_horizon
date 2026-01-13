@@ -1346,6 +1346,12 @@ class MyTrainer:
                         comp_tokens_cpu = current_compression_tokens.detach().cpu()
                         orig_comp_tokens_cpu = compression_tokens.detach().cpu()
 
+                    low_dim_prjoection_w_cpu = None
+                    low_dim_prjoection_b_cpu = None
+                    if self.args.low_dim_projection:
+                        low_dim_prjoection_w_cpu = low_dim_prjoection.weight.data.cpu()
+                        low_dim_prjoection_b_cpu = low_dim_prjoection.bias.data.cpu()
+
                     for j in range(batch_size):
                         attn = attention_mask[j].bool()
                         ids = input_ids[j][attn]
@@ -1361,6 +1367,8 @@ class MyTrainer:
                                 "stage_seq_len": int(seq_len),
                                 "text": text,
                                 "embedding": embedding,
+                                "low_dim_prjoection_w": low_dim_prjoection_w_cpu.to(torch.float32).numpy().tolist(),
+                                "low_dim_prjoection_b": low_dim_prjoection_b_cpu.to(torch.float32).numpy().tolist(),
                                 "orig_embedding": orig_embedding,
                                 "pca_coefficients_to_save": pca_coefficients_to_save,
                                 "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization

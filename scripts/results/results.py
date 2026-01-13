@@ -471,7 +471,7 @@ def load_dataset_rows(ds_path: str) -> List[dict]:
         ds = load_from_disk(ds_path)
         # Remove embedding column if it exists to save memory
         if "embedding" in ds.column_names:
-            ds = ds.remove_columns("embedding")
+            ds = ds.remove_columns("embedding", "low_dim_prjoection_b", "low_dim_prjoection_w")
             # Save the stripped version for future use
             ds.save_to_disk(ds_path_stripped)
 
