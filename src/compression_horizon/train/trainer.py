@@ -732,7 +732,9 @@ class MyTrainer:
                     pca_mean=pca_mean,
                     loaded_embeddings=loaded_embeddings,
                 )  # [batch, mem, hidden]
-                # Save initialization embedding (before optimization)
+                # Move to device and save initialization embedding (before optimization)
+                # Create new Parameter on device to avoid non-leaf tensor issue
+                compression_token_embeddings = torch.nn.Parameter(compression_token_embeddings.data.to(device))
                 initialization_embeddings = compression_token_embeddings.detach().clone().cpu()  # [batch, mem, hidden]
                 optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
                     compression_token_embeddings, num_training_steps=self.args.max_optimization_steps_per_sample
@@ -790,7 +792,7 @@ class MyTrainer:
 
                 # Rebuild concatenations each step to avoid reusing the same autograd graph
                 united_token_embeddings = torch.cat(
-                    [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings],
+                    [compression_token_embeddings.to(token_embeddings.device).to(token_embeddings.dtype), token_embeddings],
                     dim=1,
                 )  # [batch, mem + sequence, hidden]
                 united_attention_mask = torch.cat(
@@ -991,7 +993,8 @@ class MyTrainer:
                 )  # [batch, mem]
 
                 united_token_embeddings = torch.cat(
-                    [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings], dim=1
+                    [compression_token_embeddings.to(token_embeddings.device).to(token_embeddings.dtype), token_embeddings],
+                    dim=1,
                 )  # [batch, mem + sequence, hidden]
                 united_attention_mask = torch.cat([compression_attention_mask, attention_mask], dim=1)
 
@@ -1041,7 +1044,9 @@ class MyTrainer:
             pca_mean=pca_mean,
             loaded_embeddings=loaded_embeddings,
         )
-        # Save initialization embedding (before optimization) - shared across all samples in train_noop
+        # Move to device and save initialization embedding (before optimization) - shared across all samples in train_noop
+        # Create new Parameter on device to avoid non-leaf tensor issue
+        compression_token_embeddings_single = torch.nn.Parameter(compression_token_embeddings_single.data.to(device))
         initialization_embedding_single = compression_token_embeddings_single.detach().clone().cpu()  # [1, mem, hidden]
 
         dataloader = self._create_dataloader()
@@ -1214,7 +1219,8 @@ class MyTrainer:
                     batch_size, num_compression_tokens
                 )
                 united_token_embeddings = torch.cat(
-                    [compression_token_embeddings.to(token_embeddings.dtype), token_embeddings], dim=1
+                    [compression_token_embeddings.to(token_embeddings.device).to(token_embeddings.dtype), token_embeddings],
+                    dim=1,
                 )
                 united_attention_mask = torch.cat([compression_attention_mask, attention_mask], dim=1)
                 base_logits_eval = model(input_ids, attention_mask=attention_mask).logits
@@ -1413,7 +1419,9 @@ class MyTrainer:
                     pca_mean=pca_mean,
                     loaded_embeddings=loaded_embeddings,
                 )
-                # Save initialization embedding (before optimization)
+                # Move to device and save initialization embedding (before optimization)
+                # Create new Parameter on device to avoid non-leaf tensor issue
+                compression_tokens = torch.nn.Parameter(compression_tokens.data.to(device))
                 initialization_embeddings = compression_tokens.detach().clone().cpu()  # [batch, mem, hidden]
                 optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
                     compression_tokens, num_training_steps=self.args.max_optimization_steps_per_sample
@@ -1462,7 +1470,7 @@ class MyTrainer:
                         current_compression_tokens = low_dim_prjoection(compression_tokens)
 
                     model_tokens_with_compression_tokens = torch.cat(
-                        [current_compression_tokens.to(inputs_embeds.dtype), inputs_embeds], dim=1
+                        [current_compression_tokens.to(inputs_embeds.device).to(inputs_embeds.dtype), inputs_embeds], dim=1
                     )
                     attention_mask_with_compression_tokens = torch.cat(
                         [compression_tokens_attention_mask, attention_mask], dim=1

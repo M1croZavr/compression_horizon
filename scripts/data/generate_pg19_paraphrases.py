@@ -226,8 +226,10 @@ def generate_paraphrases_for_dataset(
     push_to_hub: bool = False,
     hub_dataset_id_full: Optional[str] = None,
     hub_dataset_id_partial: Optional[str] = None,
+    generate_full: bool = True,
+    generate_partial: bool = True,
 ):
-    """Generate full and partial paraphrases for all samples in the dataset."""
+    """Generate full and/or partial paraphrases for all samples in the dataset."""
     os.makedirs(output_dir, exist_ok=True)
 
     full_paraphrase_results = []
@@ -239,105 +241,119 @@ def generate_paraphrases_for_dataset(
         truncated_text = example["truncated_text"]
 
         # Generate full paraphrase
-        print("Generating full paraphrase...")
-        full_paraphrase, _ = generate_paraphrase(
-            client=client,
-            model=model,
-            text=truncated_text,
-            paraphrase_type="full",
-        )
+        full_paraphrase = None
+        if generate_full:
+            print("Generating full paraphrase...")
+            full_paraphrase, _ = generate_paraphrase(
+                client=client,
+                model=model,
+                text=truncated_text,
+                paraphrase_type="full",
+            )
 
-        if not full_paraphrase:
-            print(f"Warning: Empty full paraphrase for sample {idx}")
-            full_paraphrase = None  # Store None to indicate failure
+            if not full_paraphrase:
+                print(f"Warning: Empty full paraphrase for sample {idx}")
+                full_paraphrase = None  # Store None to indicate failure
 
         # Generate partial paraphrase
-        print("Generating partial paraphrase...")
-        partial_remainder, prefix_text = generate_paraphrase(
-            client=client,
-            model=model,
-            text=truncated_text,
-            paraphrase_type="partial",
-            tokenizer=tokenizer,
-            prefix_tokens=prefix_tokens,
-        )
+        partial_remainder = None
+        prefix_text = None
+        if generate_partial:
+            print("Generating partial paraphrase...")
+            partial_remainder, prefix_text = generate_paraphrase(
+                client=client,
+                model=model,
+                text=truncated_text,
+                paraphrase_type="partial",
+                tokenizer=tokenizer,
+                prefix_tokens=prefix_tokens,
+            )
 
         # Programmatically prepend prefix to the paraphrased remainder
-        if partial_remainder and prefix_text:
-            partial_paraphrase = prefix_text + partial_remainder
-        elif not partial_remainder:
-            print(f"Warning: Empty partial paraphrase remainder for sample {idx}")
-            partial_paraphrase = None  # Store None to indicate failure
-        else:
-            partial_paraphrase = None
+        partial_paraphrase = None
+        if generate_partial:
+            if partial_remainder and prefix_text:
+                partial_paraphrase = prefix_text + partial_remainder
+            elif not partial_remainder:
+                print(f"Warning: Empty partial paraphrase remainder for sample {idx}")
+                partial_paraphrase = None  # Store None to indicate failure
+            else:
+                partial_paraphrase = None
 
         # Add to full paraphrase dataset
-        # Use empty string instead of None to avoid null values in dataset
-        full_result = {
-            "sample_id": idx,
-            "text": full_paraphrase if full_paraphrase else "",
-            "original_text": example["original_text"],
-            "truncated_text": truncated_text,
-            "num_tokens": example["num_tokens"],
-        }
-        # Debug: verify text is not None
-        if full_result["text"] is None:
-            print(f"ERROR: full_result['text'] is None for sample {idx}, converting to empty string")
-            full_result["text"] = ""
-        full_paraphrase_results.append(full_result)
+        if generate_full:
+            # Use empty string instead of None to avoid null values in dataset
+            full_result = {
+                "sample_id": idx,
+                "text": full_paraphrase if full_paraphrase else "",
+                "original_text": example["original_text"],
+                "truncated_text": truncated_text,
+                "num_tokens": example["num_tokens"],
+            }
+            # Debug: verify text is not None
+            if full_result["text"] is None:
+                print(f"ERROR: full_result['text'] is None for sample {idx}, converting to empty string")
+                full_result["text"] = ""
+            full_paraphrase_results.append(full_result)
 
         # Add to partial paraphrase dataset
-        # Use empty string instead of None to avoid null values in dataset
-        partial_result = {
-            "sample_id": idx,
-            "text": partial_paraphrase if partial_paraphrase else "",
-            "original_text": example["original_text"],
-            "truncated_text": truncated_text,
-            "num_tokens": example["num_tokens"],
-        }
-        # Debug: verify text is not None
-        if partial_result["text"] is None:
-            print(f"ERROR: partial_result['text'] is None for sample {idx}, converting to empty string")
-            partial_result["text"] = ""
-        partial_paraphrase_results.append(partial_result)
+        if generate_partial:
+            # Use empty string instead of None to avoid null values in dataset
+            partial_result = {
+                "sample_id": idx,
+                "text": partial_paraphrase if partial_paraphrase else "",
+                "original_text": example["original_text"],
+                "truncated_text": truncated_text,
+                "num_tokens": example["num_tokens"],
+            }
+            # Debug: verify text is not None
+            if partial_result["text"] is None:
+                print(f"ERROR: partial_result['text'] is None for sample {idx}, converting to empty string")
+                partial_result["text"] = ""
+            partial_paraphrase_results.append(partial_result)
 
         # Save intermediate results periodically
         if (idx + 1) % 10 == 0:
-            full_intermediate = Dataset.from_list(full_paraphrase_results)
-            partial_intermediate = Dataset.from_list(partial_paraphrase_results)
-            full_intermediate_path = os.path.join(output_dir, "full_paraphrases_intermediate")
-            partial_intermediate_path = os.path.join(output_dir, "partial_paraphrases_intermediate")
-            full_intermediate.save_to_disk(full_intermediate_path)
-            partial_intermediate.save_to_disk(partial_intermediate_path)
+            if generate_full and full_paraphrase_results:
+                full_intermediate = Dataset.from_list(full_paraphrase_results)
+                full_intermediate_path = os.path.join(output_dir, "full_paraphrases_intermediate")
+                full_intermediate.save_to_disk(full_intermediate_path)
+            if generate_partial and partial_paraphrase_results:
+                partial_intermediate = Dataset.from_list(partial_paraphrase_results)
+                partial_intermediate_path = os.path.join(output_dir, "partial_paraphrases_intermediate")
+                partial_intermediate.save_to_disk(partial_intermediate_path)
             print(f"Saved intermediate results ({idx + 1} samples)")
 
     # Save final results - separate datasets
-    full_dataset = Dataset.from_list(full_paraphrase_results)
-    partial_dataset = Dataset.from_list(partial_paraphrase_results)
+    full_dataset = None
+    partial_dataset = None
 
-    full_path = os.path.join(output_dir, "full_paraphrases")
-    partial_path = os.path.join(output_dir, "partial_paraphrases")
+    if generate_full and full_paraphrase_results:
+        full_dataset = Dataset.from_list(full_paraphrase_results)
+        full_path = os.path.join(output_dir, "full_paraphrases")
+        full_dataset.save_to_disk(full_path)
+        print(f"\nSaved full paraphrases to {full_path} ({len(full_paraphrase_results)} samples)")
 
-    full_dataset.save_to_disk(full_path)
-    partial_dataset.save_to_disk(partial_path)
-
-    print(f"\nSaved full paraphrases to {full_path} ({len(full_paraphrase_results)} samples)")
-    print(f"Saved partial paraphrases to {partial_path} ({len(partial_paraphrase_results)} samples)")
+    if generate_partial and partial_paraphrase_results:
+        partial_dataset = Dataset.from_list(partial_paraphrase_results)
+        partial_path = os.path.join(output_dir, "partial_paraphrases")
+        partial_dataset.save_to_disk(partial_path)
+        print(f"\nSaved partial paraphrases to {partial_path} ({len(partial_paraphrase_results)} samples)")
 
     # Push to hub if requested
     if push_to_hub:
-        if hub_dataset_id_full:
+        if generate_full and hub_dataset_id_full and full_dataset:
             print(f"\nPushing full paraphrases to hub: {hub_dataset_id_full}")
             full_dataset.push_to_hub(hub_dataset_id_full)
             print(f"Successfully pushed full paraphrases to {hub_dataset_id_full}")
-        else:
+        elif generate_full and push_to_hub and not hub_dataset_id_full:
             print("Warning: push_to_hub is True but hub_dataset_id_full is not specified, skipping...")
 
-        if hub_dataset_id_partial:
+        if generate_partial and hub_dataset_id_partial and partial_dataset:
             print(f"\nPushing partial paraphrases to hub: {hub_dataset_id_partial}")
             partial_dataset.push_to_hub(hub_dataset_id_partial)
             print(f"Successfully pushed partial paraphrases to {hub_dataset_id_partial}")
-        else:
+        elif generate_partial and push_to_hub and not hub_dataset_id_partial:
             print("Warning: push_to_hub is True but hub_dataset_id_partial is not specified, skipping...")
 
     return full_dataset, partial_dataset
@@ -417,17 +433,33 @@ def main():
         default=None,
         help="HuggingFace Hub dataset ID for lowercased partial dataset (e.g., 'username/dataset-lowercased-partial')",
     )
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        default="lowercased,lowercased_partial,full_paraphrases,partial_paraphrases",
+        help="Comma-separated list of dataset types to generate. Options: lowercased, lowercased_partial, full_paraphrases, partial_paraphrases (default: all)",
+    )
 
     args = parser.parse_args()
 
-    # Check for API key
-    api_key = os.environ.get("API_KEY")
-    if not api_key:
-        raise ValueError("API_KEY environment variable is not set")
+    # Parse and validate dataset types
+    valid_datasets = {"lowercased", "lowercased_partial", "full_paraphrases", "partial_paraphrases"}
+    requested_datasets = [d.strip() for d in args.datasets.split(",") if d.strip()]
+    invalid_datasets = set(requested_datasets) - valid_datasets
+    if invalid_datasets:
+        raise ValueError(f"Invalid dataset types: {invalid_datasets}. Valid options: {valid_datasets}")
+    datasets_to_generate = set(requested_datasets)
+    print(f"Datasets to generate: {datasets_to_generate}")
 
-    # Initialize OpenAI client
-    url = "https://foundation-models.api.cloud.ru/v1"
-    client = OpenAI(api_key=api_key, base_url=url)
+    # Check for API key (only needed for paraphrases)
+    client = None
+    if "full_paraphrases" in datasets_to_generate or "partial_paraphrases" in datasets_to_generate:
+        api_key = os.environ.get("API_KEY")
+        if not api_key:
+            raise ValueError("API_KEY environment variable is not set")
+        # Initialize OpenAI client
+        url = "https://foundation-models.api.cloud.ru/v1"
+        client = OpenAI(api_key=api_key, base_url=url)
 
     # Load and tokenize dataset
     dataset, tokenizer = load_and_tokenize_dataset(
@@ -439,43 +471,58 @@ def main():
     )
 
     print(f"\nDataset loaded: {len(dataset)} samples")
-    print(f"Using model: {args.model}")
+    if "full_paraphrases" in datasets_to_generate or "partial_paraphrases" in datasets_to_generate:
+        print(f"Using model: {args.model}")
     print(f"Output directory: {args.output_dir}")
 
+    full_dataset = None
+    partial_dataset = None
+
     # Create lowercased dataset
-    create_lowercased_dataset(
-        dataset=dataset,
-        output_dir=args.output_dir,
-        push_to_hub=args.push_to_hub,
-        hub_dataset_id_lowercased=args.hub_dataset_id_lowercased,
-    )
+    if "lowercased" in datasets_to_generate:
+        create_lowercased_dataset(
+            dataset=dataset,
+            output_dir=args.output_dir,
+            push_to_hub=args.push_to_hub,
+            hub_dataset_id_lowercased=args.hub_dataset_id_lowercased,
+        )
 
     # Create lowercased partial dataset
-    create_lowercased_partial_dataset(
-        dataset=dataset,
-        tokenizer=tokenizer,
-        prefix_tokens=args.prefix_tokens,
-        output_dir=args.output_dir,
-        push_to_hub=args.push_to_hub,
-        hub_dataset_id_lowercased_partial=args.hub_dataset_id_lowercased_partial,
-    )
+    if "lowercased_partial" in datasets_to_generate:
+        create_lowercased_partial_dataset(
+            dataset=dataset,
+            tokenizer=tokenizer,
+            prefix_tokens=args.prefix_tokens,
+            output_dir=args.output_dir,
+            push_to_hub=args.push_to_hub,
+            hub_dataset_id_lowercased_partial=args.hub_dataset_id_lowercased_partial,
+        )
 
     # Generate paraphrases
-    full_dataset, partial_dataset = generate_paraphrases_for_dataset(
-        dataset=dataset,
-        client=client,
-        model=args.model,
-        tokenizer=tokenizer,
-        output_dir=args.output_dir,
-        prefix_tokens=args.prefix_tokens,
-        push_to_hub=args.push_to_hub,
-        hub_dataset_id_full=args.hub_dataset_id_full,
-        hub_dataset_id_partial=args.hub_dataset_id_partial,
-    )
+    if "full_paraphrases" in datasets_to_generate or "partial_paraphrases" in datasets_to_generate:
+        full_dataset, partial_dataset = generate_paraphrases_for_dataset(
+            dataset=dataset,
+            client=client,
+            model=args.model,
+            tokenizer=tokenizer,
+            output_dir=args.output_dir,
+            prefix_tokens=args.prefix_tokens,
+            push_to_hub=args.push_to_hub,
+            hub_dataset_id_full=args.hub_dataset_id_full if "full_paraphrases" in datasets_to_generate else None,
+            hub_dataset_id_partial=args.hub_dataset_id_partial if "partial_paraphrases" in datasets_to_generate else None,
+            generate_full="full_paraphrases" in datasets_to_generate,
+            generate_partial="partial_paraphrases" in datasets_to_generate,
+        )
 
     print("\nSummary:")
-    print(f"  Full paraphrases: {len(full_dataset)} samples")
-    print(f"  Partial paraphrases: {len(partial_dataset)} samples")
+    if "lowercased" in datasets_to_generate:
+        print("  Lowercased dataset: generated")
+    if "lowercased_partial" in datasets_to_generate:
+        print("  Lowercased partial dataset: generated")
+    if "full_paraphrases" in datasets_to_generate and full_dataset:
+        print(f"  Full paraphrases: {len(full_dataset)} samples")
+    if "partial_paraphrases" in datasets_to_generate and partial_dataset:
+        print(f"  Partial paraphrases: {len(partial_dataset)} samples")
     print("\nDone!")
 
 
