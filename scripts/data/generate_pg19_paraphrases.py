@@ -61,7 +61,7 @@ def generate_paraphrase(
     paraphrase_type: str = "full",
     tokenizer: Optional[AutoTokenizer] = None,
     prefix_tokens: int = 64,
-) -> str:
+) -> tuple[str, Optional[str]]:
     """
     Generate a paraphrase using the LLM API.
 
@@ -74,14 +74,16 @@ def generate_paraphrase(
         prefix_tokens: Number of tokens to keep as prefix for partial paraphrases
 
     Returns:
-        Generated paraphrase
+        For "full": (paraphrase, None)
+        For "partial": (paraphrased_remainder, prefix_text) - prefix should be prepended programmatically
     """
     if paraphrase_type == "full":
         system_prompt = (
             "You are a helpful assistant that paraphrases text while preserving the original meaning, "
             "style, and tone. Generate a high-quality paraphrase of the given text."
         )
-        user_prompt = f"Paraphrase the following text while maintaining its meaning and style:\n\n{text}"
+        user_prompt = f"Paraphrase the following text while maintaining its meaning and style. DO NOT MODIFY text syle. No markdown headers and fotmatting. Text: \n\n{text}"
+        prefix_text = None
     elif paraphrase_type == "partial":
         # Extract prefix (first prefix_tokens tokens) and remainder
         tokens = tokenizer(text, return_tensors="pt")["input_ids"][0]
@@ -92,16 +94,9 @@ def generate_paraphrase(
 
         system_prompt = (
             "You are a helpful assistant that paraphrases text while preserving the original meaning, "
-            "style, and tone. You must start your response with the exact prefix text provided, "
-            "then continue with a paraphrased version of the remainder text."
+            "style, and tone. Paraphrase only the given text, do not include any prefix."
         )
-        user_prompt = (
-            f"Generate a paraphrase of the following text with these requirements:\n\n"
-            f"1. Start your response with this EXACT prefix (copy it word-for-word):\n{prefix_text}\n\n"
-            f"2. Then continue by paraphrasing this remainder text:\n{remainder_text}\n\n"
-            f"3. The paraphrase should maintain the original meaning and style.\n\n"
-            f"Full original text for context:\n{text}"
-        )
+        user_prompt = f"Context:\n{prefix_text}\n\nParaphrase the following text while maintaining its meaning and style:\n\n{remainder_text}"
     else:
         raise ValueError(f"Unknown paraphrase_type: {paraphrase_type}")
 
@@ -109,7 +104,7 @@ def generate_paraphrase(
         response = client.chat.completions.create(
             model=model,
             max_tokens=2500,
-            temperature=0.5,
+            temperature=0.0,
             presence_penalty=0,
             top_p=0.95,
             messages=[
@@ -120,19 +115,19 @@ def generate_paraphrase(
         content = response.choices[0].message.content
         if content is None:
             print(f"Warning: API returned None content for {paraphrase_type} paraphrase")
-            return ""
+            return ("", prefix_text)
         result = content.strip()
         if not result:
             print(f"Warning: API returned empty content for {paraphrase_type} paraphrase")
         else:
             print(f"Successfully generated {paraphrase_type} paraphrase ({len(result)} chars)")
-        return result
+        return (result, prefix_text)
     except Exception as e:
         print(f"Error generating {paraphrase_type} paraphrase: {e}")
         import traceback
 
         traceback.print_exc()
-        return ""
+        return ("", prefix_text)
 
 
 def generate_paraphrases_for_dataset(
@@ -159,7 +154,7 @@ def generate_paraphrases_for_dataset(
 
         # Generate full paraphrase
         print("Generating full paraphrase...")
-        full_paraphrase = generate_paraphrase(
+        full_paraphrase, _ = generate_paraphrase(
             client=client,
             model=model,
             text=truncated_text,
@@ -172,7 +167,7 @@ def generate_paraphrases_for_dataset(
 
         # Generate partial paraphrase
         print("Generating partial paraphrase...")
-        partial_paraphrase = generate_paraphrase(
+        partial_remainder, prefix_text = generate_paraphrase(
             client=client,
             model=model,
             text=truncated_text,
@@ -181,9 +176,14 @@ def generate_paraphrases_for_dataset(
             prefix_tokens=prefix_tokens,
         )
 
-        if not partial_paraphrase:
-            print(f"Warning: Empty partial paraphrase for sample {idx}")
+        # Programmatically prepend prefix to the paraphrased remainder
+        if partial_remainder and prefix_text:
+            partial_paraphrase = prefix_text + partial_remainder
+        elif not partial_remainder:
+            print(f"Warning: Empty partial paraphrase remainder for sample {idx}")
             partial_paraphrase = None  # Store None to indicate failure
+        else:
+            partial_paraphrase = None
 
         # Add to full paraphrase dataset
         # Use empty string instead of None to avoid null values in dataset
