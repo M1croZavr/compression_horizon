@@ -90,6 +90,18 @@ if __name__ == "__main__":
         default=None,
         help="Limit the number of dataset items to use. If not specified, defaults to 10 and is not included in output dir.",
     )
+    parser.add_argument(
+        "--low_dim_size",
+        type=int,
+        default=None,
+        help="Low dimension size for projection. If not specified, not included in output dir.",
+    )
+    parser.add_argument(
+        "--low_dim_projection",
+        action="store_true",
+        default=False,
+        help="Enable low dimension projection. If not specified, not included in output dir.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -160,6 +172,16 @@ if __name__ == "__main__":
         # Add limit_dataset_items to output dir if specified (non-default)
         if args.limit_dataset_items is not None and args.limit_dataset_items != 10:
             exp_suffix = f"{exp_suffix}_limit_{args.limit_dataset_items}"
+
+        # Add low_dim_size if specified
+        if args.low_dim_size is not None:
+            cmd_args.append(f"--low_dim_size {args.low_dim_size}")
+            exp_suffix = f"{exp_suffix}_lowdim_{args.low_dim_size}"
+
+        # Add low_dim_projection if specified
+        if args.low_dim_projection:
+            cmd_args.append("--low_dim_projection")
+            exp_suffix = f"{exp_suffix}_lowproj"
 
         # Add optimizer parameters if specified (non-default)
         optim_params = []

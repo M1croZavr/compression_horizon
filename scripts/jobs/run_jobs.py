@@ -105,6 +105,18 @@ def build_args() -> argparse.Namespace:
         help="Limit the number of dataset items to use.",
     )
     parser.add_argument(
+        "--low_dim_size",
+        type=int,
+        default=None,
+        help="Low dimension size for projection. If not specified, not included in output dir.",
+    )
+    parser.add_argument(
+        "--low_dim_projection",
+        action="store_true",
+        default=False,
+        help="Enable low dimension projection. If not specified, not included in output dir.",
+    )
+    parser.add_argument(
         "--remove_unused_columns",
         action="store_true",
         default=False,
@@ -196,6 +208,10 @@ if __name__ == "__main__":
             f"--embedding_init_method {embedding_init_method}",
             f"--fix_position_ids {fix_position_ids}",
         ]
+        if args.low_dim_size is not None:
+            args_parts.append(f"--low_dim_size {args.low_dim_size}")
+        if args.low_dim_projection:
+            args_parts.append("--low_dim_projection")
         if is_hybrid:
             args_parts.append(f"--hybrid_alpha {hybrid_alpha}")
         args_for_hash = " ".join(args_parts).strip()
@@ -206,6 +222,10 @@ if __name__ == "__main__":
             prefix = f"{prefix}_dtype_{args.dtype}"
         if args.limit_dataset_items and args.limit_dataset_items != 100:  # Only add to dir name if non-default
             prefix = f"{prefix}_limit_{args.limit_dataset_items}"
+        if args.low_dim_size is not None:
+            prefix = f"{prefix}_lowdim_{args.low_dim_size}"
+        if args.low_dim_projection:
+            prefix = f"{prefix}_lowproj"
         cmd_hash8 = hashlib.sha1(args_for_hash.encode("utf-8")).hexdigest()[:8]
         output_dir = os.path.join("artifacts/experiments", f"{prefix}_{cmd_hash8}")
 
