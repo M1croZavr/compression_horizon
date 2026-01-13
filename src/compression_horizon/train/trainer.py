@@ -397,6 +397,7 @@ class MyTrainer:
 
         lr_scheduler = None
         if num_training_steps is not None:
+            print("self.args.lr_scheduler_type", self.args.lr_scheduler_type)
             lr_scheduler = get_scheduler(
                 name=self.args.lr_scheduler_type,
                 optimizer=optimizer,
@@ -1248,13 +1249,17 @@ class MyTrainer:
                         comp_mean = compression_tokens.mean().item()
                         comp_std = compression_tokens.std().item()
 
+                    log_lr = self.args.learning_rate
+                    if lr_scheduler is not None:
+                        log_lr = lr_scheduler.get_last_lr()[0]
+
                     pbar.set_postfix(
                         loss=loss.item(),
                         convergece_per_sample=convergece_per_sample.mean().item(),
                         compression_tokens_mean=comp_mean,
                         compression_tokens_std=comp_std,
                         grad=grad_norm,
-                        lr=self.args.learning_rate,  # lr_scheduler.get_last_lr()[0],
+                        lr=log_lr,
                     )
 
                     # For logging, use compression_tokens (reconstructed if using PCA)

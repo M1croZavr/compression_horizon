@@ -79,6 +79,17 @@ if __name__ == "__main__":
         default=None,
         help="Filter models by name (substring match). Can specify multiple models. Matches against model name or full checkpoint path.",
     )
+    parser.add_argument(
+        "--dtype",
+        default=None,
+        help="Torch dtype to use: auto | float32/fp32 | bfloat16/bf16 | float16/fp16. If not specified, dtype is not included in output dir.",
+    )
+    parser.add_argument(
+        "--limit_dataset_items",
+        type=int,
+        default=None,
+        help="Limit the number of dataset items to use. If not specified, defaults to 10 and is not included in output dir.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -125,6 +136,7 @@ if __name__ == "__main__":
         exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[1]}"
 
         # Build command arguments
+        limit_dataset_items = args.limit_dataset_items if args.limit_dataset_items is not None else 10
         cmd_args = [
             "--remove_unused_columns False",
             "--num_alignment_layers 1",
@@ -137,8 +149,17 @@ if __name__ == "__main__":
             "--learning_rate 0.01",
             "--progressive_train 1",
             "--embedding_init_method random0.02",
-            "--limit_dataset_items 10",
+            f"--limit_dataset_items {limit_dataset_items}",
         ]
+
+        # Add dtype if specified
+        if args.dtype:
+            cmd_args.append(f"--dtype {args.dtype}")
+            exp_suffix = f"{exp_suffix}_dtype_{args.dtype}"
+
+        # Add limit_dataset_items to output dir if specified (non-default)
+        if args.limit_dataset_items is not None and args.limit_dataset_items != 10:
+            exp_suffix = f"{exp_suffix}_limit_{args.limit_dataset_items}"
 
         # Add optimizer parameters if specified (non-default)
         optim_params = []

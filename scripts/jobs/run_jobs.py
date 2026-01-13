@@ -202,6 +202,10 @@ if __name__ == "__main__":
 
         # Build deterministic output directory: essential prefix + hash of arguments
         prefix = f"ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{embedding_init_method}_seq_len_{max_sequence_length}"
+        if args.dtype and args.dtype != "bfloat16":  # Only add to dir name if non-default
+            prefix = f"{prefix}_dtype_{args.dtype}"
+        if args.limit_dataset_items and args.limit_dataset_items != 100:  # Only add to dir name if non-default
+            prefix = f"{prefix}_limit_{args.limit_dataset_items}"
         cmd_hash8 = hashlib.sha1(args_for_hash.encode("utf-8")).hexdigest()[:8]
         output_dir = os.path.join("artifacts/experiments", f"{prefix}_{cmd_hash8}")
 
