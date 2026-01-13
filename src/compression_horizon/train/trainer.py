@@ -1134,7 +1134,7 @@ class MyTrainer:
                 optimizer=low_dim_optim,
                 num_warmup_steps=self.args.low_dim_warmup_steps,
                 num_training_steps=self.args.max_optimization_steps_per_sample,
-                min_lr=1e-5,
+                min_lr=1e-3,
             )
 
         for batch in tqdm(dataloader):
@@ -1159,7 +1159,7 @@ class MyTrainer:
                     optimizer=low_dim_optim,
                     num_warmup_steps=self.args.low_dim_warmup_steps,
                     num_training_steps=self.args.max_optimization_steps_per_sample,
-                    min_lr=1e-5,
+                    min_lr=1e-3,
                 )
 
             # Handle pretrained_pca initialization: optimize only coefficients

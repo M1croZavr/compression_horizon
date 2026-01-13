@@ -1245,11 +1245,20 @@ def main():
 
     args = parser.parse_args()
 
-    os.makedirs("artifacts/visualizations", exist_ok=True)
     out_dir = args.output_dir
     if out_dir is None:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = os.path.join("artifacts/visualizations", f"progressive_embeddings_{ts}")
+        # Try to infer experiment directory from dataset path
+        # Dataset paths are typically: artifacts/experiments/<exp_name>/progressive_prefixes
+        # or artifacts/experiments_progressive/<exp_name>/progressive_prefixes
+        dataset_path = args.dataset_path
+        if "artifacts/experiments" in dataset_path or "artifacts/experiments_progressive" in dataset_path:
+            # Extract experiment directory (parent of dataset directory)
+            exp_dir = os.path.dirname(dataset_path)
+            out_dir = os.path.join(exp_dir, "visualizations")
+        else:
+            # Fallback: use artifacts/experiments with timestamp
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = os.path.join("artifacts/experiments", f"visualizations_{ts}")
     os.makedirs(out_dir, exist_ok=True)
 
     ds = load_progressive_dataset(args.dataset_path)
