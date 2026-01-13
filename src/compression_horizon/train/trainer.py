@@ -3,6 +3,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from datasets import Dataset
 from sklearn.decomposition import PCA
@@ -1122,6 +1123,12 @@ class MyTrainer:
 
         # model = torch.compile(model, mode='reduce-overhead')
 
+        low_dim_prjoection = None
+        low_dim_optim = None
+        if self.args.low_dim_projection:
+            low_dim_prjoection = nn.Linear(model.model.embed_tokens.embedding_dim, self.args.low_dim_size)
+            low_dim_optim = AdamW(low_dim_prjoection, lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+
         for batch in tqdm(dataloader):
             batch_size = batch["input_ids"].shape[0]
             full_input_ids = batch.input_ids.squeeze(1)
@@ -1130,6 +1137,9 @@ class MyTrainer:
             full_attention_mask = batch.attention_mask.squeeze(1)
 
             hidden_size = full_model_token_embeddings.shape[-1]
+            if self.args.low_dim_projection:
+                hidden_size = self.args.low_dim_size
+
             device = full_model_token_embeddings.device
 
             # Handle pretrained_pca initialization: optimize only coefficients
@@ -1219,6 +1229,10 @@ class MyTrainer:
                         compression_tokens = reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size)
                     # else: compression_tokens is already defined in the outer scope
 
+                    orig_compression_tokens = compression_tokens.clone()
+                    if self.args.low_dim_projection:
+                        compression_tokens = low_dim_prjoection(compression_tokens)
+
                     model_tokens_with_compression_tokens = torch.cat(
                         [compression_tokens.to(inputs_embeds.dtype), inputs_embeds], dim=1
                     )
@@ -1278,6 +1292,10 @@ class MyTrainer:
                         lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
+                    if self.args.low_dim_projection:
+                        low_dim_optim.step()
+                        low_dim_optim.zero_grad()
+
                     last_loss_val = float(loss.item())
                     last_conv = convergece_per_sample.detach().cpu()
 
@@ -1300,11 +1318,15 @@ class MyTrainer:
                         )
                     else:
                         comp_tokens_cpu = compression_tokens.detach().cpu()
+                        orig_comp_tokens_cpu = orig_compression_tokens.detach().cpu()
+
                     for j in range(batch_size):
                         attn = attention_mask[j].bool()
                         ids = input_ids[j][attn]
                         text = tokenizer.decode(ids.tolist(), skip_special_tokens=True) if tokenizer is not None else ""
                         embedding = comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
+                        orig_embedding = orig_comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
+
                         initialization_embedding = initialization_embeddings[j].to(torch.float32).numpy().tolist()
                         collected_rows.append(
                             {
@@ -1313,6 +1335,7 @@ class MyTrainer:
                                 "stage_seq_len": int(seq_len),
                                 "text": text,
                                 "embedding": embedding,
+                                "orig_embedding": orig_embedding,
                                 "pca_coefficients_to_save": pca_coefficients_to_save,
                                 "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization
                                 "final_loss": (float(last_loss_val) if last_loss_val is not None else None),

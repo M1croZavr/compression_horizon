@@ -14,9 +14,17 @@ class MyTrainingArguments(TrainingArguments):
         default="HuggingFaceTB/SmolLM2-135M",
         metadata={"help": "Huggingface location for a model and a tokenizer."},
     )
+    low_dim_projection: bool = field(
+        default=False,
+        metadata={"help": "Low dim projection flag"},
+    )
+    low_dim_size: int = field(
+        default=32,
+        metadata={"help": "Dimension of small space for embeddings regularization"},
+    )
     embedding_init_method: str = field(
         default="random",
-        metadata={"help": 'Initialization method for compression embeddings: "random", "mvnormal", or "pretrained_pca".'},
+        metadata={"help": 'Initialization method for compression embeddings: "random", "mvnormal", "pretrained_pca"'},
     )
     pretrained_pca_num_components: int = field(
         default=16,
