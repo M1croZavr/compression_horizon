@@ -93,7 +93,7 @@ def extract_trajectory(
         emb = flatten_embedding(stage)
         embeddings.append(emb)
         stage_seq_len = int(stage.get("stage_seq_len", -1))
-        int(stage.get("stage_index", -1))
+        # stage_idx = int(stage.get("stage_index", -1))
         labels.append(f"L{stage_seq_len}")
 
     if len(embeddings) == 0:
