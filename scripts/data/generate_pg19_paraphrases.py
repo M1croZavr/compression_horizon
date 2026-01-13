@@ -6,6 +6,15 @@ from datasets import Dataset, load_dataset
 from openai import OpenAI
 from transformers import AutoTokenizer
 
+# Example run:
+# python scripts/data/generate_pg19_paraphrases.py \
+#     --tokenizer HuggingFaceTB/SmolLM2-135M \
+#     --model openai/gpt-oss-120b \
+#     --max_tokens 256 \
+#     --prefix_tokens 64 \
+#     --limit 100 \
+#     --output_dir artifacts/pg19_paraphrases --push_to_hub --hub_dataset_id_full mrsndmn/pg19-full-paraphrases-256-tokens --hub_dataset_id_partial mrsndmn/pg19-partial-paraphrases-256-tokens
+
 
 def load_and_tokenize_dataset(
     dataset_name: str,
@@ -121,6 +130,9 @@ def generate_paraphrases_for_dataset(
     tokenizer: AutoTokenizer,
     output_dir: str,
     prefix_tokens: int = 64,
+    push_to_hub: bool = False,
+    hub_dataset_id_full: Optional[str] = None,
+    hub_dataset_id_partial: Optional[str] = None,
 ):
     """Generate full and partial paraphrases for all samples in the dataset."""
     os.makedirs(output_dir, exist_ok=True)
@@ -196,6 +208,22 @@ def generate_paraphrases_for_dataset(
     print(f"\nSaved full paraphrases to {full_path} ({len(full_paraphrase_results)} samples)")
     print(f"Saved partial paraphrases to {partial_path} ({len(partial_paraphrase_results)} samples)")
 
+    # Push to hub if requested
+    if push_to_hub:
+        if hub_dataset_id_full:
+            print(f"\nPushing full paraphrases to hub: {hub_dataset_id_full}")
+            full_dataset.push_to_hub(hub_dataset_id_full)
+            print(f"Successfully pushed full paraphrases to {hub_dataset_id_full}")
+        else:
+            print("Warning: push_to_hub is True but hub_dataset_id_full is not specified, skipping...")
+
+        if hub_dataset_id_partial:
+            print(f"\nPushing partial paraphrases to hub: {hub_dataset_id_partial}")
+            partial_dataset.push_to_hub(hub_dataset_id_partial)
+            print(f"Successfully pushed partial paraphrases to {hub_dataset_id_partial}")
+        else:
+            print("Warning: push_to_hub is True but hub_dataset_id_partial is not specified, skipping...")
+
     return full_dataset, partial_dataset
 
 
@@ -243,6 +271,24 @@ def main():
         default="test",
         help="Dataset split to use (default: 'test')",
     )
+    parser.add_argument(
+        "--push_to_hub",
+        action="store_true",
+        default=False,
+        help="Push generated datasets to HuggingFace Hub",
+    )
+    parser.add_argument(
+        "--hub_dataset_id_full",
+        type=str,
+        default=None,
+        help="HuggingFace Hub dataset ID for full paraphrases (e.g., 'username/dataset-full-paraphrases')",
+    )
+    parser.add_argument(
+        "--hub_dataset_id_partial",
+        type=str,
+        default=None,
+        help="HuggingFace Hub dataset ID for partial paraphrases (e.g., 'username/dataset-partial-paraphrases')",
+    )
 
     args = parser.parse_args()
 
@@ -276,6 +322,9 @@ def main():
         tokenizer=tokenizer,
         output_dir=args.output_dir,
         prefix_tokens=args.prefix_tokens,
+        push_to_hub=args.push_to_hub,
+        hub_dataset_id_full=args.hub_dataset_id_full,
+        hub_dataset_id_partial=args.hub_dataset_id_partial,
     )
 
     print("\nSummary:")
