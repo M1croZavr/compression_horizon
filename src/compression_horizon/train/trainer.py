@@ -1102,6 +1102,18 @@ class MyTrainer:
             return save_path
         return None
 
+    def _prepare_low_dim_proj(self, embedding_dim):
+        low_dim_prjoection = nn.Linear(self.args.low_dim_size, embedding_dim=embedding_dim)
+        low_dim_optim = AdamW(low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+        low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+            optimizer=low_dim_optim,
+            num_warmup_steps=self.args.low_dim_warmup_steps,
+            num_training_steps=self.args.max_optimization_steps_per_sample,
+            min_lr=1e-3,
+        )
+
+        return low_dim_prjoection, low_dim_optim, low_dim_scheduler
+
     def progressive_train(self):
         device = get_device()
         set_launch_seed(self.args.random_seed)
@@ -1126,15 +1138,8 @@ class MyTrainer:
         low_dim_prjoection = None
         low_dim_optim = None
         if self.args.low_dim_projection and self.args.low_dim_projection_global:
-            low_dim_prjoection = nn.Linear(self.args.low_dim_size, model.model.embed_tokens.embedding_dim)
-            low_dim_optim = AdamW(
-                low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay
-            )
-            low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
-                optimizer=low_dim_optim,
-                num_warmup_steps=self.args.low_dim_warmup_steps,
-                num_training_steps=self.args.max_optimization_steps_per_sample,
-                min_lr=1e-3,
+            low_dim_prjoection, low_dim_optim, low_dim_scheduler = self._prepare_low_dim_proj(
+                embedding_dim=model.model.embed_tokens.embedding_dim
             )
 
         for batch in tqdm(dataloader):
@@ -1151,15 +1156,8 @@ class MyTrainer:
             device = full_model_token_embeddings.device
 
             if self.args.low_dim_projection and not self.args.low_dim_projection_global:
-                low_dim_prjoection = nn.Linear(self.args.low_dim_size, model.model.embed_tokens.embedding_dim)
-                low_dim_optim = AdamW(
-                    low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay
-                )
-                low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
-                    optimizer=low_dim_optim,
-                    num_warmup_steps=self.args.low_dim_warmup_steps,
-                    num_training_steps=self.args.max_optimization_steps_per_sample,
-                    min_lr=1e-3,
+                low_dim_prjoection, low_dim_optim, low_dim_scheduler = self._prepare_low_dim_proj(
+                    embedding_dim=model.model.embed_tokens.embedding_dim
                 )
 
             # Handle pretrained_pca initialization: optimize only coefficients
