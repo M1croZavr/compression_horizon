@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import time
 
 from mls.manager.job.utils import training_job_api_from_profile
@@ -72,6 +73,12 @@ if __name__ == "__main__":
         default=None,
         help="Adam beta2 parameter. Default: 0.999.",
     )
+    parser.add_argument(
+        "--model",
+        nargs="+",
+        default=None,
+        help="Filter models by name (substring match). Can specify multiple models. Matches against model name or full checkpoint path.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -86,15 +93,30 @@ if __name__ == "__main__":
     in_progress_job_descs = {job.get("job_desc", "") for job in in_progress_jobs}
 
     checkpoints = [
-        # "HuggingFaceTB/SmolLM2-1.7B",
-        # "unsloth/Llama-3.2-3B",
-        # "Qwen/Qwen3-4B",
-        # "unsloth/Meta-Llama-3.1-8B",
-        # "Qwen/Qwen3-8B",
-        # "allenai/OLMo-1B-hf",
+        "HuggingFaceTB/SmolLM2-1.7B",
+        "unsloth/Llama-3.2-3B",
+        "Qwen/Qwen3-4B",
+        "unsloth/Meta-Llama-3.1-8B",
+        "Qwen/Qwen3-8B",
+        "allenai/OLMo-1B-hf",
         "allenai/Olmo-3-1025-7B",
     ]
     # checkpoints = []
+
+    # Filter checkpoints by --model flag if provided
+    if args.model:
+        model_filters = [m.lower() for m in args.model]
+        filtered_checkpoints = []
+        for checkpoint in checkpoints:
+            checkpoint_lower = checkpoint.lower()
+            model_name = checkpoint.split("/")[-1].lower() if "/" in checkpoint else checkpoint_lower
+            # Match if any filter is found in full checkpoint path or model name
+            if any(filt in checkpoint_lower or filt in model_name for filt in model_filters):
+                filtered_checkpoints.append(checkpoint)
+        checkpoints = filtered_checkpoints
+        if not checkpoints:
+            print(f"\033[33mNo models matched the filter: {args.model}\033[0m")
+            sys.exit(0)
 
     max_seq_len = 2048
     max_optimization_steps_per_sample = 2500
@@ -143,7 +165,7 @@ if __name__ == "__main__":
         # Add output_dir to command
         cmd_args.append(f"--output_dir {out_dir_name}")
         script = f" cd {workdir} && {python_path} scripts/activation_distillation.py  {' '.join(cmd_args)}"
-        job_desc = f"CH: progressive {exp_suffix} #{author_name} #multimodal @mrsndmn"
+        job_desc = f"CH: progressive {exp_suffix} #{author_name} #multimodal #notify_completed @mrsndmn"
 
         # Check if job with same description already exists in queue
         if job_desc in in_progress_job_descs:

@@ -53,7 +53,7 @@ if __name__ == "__main__":
         result = client.run_job(
             payload={
                 "script": f" cd {workdir} && {python_path} scripts/interpolation.py --dataset_path1 artifacts/experiments/{checkpoint1}/compressed_prefixes --dataset_path2 artifacts/experiments/{checkpoint2}/compressed_prefixes --bezier_steps {bezier_steps} --bezier_batch_t 100 --bezier_lr 0.1 --bezier_weight_decay 0.0 --bezier_order 2 --output_dir artifacts/interpolations/{out_dir_name}",
-                "job_desc": f"CH: interpolate {checkpoint1} {checkpoint2} #{author_name} #multimodal @mrsndmn",
+                "job_desc": f"CH: interpolate {checkpoint1} {checkpoint2} #{author_name} #multimodal #notify_completed @mrsndmn",
                 "env_variables": {
                     "PYTHONPATH": "./src",
                 },

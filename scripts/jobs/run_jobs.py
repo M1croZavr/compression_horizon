@@ -226,7 +226,7 @@ if __name__ == "__main__":
             f"ckpt={model_checkpoint} "
             f"dtype={args.dtype} "
             f"fix_position_ids={fix_position_ids} "
-            f"#{author_name} #rnd #multimodal @mrsndmn"
+            f"#{author_name} #rnd #multimodal #notify_completed @mrsndmn"
         )
 
         payload = {

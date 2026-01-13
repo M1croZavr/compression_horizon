@@ -14,11 +14,12 @@ Supported artifact layouts:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
 import textwrap
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -28,6 +29,9 @@ from tabulate import tabulate
 from tqdm.auto import tqdm
 
 # ------------------------------- Utilities --------------------------------- #
+
+# Run summary cache version - increment when RunSummary structure changes
+RUN_SUMMARY_VERSION = "1.0"
 
 
 @dataclass
@@ -162,7 +166,41 @@ abbreviation = {
 }
 
 
-def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
+def load_run_summary_cache(run_dir_parent: str) -> Optional[RunSummary]:
+    """Load RunSummary from cache file if it exists and version matches."""
+    cache_file = os.path.join(run_dir_parent, "run_summary_cache.json")
+    if not os.path.exists(cache_file):
+        return None
+    try:
+        with open(cache_file, "r") as f:
+            cache_data = json.load(f)
+        if cache_data.get("version") != RUN_SUMMARY_VERSION:
+            return None
+        # Reconstruct RunSummary from dict
+        summary_dict = cache_data.get("summary")
+        if summary_dict is None:
+            return None
+        return RunSummary(**summary_dict)
+    except Exception as e:
+        print(f"Failed to load cache from {cache_file}: {e}", file=sys.stderr)
+        return None
+
+
+def save_run_summary_cache(run_dir_parent: str, summary: RunSummary) -> None:
+    """Save RunSummary to cache file in experiment directory."""
+    cache_file = os.path.join(run_dir_parent, "run_summary_cache.json")
+    try:
+        cache_data = {
+            "version": RUN_SUMMARY_VERSION,
+            "summary": asdict(summary),
+        }
+        with open(cache_file, "w") as f:
+            json.dump(cache_data, f, indent=2)
+    except Exception as e:
+        print(f"Failed to save cache to {cache_file}: {e}", file=sys.stderr)
+
+
+def aggregate_non_progressive(run_dir: str, ds_rows: List[dict], force: bool = False) -> RunSummary:
     # Pull common properties – they should be constant within a run
     props_from_rows: Dict[str, Optional[object]] = {}
     for key in (
