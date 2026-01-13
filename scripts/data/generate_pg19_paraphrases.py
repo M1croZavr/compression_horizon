@@ -130,6 +130,92 @@ def generate_paraphrase(
         return ("", prefix_text)
 
 
+def create_lowercased_dataset(
+    dataset: Dataset,
+    output_dir: str,
+    push_to_hub: bool = False,
+    hub_dataset_id_lowercased: Optional[str] = None,
+):
+    """Create a lowercased version of the original dataset."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    def lowercase_text(example):
+        """Lowercase the text column."""
+        return {
+            "text": example["original_text"].lower(),
+            "original_text": example["original_text"],
+            "truncated_text": example["truncated_text"],
+            "num_tokens": example["num_tokens"],
+        }
+
+    print("Creating lowercased dataset...")
+    lowercased_dataset = dataset.map(lowercase_text)
+
+    lowercased_path = os.path.join(output_dir, "lowercased_original")
+    lowercased_dataset.save_to_disk(lowercased_path)
+    print(f"Saved lowercased dataset to {lowercased_path} ({len(lowercased_dataset)} samples)")
+
+    # Push to hub if requested
+    if push_to_hub and hub_dataset_id_lowercased:
+        print(f"\nPushing lowercased dataset to hub: {hub_dataset_id_lowercased}")
+        lowercased_dataset.push_to_hub(hub_dataset_id_lowercased)
+        print(f"Successfully pushed lowercased dataset to {hub_dataset_id_lowercased}")
+    elif push_to_hub and not hub_dataset_id_lowercased:
+        print("Warning: push_to_hub is True but hub_dataset_id_lowercased is not specified, skipping...")
+
+    return lowercased_dataset
+
+
+def create_lowercased_partial_dataset(
+    dataset: Dataset,
+    tokenizer: AutoTokenizer,
+    prefix_tokens: int,
+    output_dir: str,
+    push_to_hub: bool = False,
+    hub_dataset_id_lowercased_partial: Optional[str] = None,
+):
+    """Create a lowercased partial version: keep first prefix_tokens unchanged, lowercase remainder."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    def lowercase_partial_text(example):
+        """Keep first prefix_tokens unchanged, lowercase the remainder."""
+        truncated_text = example["truncated_text"]
+        # Tokenize to split into prefix and remainder
+        tokens = tokenizer(truncated_text, return_tensors="pt")["input_ids"][0]
+        prefix_tokens_list = tokens[:prefix_tokens]
+        remainder_tokens_list = tokens[prefix_tokens:]
+        # Decode prefix and remainder separately
+        prefix_text = tokenizer.decode(prefix_tokens_list, skip_special_tokens=True)
+        remainder_text = tokenizer.decode(remainder_tokens_list, skip_special_tokens=True)
+        # Lowercase only the remainder
+        lowercased_remainder = remainder_text.lower()
+        # Concatenate prefix + lowercased remainder
+        lowercased_partial_text = prefix_text + lowercased_remainder
+        return {
+            "text": lowercased_partial_text,
+            "original_text": example["original_text"],
+            "truncated_text": truncated_text,
+            "num_tokens": example["num_tokens"],
+        }
+
+    print("Creating lowercased partial dataset...")
+    lowercased_partial_dataset = dataset.map(lowercase_partial_text)
+
+    lowercased_partial_path = os.path.join(output_dir, "lowercased_partial")
+    lowercased_partial_dataset.save_to_disk(lowercased_partial_path)
+    print(f"Saved lowercased partial dataset to {lowercased_partial_path} ({len(lowercased_partial_dataset)} samples)")
+
+    # Push to hub if requested
+    if push_to_hub and hub_dataset_id_lowercased_partial:
+        print(f"\nPushing lowercased partial dataset to hub: {hub_dataset_id_lowercased_partial}")
+        lowercased_partial_dataset.push_to_hub(hub_dataset_id_lowercased_partial)
+        print(f"Successfully pushed lowercased partial dataset to {hub_dataset_id_lowercased_partial}")
+    elif push_to_hub and not hub_dataset_id_lowercased_partial:
+        print("Warning: push_to_hub is True but hub_dataset_id_lowercased_partial is not specified, skipping...")
+
+    return lowercased_partial_dataset
+
+
 def generate_paraphrases_for_dataset(
     dataset: Dataset,
     client: OpenAI,
@@ -319,6 +405,18 @@ def main():
         default=None,
         help="HuggingFace Hub dataset ID for partial paraphrases (e.g., 'username/dataset-partial-paraphrases')",
     )
+    parser.add_argument(
+        "--hub_dataset_id_lowercased",
+        type=str,
+        default=None,
+        help="HuggingFace Hub dataset ID for lowercased original dataset (e.g., 'username/dataset-lowercased')",
+    )
+    parser.add_argument(
+        "--hub_dataset_id_lowercased_partial",
+        type=str,
+        default=None,
+        help="HuggingFace Hub dataset ID for lowercased partial dataset (e.g., 'username/dataset-lowercased-partial')",
+    )
 
     args = parser.parse_args()
 
@@ -343,6 +441,24 @@ def main():
     print(f"\nDataset loaded: {len(dataset)} samples")
     print(f"Using model: {args.model}")
     print(f"Output directory: {args.output_dir}")
+
+    # Create lowercased dataset
+    create_lowercased_dataset(
+        dataset=dataset,
+        output_dir=args.output_dir,
+        push_to_hub=args.push_to_hub,
+        hub_dataset_id_lowercased=args.hub_dataset_id_lowercased,
+    )
+
+    # Create lowercased partial dataset
+    create_lowercased_partial_dataset(
+        dataset=dataset,
+        tokenizer=tokenizer,
+        prefix_tokens=args.prefix_tokens,
+        output_dir=args.output_dir,
+        push_to_hub=args.push_to_hub,
+        hub_dataset_id_lowercased_partial=args.hub_dataset_id_lowercased_partial,
+    )
 
     # Generate paraphrases
     full_dataset, partial_dataset = generate_paraphrases_for_dataset(
