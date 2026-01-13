@@ -14,6 +14,10 @@ class MyTrainingArguments(TrainingArguments):
         default="HuggingFaceTB/SmolLM2-135M",
         metadata={"help": "Huggingface location for a model and a tokenizer."},
     )
+    dataset_name: str = field(
+        default="mrsndmn/pg19",
+        metadata={"help": "Dataset name to use for training (e.g., 'mrsndmn/pg19')."},
+    )
     low_dim_projection: bool = field(
         default=False,
         metadata={"help": "Low dim projection flag"},

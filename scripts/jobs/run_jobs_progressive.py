@@ -91,6 +91,12 @@ if __name__ == "__main__":
         help="Limit the number of dataset items to use. If not specified, defaults to 10 and is not included in output dir.",
     )
     parser.add_argument(
+        "--dataset_name",
+        type=str,
+        default=None,
+        help="Dataset name to use for training (e.g., 'mrsndmn/pg19'). If not specified, defaults to 'mrsndmn/pg19' and is not included in output dir.",
+    )
+    parser.add_argument(
         "--low_dim_size",
         type=int,
         default=None,
@@ -178,6 +184,13 @@ if __name__ == "__main__":
             "--embedding_init_method random0.02",
             f"--limit_dataset_items {limit_dataset_items}",
         ]
+
+        # Add dataset_name if specified (non-default)
+        if args.dataset_name is not None:
+            cmd_args.append(f"--dataset_name {args.dataset_name}")
+            # Extract dataset name for suffix (last part after /)
+            dataset_suffix = args.dataset_name.split("/")[-1] if "/" in args.dataset_name else args.dataset_name
+            exp_suffix = f"{exp_suffix}_ds_{dataset_suffix}"
 
         # Add dtype if specified
         if args.dtype:

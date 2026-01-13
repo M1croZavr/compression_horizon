@@ -191,7 +191,7 @@ if __name__ == "__main__":
     # Load or create training dataset
     train_dataset = load_or_create_tokenized_dataset(
         cache_dir=cache_dir,
-        dataset_name="mrsndmn/pg19",
+        dataset_name=training_args.dataset_name,
         split="test",
         tokenizer=tokenizer,
         max_sequence_length=training_args.max_sequence_length,
@@ -211,7 +211,7 @@ if __name__ == "__main__":
 
         eval_dataset = load_or_create_tokenized_dataset(
             cache_dir=cache_dir,
-            dataset_name="mrsndmn/pg19",
+            dataset_name=training_args.dataset_name,
             split="test",
             tokenizer=tokenizer,
             max_sequence_length=eval_seq_length,
