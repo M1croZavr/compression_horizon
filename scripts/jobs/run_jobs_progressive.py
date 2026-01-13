@@ -128,6 +128,12 @@ if __name__ == "__main__":
         help="Path to file containing initial compression embeddings (when embedding_init_method=load_from_disk). If not specified, not included in output dir.",
     )
     parser.add_argument(
+        "--embedding_init_method",
+        type=str,
+        default=None,
+        help="Initialization method for compression embeddings. If not specified, defaults to 'random0.02' and is not included in output dir.",
+    )
+    parser.add_argument(
         "--load_from_disk_embedding_init_method",
         type=str,
         default=None,
@@ -181,6 +187,7 @@ if __name__ == "__main__":
 
         # Build command arguments
         limit_dataset_items = args.limit_dataset_items if args.limit_dataset_items is not None else 10
+        embedding_init_method = args.embedding_init_method if args.embedding_init_method is not None else "random0.02"
         cmd_args = [
             "--remove_unused_columns False",
             "--num_alignment_layers 1",
@@ -193,7 +200,7 @@ if __name__ == "__main__":
             f"--max_optimization_steps_per_token {max_optimization_steps_per_token}",
             "--learning_rate 0.01",
             "--progressive_train 1",
-            "--embedding_init_method random0.02",
+            f"--embedding_init_method {embedding_init_method}",
             f"--limit_dataset_items {limit_dataset_items}",
         ]
 
@@ -235,12 +242,16 @@ if __name__ == "__main__":
             cmd_args.append("--low_dim_proj_train False")
             exp_suffix = f"{exp_suffix}_lowprojfrozen"
 
+        # Add embedding_init_method to output dir if specified (non-default)
+        if args.embedding_init_method is not None and args.embedding_init_method != "random0.02":
+            exp_suffix = f"{exp_suffix}_embinit_{args.embedding_init_method}"
+
         # Add embedding_init_path if specified
         if args.embedding_init_path is not None:
             cmd_args.append(f"--embedding_init_path {args.embedding_init_path}")
             # Extract path name for suffix (last part of path, without extension)
             path_name = os.path.basename(args.embedding_init_path).replace(".pt", "").replace(".pth", "")
-            exp_suffix = f"{exp_suffix}_embinit_{path_name}"
+            exp_suffix = f"{exp_suffix}_embpath_{path_name}"
 
         # Add load_from_disk_embedding_init_method if specified (non-default)
         if args.load_from_disk_embedding_init_method is not None:
