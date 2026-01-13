@@ -22,6 +22,12 @@ class MyTrainingArguments(TrainingArguments):
         default=32,
         metadata={"help": "Dimension of small space for embeddings regularization"},
     )
+    low_dim_lr_scheduler_type: SchedulerType | str = field(
+        default="cosine",
+        metadata={"help": "The scheduler type to use."},
+    )
+    low_dim_warmup_steps: int = field(default=100, metadata={"help": "Linear warmup over warmup_steps."})
+
     embedding_init_method: str = field(
         default="random",
         metadata={"help": 'Initialization method for compression embeddings: "random", "mvnormal", "pretrained_pca"'},

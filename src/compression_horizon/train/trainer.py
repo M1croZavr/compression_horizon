@@ -11,7 +11,7 @@ from torch.optim import SGD, AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
-from transformers import get_scheduler
+from transformers import get_cosine_with_min_lr_schedule_with_warmup, get_scheduler
 
 from compression_horizon.inference.generation import generate_from_compression
 from compression_horizon.utils.launch import (
@@ -1126,8 +1126,16 @@ class MyTrainer:
         low_dim_prjoection = None
         low_dim_optim = None
         if self.args.low_dim_projection:
-            low_dim_prjoection = nn.Linear(model.model.embed_tokens.embedding_dim, self.args.low_dim_size)
-            low_dim_optim = AdamW(low_dim_prjoection, lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+            low_dim_prjoection = nn.Linear(self.args.low_dim_size, model.model.embed_tokens.embedding_dim)
+            low_dim_optim = AdamW(
+                low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay
+            )
+            low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+                optimizer=low_dim_optim,
+                num_warmup_steps=self.args.low_dim_warmup_steps,
+                num_training_steps=5000,
+                min_lr=1e-5,
+            )
 
         for batch in tqdm(dataloader):
             batch_size = batch["input_ids"].shape[0]
@@ -1229,12 +1237,12 @@ class MyTrainer:
                         compression_tokens = reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size)
                     # else: compression_tokens is already defined in the outer scope
 
-                    orig_compression_tokens = compression_tokens.clone()
+                    current_compression_tokens = compression_tokens.clone()
                     if self.args.low_dim_projection:
-                        compression_tokens = low_dim_prjoection(compression_tokens)
+                        current_compression_tokens = low_dim_prjoection(compression_tokens)
 
                     model_tokens_with_compression_tokens = torch.cat(
-                        [compression_tokens.to(inputs_embeds.dtype), inputs_embeds], dim=1
+                        [current_compression_tokens.to(inputs_embeds.dtype), inputs_embeds], dim=1
                     )
                     attention_mask_with_compression_tokens = torch.cat(
                         [compression_tokens_attention_mask, attention_mask], dim=1
@@ -1267,6 +1275,10 @@ class MyTrainer:
                     if lr_scheduler is not None:
                         log_lr = lr_scheduler.get_last_lr()[0]
 
+                    low_dim_lr = None
+                    if self.args.low_dim_projection:
+                        low_dim_lr = low_dim_scheduler.get_last_lr()[0]
+
                     pbar.set_postfix(
                         loss=loss.item(),
                         convergece_per_sample=convergece_per_sample.mean().item(),
@@ -1274,6 +1286,7 @@ class MyTrainer:
                         compression_tokens_std=comp_std,
                         grad=grad_norm,
                         lr=log_lr,
+                        low_dim_lr=low_dim_lr,
                     )
 
                     # For logging, use compression_tokens (reconstructed if using PCA)
@@ -1295,6 +1308,7 @@ class MyTrainer:
                     if self.args.low_dim_projection:
                         low_dim_optim.step()
                         low_dim_optim.zero_grad()
+                        low_dim_scheduler.step()
 
                     last_loss_val = float(loss.item())
                     last_conv = convergece_per_sample.detach().cpu()
@@ -1317,8 +1331,8 @@ class MyTrainer:
                             reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size).detach().cpu()
                         )
                     else:
-                        comp_tokens_cpu = compression_tokens.detach().cpu()
-                        orig_comp_tokens_cpu = orig_compression_tokens.detach().cpu()
+                        comp_tokens_cpu = current_compression_tokens.detach().cpu()
+                        orig_comp_tokens_cpu = compression_tokens.detach().cpu()
 
                     for j in range(batch_size):
                         attn = attention_mask[j].bool()
