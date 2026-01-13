@@ -1104,13 +1104,43 @@ class MyTrainer:
 
     def _prepare_low_dim_proj(self, embedding_dim):
         low_dim_prjoection = nn.Linear(self.args.low_dim_size, embedding_dim=embedding_dim)
-        low_dim_optim = AdamW(low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
-        low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
-            optimizer=low_dim_optim,
-            num_warmup_steps=self.args.low_dim_warmup_steps,
-            num_training_steps=self.args.max_optimization_steps_per_sample,
-            min_lr=1e-3,
-        )
+
+        # Load checkpoint if specified
+        if self.args.low_dim_proj_checkpoint is not None:
+            if not os.path.exists(self.args.low_dim_proj_checkpoint):
+                raise ValueError(f"low_dim_proj_checkpoint does not exist: {self.args.low_dim_proj_checkpoint}")
+            checkpoint = torch.load(self.args.low_dim_proj_checkpoint, map_location="cpu")
+            # Load projection state_dict
+            if isinstance(checkpoint, dict):
+                if "low_dim_projection" in checkpoint:
+                    low_dim_prjoection.load_state_dict(checkpoint["low_dim_projection"])
+                elif "state_dict" in checkpoint:
+                    low_dim_prjoection.load_state_dict(checkpoint["state_dict"])
+                else:
+                    # Assume the checkpoint is the state_dict itself
+                    low_dim_prjoection.load_state_dict(checkpoint)
+            else:
+                # Assume the checkpoint is the state_dict itself
+                low_dim_prjoection.load_state_dict(checkpoint)
+            print(f"Loaded low-dimensional projection state from {self.args.low_dim_proj_checkpoint}")
+
+        # Only create optimizer and scheduler if training is enabled
+        if self.args.low_dim_proj_train:
+            low_dim_optim = AdamW(
+                low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay
+            )
+            low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+                optimizer=low_dim_optim,
+                num_warmup_steps=self.args.low_dim_warmup_steps,
+                num_training_steps=self.args.max_optimization_steps_per_sample,
+                min_lr=1e-3,
+            )
+        else:
+            # Freeze the projection parameters
+            for param in low_dim_prjoection.parameters():
+                param.requires_grad = False
+            low_dim_optim = None
+            low_dim_scheduler = None
 
         return low_dim_prjoection, low_dim_optim, low_dim_scheduler
 
@@ -1286,7 +1316,7 @@ class MyTrainer:
                         log_lr = lr_scheduler.get_last_lr()[0]
 
                     low_dim_lr = None
-                    if self.args.low_dim_projection:
+                    if self.args.low_dim_projection and low_dim_scheduler is not None:
                         low_dim_lr = low_dim_scheduler.get_last_lr()[0]
 
                     pbar.set_postfix(
@@ -1315,10 +1345,11 @@ class MyTrainer:
                         lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
-                    if self.args.low_dim_projection:
+                    if self.args.low_dim_projection and self.args.low_dim_proj_train and low_dim_optim is not None:
                         low_dim_optim.step()
                         low_dim_optim.zero_grad()
-                        low_dim_scheduler.step()
+                        if low_dim_scheduler is not None:
+                            low_dim_scheduler.step()
 
                     last_loss_val = float(loss.item())
                     last_conv = convergece_per_sample.detach().cpu()

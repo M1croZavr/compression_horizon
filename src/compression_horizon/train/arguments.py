@@ -31,6 +31,14 @@ class MyTrainingArguments(TrainingArguments):
         metadata={"help": "The scheduler type to use."},
     )
     low_dim_warmup_steps: int = field(default=100, metadata={"help": "Linear warmup over warmup_steps."})
+    low_dim_proj_checkpoint: str | None = field(
+        default=None,
+        metadata={"help": "Path to checkpoint file to load low-dimensional projection state from."},
+    )
+    low_dim_proj_train: bool = field(
+        default=True,
+        metadata={"help": "Whether to optimize the low-dimensional projection (False to freeze it)."},
+    )
 
     embedding_init_method: str = field(
         default="random",
