@@ -139,6 +139,12 @@ if __name__ == "__main__":
         default=None,
         help="Initialization method to use when generating embeddings for load_from_disk (when embedding_init_path is empty). If not specified, defaults to 'random'.",
     )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=None,
+        help="Learning rate for optimization. If not specified, defaults to 0.01 and is not included in output dir.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -188,6 +194,7 @@ if __name__ == "__main__":
         # Build command arguments
         limit_dataset_items = args.limit_dataset_items if args.limit_dataset_items is not None else 10
         embedding_init_method = args.embedding_init_method if args.embedding_init_method is not None else "random0.02"
+        learning_rate = args.learning_rate if args.learning_rate is not None else 0.01
         cmd_args = [
             "--remove_unused_columns False",
             "--num_alignment_layers 1",
@@ -198,7 +205,7 @@ if __name__ == "__main__":
             "--per_device_train_batch_size 1",
             f"--max_optimization_steps_per_sample {max_optimization_steps_per_sample}",
             f"--max_optimization_steps_per_token {max_optimization_steps_per_token}",
-            "--learning_rate 0.01",
+            f"--learning_rate {learning_rate}",
             "--progressive_train 1",
             f"--embedding_init_method {embedding_init_method}",
             f"--limit_dataset_items {limit_dataset_items}",

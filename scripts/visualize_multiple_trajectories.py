@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from datasets import Dataset
 from sklearn.decomposition import PCA
+from tabulate import tabulate
 from tqdm.auto import tqdm
 
 
@@ -56,7 +57,7 @@ def collate_stages_by_sample(
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
-) -> Tuple[np.ndarray, List[str]]:
+) -> Tuple[np.ndarray, List[str], Dict[str, Any], np.ndarray]:
     """Extract embedding trajectory from a dataset.
 
     Args:
@@ -64,7 +65,9 @@ def extract_trajectory(
         sample_id: Optional sample_id to filter. If None, uses first available sample.
 
     Returns:
-        Tuple of (embeddings array [n_stages, n_features], labels list)
+        Tuple of (embeddings array [n_stages, n_features], labels list, statistics dict, final_embedding)
+        Statistics dict contains: 'num_embeddings', 'total_steps'
+        final_embedding is the last embedding in the trajectory
     """
     ds = load_progressive_dataset(dataset_path)
     rows = filter_records(ds, sample_id=sample_id)
@@ -86,21 +89,30 @@ def extract_trajectory(
         stages = by_sid[first_sid]
         sample_id = first_sid
 
-    # Extract embeddings in order
+    # Extract embeddings in order and collect statistics
     embeddings = []
     labels = []
+    total_steps = 0
     for stage in stages:
         emb = flatten_embedding(stage)
         embeddings.append(emb)
         stage_seq_len = int(stage.get("stage_seq_len", -1))
         # stage_idx = int(stage.get("stage_index", -1))
         labels.append(f"L{stage_seq_len}")
+        # Sum up optimization steps
+        steps = int(stage.get("steps_taken", 0))
+        total_steps += steps
 
     if len(embeddings) == 0:
         raise ValueError(f"No embeddings found for sample {sample_id} in {dataset_path}")
 
     X = np.stack(embeddings, axis=0)
-    return X, labels
+    final_embedding = embeddings[-1]  # Last embedding
+    stats = {
+        "num_embeddings": len(embeddings),
+        "total_steps": total_steps,
+    }
+    return X, labels, stats, final_embedding
 
 
 def plot_pca_trajectories(
@@ -174,15 +186,19 @@ def plot_pca_trajectories(
     if n_components == 2:
         # Single 2D plot
         plt.figure(figsize=(10, 8))
+        legend_handles = []
         for idx, (traj_transformed, name, color) in enumerate(zip(transformed_trajectories, checkpoint_names, colors)):
             x_data = traj_transformed[:, 0]
             y_data = traj_transformed[:, 1]
 
-            # Plot trajectory line
-            plt.plot(x_data, y_data, color=color, alpha=0.5, linewidth=1.5, linestyle="--", label=name)
+            # Plot trajectory line (without label)
+            plt.plot(x_data, y_data, color=color, alpha=0.5, linewidth=1.5, linestyle="--")
 
             # Plot points
             plt.scatter(x_data, y_data, c=[color], s=60, alpha=0.7, edgecolors="black", linewidths=0.5)
+
+            # Create legend handle with scatter marker
+            legend_handles.append(plt.scatter([], [], c=color, s=60, alpha=0.7, edgecolors="black", linewidths=0.5, label=name))
 
             # Add labels if requested
             if show_labels and labels_list is not None and idx < len(labels_list):
@@ -199,7 +215,7 @@ def plot_pca_trajectories(
                             should_label = False
                             break
                     if should_label:
-                        plt.text(x_data[k], y_data[k], lab, fontsize=8, ha="left", va="bottom", color=color)
+                        plt.text(x_data[k], y_data[k], lab, fontsize=12, ha="left", va="bottom", color=color)
                         labeled_positions.append([x_data[k], y_data[k]])
 
             # Mark start and end points
@@ -207,13 +223,13 @@ def plot_pca_trajectories(
                 plt.scatter(x_data[0], y_data[0], c=[color], s=150, marker="o", edgecolors="black", linewidths=2, zorder=5)
                 plt.scatter(x_data[-1], y_data[-1], c=[color], s=150, marker="s", edgecolors="black", linewidths=2, zorder=5)
 
-        plt.xlabel(f"PC1 ({explained_var[0]:.4f})", fontsize=14)
-        plt.ylabel(f"PC2 ({explained_var[1]:.4f})", fontsize=14)
+        plt.xlabel(f"PC1 ({explained_var[0]:.4f})", fontsize=18)
+        plt.ylabel(f"PC2 ({explained_var[1]:.4f})", fontsize=18)
         plt.title(
             f"PCA Trajectories Comparison\nCumulative variance: {explained_var.sum():.4f}",
-            fontsize=16,
+            fontsize=20,
         )
-        plt.legend(loc="best", fontsize=10)
+        plt.legend(handles=legend_handles, loc="best", fontsize=18)
         plt.grid(True, alpha=0.3)
         plt.axis("equal")
         plt.tight_layout()
@@ -235,6 +251,7 @@ def plot_pca_trajectories(
         else:
             axes = axes.flatten()
 
+        legend_handles = []
         for pair_idx, (i, j) in enumerate(pairs):
             ax = axes[pair_idx]
 
@@ -242,24 +259,30 @@ def plot_pca_trajectories(
                 x_data = traj_transformed[:, i]
                 y_data = traj_transformed[:, j]
 
-                # Plot trajectory line
-                ax.plot(x_data, y_data, color=color, alpha=0.5, linewidth=1.5, linestyle="--", label=name)
+                # Plot trajectory line (without label)
+                ax.plot(x_data, y_data, color=color, alpha=0.5, linewidth=1.5, linestyle="--")
 
                 # Plot points
                 ax.scatter(x_data, y_data, c=[color], s=60, alpha=0.7, edgecolors="black", linewidths=0.5)
+
+                # Create legend handle with scatter marker (only for first subplot)
+                if pair_idx == 0:
+                    legend_handles.append(
+                        ax.scatter([], [], c=color, s=60, alpha=0.7, edgecolors="black", linewidths=0.5, label=name)
+                    )
 
                 # Mark start and end points
                 if len(x_data) > 0:
                     ax.scatter(x_data[0], y_data[0], c=[color], s=150, marker="o", edgecolors="black", linewidths=2, zorder=5)
                     ax.scatter(x_data[-1], y_data[-1], c=[color], s=150, marker="s", edgecolors="black", linewidths=2, zorder=5)
 
-            ax.set_xlabel(f"PC{i+1} ({explained_var[i]:.3f})", fontsize=10)
-            ax.set_ylabel(f"PC{j+1} ({explained_var[j]:.3f})", fontsize=10)
-            ax.set_title(f"PC{i+1} vs PC{j+1}", fontsize=12)
+            ax.set_xlabel(f"PC{i+1} ({explained_var[i]:.3f})", fontsize=14)
+            ax.set_ylabel(f"PC{j+1} ({explained_var[j]:.3f})", fontsize=14)
+            ax.set_title(f"PC{i+1} vs PC{j+1}", fontsize=16)
             ax.grid(True, alpha=0.3)
             ax.axis("equal")
             if pair_idx == 0:
-                ax.legend(loc="best", fontsize=8)
+                ax.legend(handles=legend_handles, loc="best", fontsize=16)
 
         # Hide unused subplots
         for idx in range(n_pairs, len(axes)):
@@ -267,7 +290,7 @@ def plot_pca_trajectories(
 
         plt.suptitle(
             f"PCA Trajectories Comparison (4 components, cumulative variance: {explained_var.sum():.4f})",
-            fontsize=14,
+            fontsize=18,
         )
         plt.tight_layout()
         plt.savefig(outfile, dpi=300)
@@ -275,6 +298,143 @@ def plot_pca_trajectories(
         print(f"Saved 4-component PCA plot to: {outfile}")
     else:
         raise ValueError(f"n_components must be 2 or 4, got {n_components}")
+
+
+def compute_pairwise_distances(final_embeddings: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute pairwise distances between final embeddings.
+
+    Args:
+        final_embeddings: List of final embedding arrays
+
+    Returns:
+        Tuple of (l2_distances, l1_distances, cosine_distances) matrices
+    """
+    n = len(final_embeddings)
+    if n < 2:
+        return np.array([]), np.array([]), np.array([])
+
+    # Stack embeddings
+    X = np.stack(final_embeddings, axis=0)  # [n_experiments, n_features]
+
+    # Compute L2 distances
+    diffs = X[:, None, :] - X[None, :, :]
+    l2_distances = np.linalg.norm(diffs, axis=-1)
+
+    # Compute L1 distances
+    l1_distances = np.linalg.norm(diffs, ord=1, axis=-1)
+
+    # Compute cosine distances
+    Xn = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+    cos_sim = (Xn @ Xn.T).clip(-1.0, 1.0)
+    cosine_distances = 1.0 - cos_sim
+
+    return l2_distances, l1_distances, cosine_distances
+
+
+def print_statistics_table(
+    checkpoint_names: List[str],
+    statistics: List[Dict[str, Any]],
+):
+    """Print a statistics table using tabulate.
+
+    Args:
+        checkpoint_names: List of experiment labels
+        statistics: List of statistics dicts, each containing 'num_embeddings' and 'total_steps'
+    """
+    if len(checkpoint_names) == 0 or len(statistics) == 0:
+        return
+
+    # Prepare table data
+    table_data = []
+    for name, stats in zip(checkpoint_names, statistics):
+        table_data.append(
+            [
+                name,
+                stats.get("num_embeddings", 0),
+                stats.get("total_steps", 0),
+            ]
+        )
+
+    headers = ["Experiment Label", "Number of Compressed Embeddings", "Total Optimization Steps"]
+    table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
+
+    print("\n" + "=" * 80)
+    print("Progressive Embeddings Statistics")
+    print("=" * 80)
+    print(table)
+    print("=" * 80 + "\n")
+
+
+def print_pairwise_distances_table(
+    checkpoint_names: List[str],
+    l2_distances: np.ndarray,
+    l1_distances: np.ndarray,
+    cosine_distances: np.ndarray,
+):
+    """Print pairwise distances tables using tabulate.
+
+    Args:
+        checkpoint_names: List of experiment labels
+        l2_distances: L2 distance matrix [n_experiments, n_experiments]
+        l1_distances: L1 distance matrix [n_experiments, n_experiments]
+        cosine_distances: Cosine distance matrix [n_experiments, n_experiments]
+    """
+    if len(checkpoint_names) < 2 or l2_distances.size == 0:
+        return
+
+    n = len(checkpoint_names)
+
+    # L2 distances table
+    print("\n" + "=" * 80)
+    print("Pairwise L2 Distances Between Final Embeddings")
+    print("=" * 80)
+    l2_table_data = []
+    for i in range(n):
+        row = [checkpoint_names[i]]
+        for j in range(n):
+            if i == j:
+                row.append("0.000")
+            else:
+                row.append(f"{l2_distances[i, j]:.4f}")
+        l2_table_data.append(row)
+    l2_headers = ["Experiment"] + checkpoint_names
+    l2_table = tabulate(l2_table_data, headers=l2_headers, tablefmt="grid", numalign="right", stralign="left")
+    print(l2_table)
+
+    # L1 distances table
+    print("\n" + "=" * 80)
+    print("Pairwise L1 Distances Between Final Embeddings")
+    print("=" * 80)
+    l1_table_data = []
+    for i in range(n):
+        row = [checkpoint_names[i]]
+        for j in range(n):
+            if i == j:
+                row.append("0.000")
+            else:
+                row.append(f"{l1_distances[i, j]:.4f}")
+        l1_table_data.append(row)
+    l1_headers = ["Experiment"] + checkpoint_names
+    l1_table = tabulate(l1_table_data, headers=l1_headers, tablefmt="grid", numalign="right", stralign="left")
+    print(l1_table)
+
+    # Cosine distances table
+    print("\n" + "=" * 80)
+    print("Pairwise Cosine Distances Between Final Embeddings")
+    print("=" * 80)
+    cos_table_data = []
+    for i in range(n):
+        row = [checkpoint_names[i]]
+        for j in range(n):
+            if i == j:
+                row.append("0.000")
+            else:
+                row.append(f"{cosine_distances[i, j]:.4f}")
+        cos_table_data.append(row)
+    cos_headers = ["Experiment"] + checkpoint_names
+    cos_table = tabulate(cos_table_data, headers=cos_headers, tablefmt="grid", numalign="right", stralign="left")
+    print(cos_table)
+    print("=" * 80 + "\n")
 
 
 def parse_names_mapping(names_str: Optional[str]) -> Tuple[Dict[str, str], Optional[List[str]]]:
@@ -364,12 +524,16 @@ def main():
     trajectories = []
     checkpoint_names = []
     labels_list = []
+    statistics_list = []
+    final_embeddings = []
 
     for idx, checkpoint_path in enumerate(args.checkpoints):
         try:
-            traj, labels = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
+            traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
             trajectories.append(traj)
             labels_list.append(labels)
+            statistics_list.append(stats)
+            final_embeddings.append(final_emb)
 
             # Determine name for this checkpoint
             if positional_names is not None:
@@ -392,6 +556,15 @@ def main():
 
     if len(trajectories) == 0:
         raise ValueError("No valid trajectories loaded")
+
+    # Print statistics table
+    if len(statistics_list) > 0:
+        print_statistics_table(checkpoint_names, statistics_list)
+
+    # Compute and print pairwise distances
+    if len(final_embeddings) >= 2:
+        l2_distances, l1_distances, cosine_distances = compute_pairwise_distances(final_embeddings)
+        print_pairwise_distances_table(checkpoint_names, l2_distances, l1_distances, cosine_distances)
 
     # Create output directory if needed
     os.makedirs(os.path.dirname(args.output) if os.path.dirname(args.output) else ".", exist_ok=True)
