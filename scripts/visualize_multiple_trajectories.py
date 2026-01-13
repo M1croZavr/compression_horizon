@@ -146,8 +146,30 @@ def plot_pca_trajectories(
         traj_transformed = pca.transform(traj)
         transformed_trajectories.append(traj_transformed)
 
-    # Create color map for checkpoints
-    colors = plt.cm.tab10(np.linspace(0, 1, len(trajectories)))
+    # Create distinct colors for checkpoints
+    # Use a predefined set of highly distinct colors with maximum hue separation
+    distinct_colors = [
+        "#E6194B",  # bright red
+        "#3CB44B",  # bright green
+        "#FFE119",  # bright yellow
+        "#4363D8",  # bright blue
+        "#F58231",  # bright orange
+        "#911EB4",  # bright purple
+        "#42D4F4",  # bright cyan
+        "#F032E6",  # bright magenta
+        "#BFEF45",  # lime green
+        "#FABED4",  # light pink
+        "#469990",  # teal
+        "#DCBEFF",  # light purple
+        "#9A6324",  # brown
+        "#FFFAC8",  # beige
+        "#800000",  # maroon
+        "#000075",  # navy
+        "#A9A9A9",  # gray
+        "#000000",  # black
+    ]
+    # Cycle through distinct colors if we have more trajectories than colors
+    colors = [distinct_colors[i % len(distinct_colors)] for i in range(len(trajectories))]
 
     if n_components == 2:
         # Single 2D plot
@@ -255,16 +277,31 @@ def plot_pca_trajectories(
         raise ValueError(f"n_components must be 2 or 4, got {n_components}")
 
 
-def parse_names_mapping(names_str: Optional[str]) -> Dict[str, str]:
-    """Parse names mapping from string format 'key1:value1,key2:value2'."""
+def parse_names_mapping(names_str: Optional[str]) -> Tuple[Dict[str, str], Optional[List[str]]]:
+    """Parse names mapping from string.
+
+    Supports two formats:
+    1. Path-based: 'path1:name1,path2:name2' (returns dict, None)
+    2. Positional list: 'name1,name2,name3' (returns empty dict, list of names)
+
+    Returns:
+        Tuple of (path_mapping_dict, positional_names_list)
+    """
     if names_str is None:
-        return {}
-    mapping = {}
-    for pair in names_str.split(","):
-        if ":" in pair:
-            key, value = pair.split(":", 1)
-            mapping[key.strip()] = value.strip()
-    return mapping
+        return {}, None
+
+    # Check if it contains colons (path-based mapping)
+    if ":" in names_str:
+        mapping = {}
+        for pair in names_str.split(","):
+            if ":" in pair:
+                key, value = pair.split(":", 1)
+                mapping[key.strip()] = value.strip()
+        return mapping, None
+    else:
+        # Positional list format
+        names = [name.strip() for name in names_str.split(",") if name.strip()]
+        return {}, names if names else None
 
 
 def main():
@@ -306,28 +343,41 @@ def main():
         "--names_mapping",
         type=str,
         default=None,
-        help="Optional mapping of checkpoint paths to display names. Format: 'path1:name1,path2:name2'",
+        help="Optional mapping of checkpoint paths to display names. "
+        "Two formats supported: 1) Path-based: 'path1:name1,path2:name2' "
+        "2) Positional list: 'name1,name2,name3' (corresponds to --checkpoints order)",
     )
 
     args = parser.parse_args()
 
     # Parse names mapping
-    names_mapping = parse_names_mapping(args.names_mapping)
+    path_mapping, positional_names = parse_names_mapping(args.names_mapping)
+
+    # Validate positional names length if provided
+    if positional_names is not None and len(positional_names) != len(args.checkpoints):
+        raise ValueError(
+            f"Number of names in --names_mapping ({len(positional_names)}) "
+            f"does not match number of checkpoints ({len(args.checkpoints)})"
+        )
 
     # Extract trajectories from each checkpoint
     trajectories = []
     checkpoint_names = []
     labels_list = []
 
-    for checkpoint_path in args.checkpoints:
+    for idx, checkpoint_path in enumerate(args.checkpoints):
         try:
             traj, labels = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
             trajectories.append(traj)
             labels_list.append(labels)
 
-            # Use mapping if available, otherwise use checkpoint path
-            if checkpoint_path in names_mapping:
-                checkpoint_names.append(names_mapping[checkpoint_path])
+            # Determine name for this checkpoint
+            if positional_names is not None:
+                # Use positional mapping
+                checkpoint_names.append(positional_names[idx])
+            elif checkpoint_path in path_mapping:
+                # Use path-based mapping
+                checkpoint_names.append(path_mapping[checkpoint_path])
             else:
                 # Extract a short name from the path
                 name = os.path.basename(os.path.dirname(checkpoint_path))
