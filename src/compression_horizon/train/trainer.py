@@ -1103,7 +1103,7 @@ class MyTrainer:
         return None
 
     def _prepare_low_dim_proj(self, embedding_dim):
-        low_dim_prjoection = nn.Linear(self.args.low_dim_size, embedding_dim=embedding_dim)
+        low_dim_prjoection = nn.Linear(self.args.low_dim_size, embedding_dim)
 
         # Load checkpoint if specified
         if self.args.low_dim_proj_checkpoint is not None:
@@ -1389,6 +1389,11 @@ class MyTrainer:
                         orig_embedding = orig_comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
 
                         initialization_embedding = initialization_embeddings[j].to(torch.float32).numpy().tolist()
+                        if low_dim_prjoection_w_cpu is not None:
+                            low_dim_prjoection_w_cpu = low_dim_prjoection_w_cpu.to(torch.float32).numpy().tolist()
+                        if low_dim_prjoection_b_cpu is not None:
+                            low_dim_prjoection_b_cpu = low_dim_prjoection_b_cpu.to(torch.float32).numpy().tolist()
+
                         collected_rows.append(
                             {
                                 "sample_id": int(sample_id_counter + j),
@@ -1396,8 +1401,8 @@ class MyTrainer:
                                 "stage_seq_len": int(seq_len),
                                 "text": text,
                                 "embedding": embedding,
-                                "low_dim_prjoection_w": low_dim_prjoection_w_cpu.to(torch.float32).numpy().tolist(),
-                                "low_dim_prjoection_b": low_dim_prjoection_b_cpu.to(torch.float32).numpy().tolist(),
+                                "low_dim_prjoection_w": low_dim_prjoection_w_cpu,
+                                "low_dim_prjoection_b": low_dim_prjoection_b_cpu,
                                 "orig_embedding": orig_embedding,
                                 "pca_coefficients_to_save": pca_coefficients_to_save,
                                 "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization

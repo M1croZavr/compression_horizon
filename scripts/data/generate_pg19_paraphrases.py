@@ -125,7 +125,8 @@ def generate_paraphrases_for_dataset(
     """Generate full and partial paraphrases for all samples in the dataset."""
     os.makedirs(output_dir, exist_ok=True)
 
-    results = []
+    full_paraphrase_results = []
+    partial_paraphrase_results = []
     total_samples = len(dataset)
 
     for idx, example in enumerate(dataset):
@@ -152,30 +153,50 @@ def generate_paraphrases_for_dataset(
             prefix_tokens=prefix_tokens,
         )
 
-        result = {
+        # Add to full paraphrase dataset
+        full_result = {
             "sample_id": idx,
+            "text": full_paraphrase,
             "original_text": example["original_text"],
             "truncated_text": truncated_text,
             "num_tokens": example["num_tokens"],
-            "full_paraphrase": full_paraphrase,
-            "partial_paraphrase": partial_paraphrase,
         }
-        results.append(result)
+        full_paraphrase_results.append(full_result)
+
+        # Add to partial paraphrase dataset
+        partial_result = {
+            "sample_id": idx,
+            "text": partial_paraphrase,
+            "original_text": example["original_text"],
+            "truncated_text": truncated_text,
+            "num_tokens": example["num_tokens"],
+        }
+        partial_paraphrase_results.append(partial_result)
 
         # Save intermediate results periodically
         if (idx + 1) % 10 == 0:
-            intermediate_dataset = Dataset.from_list(results)
-            intermediate_path = os.path.join(output_dir, "paraphrases_intermediate")
-            intermediate_dataset.save_to_disk(intermediate_path)
-            print(f"Saved intermediate results to {intermediate_path} ({idx + 1} samples)")
+            full_intermediate = Dataset.from_list(full_paraphrase_results)
+            partial_intermediate = Dataset.from_list(partial_paraphrase_results)
+            full_intermediate_path = os.path.join(output_dir, "full_paraphrases_intermediate")
+            partial_intermediate_path = os.path.join(output_dir, "partial_paraphrases_intermediate")
+            full_intermediate.save_to_disk(full_intermediate_path)
+            partial_intermediate.save_to_disk(partial_intermediate_path)
+            print(f"Saved intermediate results ({idx + 1} samples)")
 
-    # Save final results
-    final_dataset = Dataset.from_list(results)
-    final_path = os.path.join(output_dir, "paraphrases")
-    final_dataset.save_to_disk(final_path)
-    print(f"\nSaved final results to {final_path} ({len(results)} samples)")
+    # Save final results - separate datasets
+    full_dataset = Dataset.from_list(full_paraphrase_results)
+    partial_dataset = Dataset.from_list(partial_paraphrase_results)
 
-    return final_dataset
+    full_path = os.path.join(output_dir, "full_paraphrases")
+    partial_path = os.path.join(output_dir, "partial_paraphrases")
+
+    full_dataset.save_to_disk(full_path)
+    partial_dataset.save_to_disk(partial_path)
+
+    print(f"\nSaved full paraphrases to {full_path} ({len(full_paraphrase_results)} samples)")
+    print(f"Saved partial paraphrases to {partial_path} ({len(partial_paraphrase_results)} samples)")
+
+    return full_dataset, partial_dataset
 
 
 def main():
@@ -248,7 +269,7 @@ def main():
     print(f"Output directory: {args.output_dir}")
 
     # Generate paraphrases
-    generate_paraphrases_for_dataset(
+    full_dataset, partial_dataset = generate_paraphrases_for_dataset(
         dataset=dataset,
         client=client,
         model=args.model,
@@ -257,6 +278,9 @@ def main():
         prefix_tokens=args.prefix_tokens,
     )
 
+    print("\nSummary:")
+    print(f"  Full paraphrases: {len(full_dataset)} samples")
+    print(f"  Partial paraphrases: {len(partial_dataset)} samples")
     print("\nDone!")
 
 
