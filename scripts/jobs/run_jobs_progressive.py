@@ -282,6 +282,10 @@ if __name__ == "__main__":
             optim_suffix = "_".join(optim_params)
             exp_suffix = f"{exp_suffix}_{optim_suffix}"
 
+        # Add learning_rate to output dir if specified (non-default)
+        if args.learning_rate is not None and args.learning_rate != 0.01:
+            exp_suffix = f"{exp_suffix}_lr_{args.learning_rate}"
+
         out_dir_name = f"artifacts/experiments_progressive/{exp_suffix}"
         if os.path.exists(out_dir_name):
             print("Experiment", out_dir_name, "exists, skip.")
