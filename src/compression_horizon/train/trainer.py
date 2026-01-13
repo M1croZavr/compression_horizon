@@ -172,8 +172,149 @@ class MyTrainer:
         mvn_dist = None
         pca_components = None
         pca_mean = None
+        loaded_embeddings = None
 
-        if init_method == "pretrained_pca":
+        if init_method == "load_from_disk":
+            # Load embeddings from disk or generate if path is empty
+            if not self.args.embedding_init_path or not os.path.exists(self.args.embedding_init_path):
+                # Generate embeddings using the specified method
+                if not self.args.embedding_init_path:
+                    # Determine save path - use output_dir if available, otherwise current directory
+                    if self.args.output_dir:
+                        os.makedirs(self.args.output_dir, exist_ok=True)
+                        save_path = os.path.join(self.args.output_dir, "generated_compression_embeddings.pt")
+                    else:
+                        save_path = "generated_compression_embeddings.pt"
+                else:
+                    # Path specified but doesn't exist - generate and save to that path
+                    save_path = self.args.embedding_init_path
+                    save_dir = os.path.dirname(save_path)
+                    if save_dir:
+                        os.makedirs(save_dir, exist_ok=True)
+
+                # Get model dimensions for generating embeddings
+                hidden_size = model.config.hidden_size
+                num_compression_tokens = self.args.number_of_mem_tokens
+
+                # Prepare initialization for the generation method
+                gen_init_method = self.args.load_from_disk_embedding_init_method
+                gen_mvn_dist = None
+                gen_pca_components = None
+                gen_pca_mean = None
+                gen_loaded_embeddings = None
+
+                # Prepare initialization parameters for generation method
+                if gen_init_method == "mvnormal":
+                    with torch.no_grad():
+                        emb_weight = None
+                        try:
+                            emb_weight = model.model.embed_tokens.weight
+                        except Exception:
+                            sd = model.state_dict()
+                            if "transformer.wte.weight" in sd:
+                                emb_weight = sd["transformer.wte.weight"]
+                            else:
+                                for k in sd.keys():
+                                    if k.endswith("embed_tokens.weight") or k.endswith("wte.weight"):
+                                        emb_weight = sd[k]
+                                        break
+                        if emb_weight is not None:
+                            # Move to CPU for consistency
+                            pre_expansion_embeddings = (emb_weight[:-3, :] if emb_weight.shape[0] > 3 else emb_weight).cpu()
+                            mvn_mu = pre_expansion_embeddings.mean(dim=0).to(torch.float32)
+                            n = pre_expansion_embeddings.size(0)
+                            centered = pre_expansion_embeddings.to(torch.float32) - mvn_mu
+                            sigma = (centered.T @ centered) / max(n, 1)
+                            eps = 1e-6
+                            sigma = sigma + eps * torch.eye(sigma.shape[0], device=sigma.device, dtype=sigma.dtype)
+                            covariance = 1e-5 * sigma
+                            try:
+                                gen_mvn_dist = torch.distributions.MultivariateNormal(mvn_mu, covariance_matrix=covariance)
+                            except Exception:
+                                diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
+                                gen_mvn_dist = torch.distributions.MultivariateNormal(
+                                    mvn_mu, covariance_matrix=torch.diag(diag_cov)
+                                )
+                        else:
+                            raise ValueError("cant run mv normal initialization method")
+                elif gen_init_method == "pretrained_pca":
+                    if not self.args.pretrained_pca_path:
+                        raise ValueError(
+                            "pretrained_pca_path must be specified when using load_from_disk_embedding_init_method=pretrained_pca"
+                        )
+                    if not os.path.exists(self.args.pretrained_pca_path):
+                        raise ValueError(f"pretrained_pca_path does not exist: {self.args.pretrained_pca_path}")
+                    progressive_ds = Dataset.load_from_disk(self.args.pretrained_pca_path)
+                    first_sample_embeddings = []
+                    for i in range(len(progressive_ds)):
+                        row = progressive_ds[i]
+                        if int(row.get("sample_id", -1)) == 0:
+                            embedding = row.get("embedding")
+                            if embedding is not None:
+                                if isinstance(embedding, list):
+                                    emb_tensor = torch.tensor(embedding, dtype=torch.float32)
+                                else:
+                                    emb_tensor = torch.tensor(embedding, dtype=torch.float32)
+                                emb_flat = emb_tensor.reshape(-1).to(torch.float32).detach().cpu().numpy()
+                                first_sample_embeddings.append(emb_flat)
+                    if len(first_sample_embeddings) == 0:
+                        raise ValueError(f"No embeddings found for sample_id=0 in {self.args.pretrained_pca_path}")
+                    X = np.stack(first_sample_embeddings, axis=0)
+                    n_components = min(self.args.pretrained_pca_num_components, X.shape[0] - 1, X.shape[1])
+                    if n_components < 1:
+                        raise ValueError(f"Cannot fit PCA: need at least 2 samples, got {X.shape[0]}")
+                    pca = PCA(n_components=n_components, random_state=42)
+                    pca.fit(X)
+                    gen_pca_components = torch.tensor(pca.components_, dtype=torch.float32)
+                    gen_pca_mean = torch.tensor(pca.mean_, dtype=torch.float32)
+
+                # Generate embeddings using the specified method (batch_size=1, will be repeated later)
+                generated_embeddings = self._init_compression_tokens(
+                    1,
+                    num_compression_tokens,
+                    hidden_size,
+                    gen_init_method,
+                    gen_mvn_dist,
+                    token_embeddings=None,
+                    single_compressed_embeddings_initialization=None,
+                    pca_components=gen_pca_components,
+                    pca_mean=gen_pca_mean,
+                    loaded_embeddings=gen_loaded_embeddings,
+                )
+                # Extract the actual tensor (remove Parameter wrapper) and save
+                generated_embeddings_tensor = generated_embeddings.data.detach().clone().cpu()
+                torch.save(generated_embeddings_tensor, save_path)
+                print(
+                    f"Generated embeddings using method '{gen_init_method}' and saved to {save_path}: shape {generated_embeddings_tensor.shape}"
+                )
+                loaded_embeddings = generated_embeddings_tensor
+            else:
+                # Load embeddings from existing file
+                loaded_embeddings = torch.load(self.args.embedding_init_path, map_location="cpu")
+                # Ensure it's a tensor and convert to float32
+                if isinstance(loaded_embeddings, dict):
+                    # If it's a dict, try common keys
+                    if "compression_embeddings" in loaded_embeddings:
+                        loaded_embeddings = loaded_embeddings["compression_embeddings"]
+                    elif "state_dict" in loaded_embeddings:
+                        # If state_dict, try to find embedding key
+                        for key in loaded_embeddings["state_dict"].keys():
+                            if "compression" in key.lower() or "embedding" in key.lower():
+                                loaded_embeddings = loaded_embeddings["state_dict"][key]
+                                break
+                        else:
+                            raise ValueError(
+                                f"Could not find compression embeddings in state_dict at {self.args.embedding_init_path}"
+                            )
+                    else:
+                        # Try first value
+                        loaded_embeddings = next(iter(loaded_embeddings.values()))
+                if not isinstance(loaded_embeddings, torch.Tensor):
+                    loaded_embeddings = torch.tensor(loaded_embeddings, dtype=torch.float32)
+                loaded_embeddings = loaded_embeddings.to(torch.float32)
+                print(f"Loaded embeddings from {self.args.embedding_init_path}: shape {loaded_embeddings.shape}")
+
+        elif init_method == "pretrained_pca":
             # Load PCA components from pretrained progressive dataset
             if not self.args.pretrained_pca_path:
                 raise ValueError("pretrained_pca_path must be specified when using embedding_init_method=pretrained_pca")
@@ -255,7 +396,7 @@ class MyTrainer:
                         )
                 else:
                     raise ValueError("cant run mv normal initialization method")
-        return init_method, mvn_dist, pca_components, pca_mean
+        return init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings
 
     def _create_dataloader(self):
         return DataLoader(
@@ -276,6 +417,7 @@ class MyTrainer:
         single_compressed_embeddings_initialization=None,
         pca_components=None,
         pca_mean=None,
+        loaded_embeddings=None,
     ):
         if init_method == "mvnormal" and mvn_dist is not None:
             samples = mvn_dist.sample((batch_size, num_tokens))
@@ -375,6 +517,40 @@ class MyTrainer:
             reconstructed_flat = reconstructed_flat + pca_mean.unsqueeze(0)  # [batch, flattened_dim]
             # Reshape to [batch, num_tokens, hidden_size]
             trainable_embeddings = torch.nn.Parameter(reconstructed_flat.reshape(batch_size, num_tokens, hidden_size))
+        elif init_method == "load_from_disk":
+            assert loaded_embeddings is not None, "loaded_embeddings is required for `load_from_disk` init method"
+            # Ensure loaded_embeddings has the correct shape
+            # Expected shape: [num_tokens, hidden_size] or [1, num_tokens, hidden_size] or [batch_size, num_tokens, hidden_size]
+            if len(loaded_embeddings.shape) == 2:
+                # [num_tokens, hidden_size] -> repeat for batch
+                if loaded_embeddings.shape[0] != num_tokens or loaded_embeddings.shape[1] != hidden_size:
+                    raise ValueError(
+                        f"Loaded embeddings shape mismatch: got {loaded_embeddings.shape}, "
+                        f"expected [{num_tokens}, {hidden_size}] or [1, {num_tokens}, {hidden_size}]"
+                    )
+                trainable_embeddings = torch.nn.Parameter(
+                    loaded_embeddings.unsqueeze(0).repeat(batch_size, 1, 1).to(torch.float32)
+                )
+            elif len(loaded_embeddings.shape) == 3:
+                # [batch_or_1, num_tokens, hidden_size]
+                if loaded_embeddings.shape[1] != num_tokens or loaded_embeddings.shape[2] != hidden_size:
+                    raise ValueError(
+                        f"Loaded embeddings shape mismatch: got {loaded_embeddings.shape}, "
+                        f"expected [1, {num_tokens}, {hidden_size}] or [{batch_size}, {num_tokens}, {hidden_size}]"
+                    )
+                if loaded_embeddings.shape[0] == 1:
+                    # Single embedding, repeat for batch
+                    trainable_embeddings = torch.nn.Parameter(loaded_embeddings.repeat(batch_size, 1, 1).to(torch.float32))
+                elif loaded_embeddings.shape[0] == batch_size:
+                    # Already has correct batch size
+                    trainable_embeddings = torch.nn.Parameter(loaded_embeddings.to(torch.float32))
+                else:
+                    raise ValueError(
+                        f"Loaded embeddings batch size mismatch: got {loaded_embeddings.shape[0]}, "
+                        f"expected 1 or {batch_size}"
+                    )
+            else:
+                raise ValueError(f"Loaded embeddings must be 2D or 3D tensor, got shape {loaded_embeddings.shape}")
         else:
             raise ValueError(f"unsupported init method: {init_method}")
         return trainable_embeddings
@@ -470,7 +646,7 @@ class MyTrainer:
         device = get_device()
         model = self.model.to(device)
         freeze_model_parameters(model)
-        init_method, mvn_dist, pca_components, pca_mean = self._prepare_embedding_init(model)
+        init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = self._prepare_embedding_init(model)
         num_compression_tokens = self.args.number_of_mem_tokens
 
         # Collect per-sample artifacts for optional saving
@@ -491,6 +667,7 @@ class MyTrainer:
                 single_compressed_embeddings_initialization=None,
                 pca_components=pca_components,
                 pca_mean=pca_mean,
+                loaded_embeddings=loaded_embeddings,
             )
             single_compressed_embeddings_initialization = (
                 single_compressed_embeddings_initialization.data.detach().clone()
@@ -553,6 +730,7 @@ class MyTrainer:
                     token_embeddings=token_embeddings,
                     pca_components=pca_components,
                     pca_mean=pca_mean,
+                    loaded_embeddings=loaded_embeddings,
                 )  # [batch, mem, hidden]
                 # Save initialization embedding (before optimization)
                 initialization_embeddings = compression_token_embeddings.detach().clone().cpu()  # [batch, mem, hidden]
@@ -842,7 +1020,7 @@ class MyTrainer:
         device = get_device()
         model = self.model.to(device)
         freeze_model_parameters(model)
-        init_method, mvn_dist, pca_components, pca_mean = self._prepare_embedding_init(model)
+        init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = self._prepare_embedding_init(model)
         num_compression_tokens = self.args.number_of_mem_tokens
 
         # Collect per-sample artifacts for optional saving
@@ -861,6 +1039,7 @@ class MyTrainer:
             single_compressed_embeddings_initialization=None,
             pca_components=pca_components,
             pca_mean=pca_mean,
+            loaded_embeddings=loaded_embeddings,
         )
         # Save initialization embedding (before optimization) - shared across all samples in train_noop
         initialization_embedding_single = compression_token_embeddings_single.detach().clone().cpu()  # [1, mem, hidden]
@@ -1150,7 +1329,7 @@ class MyTrainer:
 
         model = self.model.to(device)
         freeze_model_parameters(model)
-        init_method, mvn_dist, pca_components, pca_mean = self._prepare_embedding_init(model)
+        init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = self._prepare_embedding_init(model)
 
         dataloader = self._create_dataloader()
 
@@ -1232,6 +1411,7 @@ class MyTrainer:
                     mvn_dist,
                     pca_components=pca_components,
                     pca_mean=pca_mean,
+                    loaded_embeddings=loaded_embeddings,
                 )
                 # Save initialization embedding (before optimization)
                 initialization_embeddings = compression_tokens.detach().clone().cpu()  # [batch, mem, hidden]

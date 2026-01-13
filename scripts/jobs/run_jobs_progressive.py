@@ -121,6 +121,18 @@ if __name__ == "__main__":
         default=True,
         help="Disable optimization of the low-dimensional projection (freeze it). Default: projection is trained.",
     )
+    parser.add_argument(
+        "--embedding_init_path",
+        type=str,
+        default=None,
+        help="Path to file containing initial compression embeddings (when embedding_init_method=load_from_disk). If not specified, not included in output dir.",
+    )
+    parser.add_argument(
+        "--load_from_disk_embedding_init_method",
+        type=str,
+        default=None,
+        help="Initialization method to use when generating embeddings for load_from_disk (when embedding_init_path is empty). If not specified, defaults to 'random'.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -222,6 +234,18 @@ if __name__ == "__main__":
         if not args.low_dim_proj_train:
             cmd_args.append("--low_dim_proj_train False")
             exp_suffix = f"{exp_suffix}_lowprojfrozen"
+
+        # Add embedding_init_path if specified
+        if args.embedding_init_path is not None:
+            cmd_args.append(f"--embedding_init_path {args.embedding_init_path}")
+            # Extract path name for suffix (last part of path, without extension)
+            path_name = os.path.basename(args.embedding_init_path).replace(".pt", "").replace(".pth", "")
+            exp_suffix = f"{exp_suffix}_embinit_{path_name}"
+
+        # Add load_from_disk_embedding_init_method if specified (non-default)
+        if args.load_from_disk_embedding_init_method is not None:
+            cmd_args.append(f"--load_from_disk_embedding_init_method {args.load_from_disk_embedding_init_method}")
+            exp_suffix = f"{exp_suffix}_embgen_{args.load_from_disk_embedding_init_method}"
 
         # Add optimizer parameters if specified (non-default)
         optim_params = []
