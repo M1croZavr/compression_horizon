@@ -240,4 +240,4 @@ if __name__ == "__main__":
             continue
 
         result = client.run_job(payload=payload)
-        print(out_dir_name)
+        print(out_dir_name, result)
