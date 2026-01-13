@@ -513,7 +513,24 @@ def build_latex_table(
 
 
 def load_dataset_rows(ds_path: str) -> List[dict]:
-    ds = load_from_disk(ds_path)
+    """
+    Load dataset rows, preferring a cached version without embeddings.
+    If the cached version doesn't exist, load the original, remove embeddings, and save the stripped version.
+    """
+    ds_path_stripped = ds_path + "_no_embeddings"
+
+    # Try to load the stripped version first
+    if Path(ds_path_stripped).exists():
+        ds = load_from_disk(ds_path_stripped)
+    else:
+        # Load original dataset
+        ds = load_from_disk(ds_path)
+        # Remove embedding column if it exists to save memory
+        if "embedding" in ds.column_names:
+            ds = ds.remove_columns("embedding")
+            # Save the stripped version for future use
+            ds.save_to_disk(ds_path_stripped)
+
     # Ensure plain Python data (avoid pandas requirement)
     return [dict(r) for r in ds]
 
