@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 from typing import Optional
 
 from datasets import Dataset, load_dataset
@@ -214,6 +215,62 @@ def create_lowercased_partial_dataset(
         print("Warning: push_to_hub is True but hub_dataset_id_lowercased_partial is not specified, skipping...")
 
     return lowercased_partial_dataset
+
+
+def create_random_suffix_shuffle_dataset(
+    dataset: Dataset,
+    tokenizer: AutoTokenizer,
+    prefix_tokens: int,
+    output_dir: str,
+    push_to_hub: bool = False,
+    hub_dataset_id_random_suffix_shuffle: Optional[str] = None,
+):
+    """Create a random suffix shuffle version: keep first prefix_tokens unchanged, shuffle words in remainder."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    def shuffle_suffix_words(example):
+        """Keep first prefix_tokens unchanged, shuffle words in the remainder."""
+        truncated_text = example["truncated_text"]
+        # Tokenize to split into prefix and remainder
+        tokens = tokenizer(truncated_text, return_tensors="pt")["input_ids"][0]
+        prefix_tokens_list = tokens[:prefix_tokens]
+        remainder_tokens_list = tokens[prefix_tokens:]
+        # Decode prefix and remainder separately
+        prefix_text = tokenizer.decode(prefix_tokens_list, skip_special_tokens=True)
+        remainder_text = tokenizer.decode(remainder_tokens_list, skip_special_tokens=True)
+        # Split remainder into words and shuffle
+        remainder_words = remainder_text.split()
+        random.shuffle(remainder_words)
+        # Join shuffled words back together
+        shuffled_remainder = " ".join(remainder_words)
+        # Concatenate prefix + shuffled remainder (add space if prefix doesn't end with one)
+        if prefix_text and not prefix_text.endswith(" "):
+            shuffled_text = prefix_text + " " + shuffled_remainder
+        else:
+            shuffled_text = prefix_text + shuffled_remainder
+        return {
+            "text": shuffled_text,
+            "original_text": example["original_text"],
+            "truncated_text": truncated_text,
+            "num_tokens": example["num_tokens"],
+        }
+
+    print("Creating random suffix shuffle dataset...")
+    shuffled_dataset = dataset.map(shuffle_suffix_words)
+
+    shuffled_path = os.path.join(output_dir, "random_suffix_shuffle")
+    shuffled_dataset.save_to_disk(shuffled_path)
+    print(f"Saved random suffix shuffle dataset to {shuffled_path} ({len(shuffled_dataset)} samples)")
+
+    # Push to hub if requested
+    if push_to_hub and hub_dataset_id_random_suffix_shuffle:
+        print(f"\nPushing random suffix shuffle dataset to hub: {hub_dataset_id_random_suffix_shuffle}")
+        shuffled_dataset.push_to_hub(hub_dataset_id_random_suffix_shuffle)
+        print(f"Successfully pushed random suffix shuffle dataset to {hub_dataset_id_random_suffix_shuffle}")
+    elif push_to_hub and not hub_dataset_id_random_suffix_shuffle:
+        print("Warning: push_to_hub is True but hub_dataset_id_random_suffix_shuffle is not specified, skipping...")
+
+    return shuffled_dataset
 
 
 def generate_paraphrases_for_dataset(
@@ -436,14 +493,20 @@ def main():
     parser.add_argument(
         "--datasets",
         type=str,
-        default="lowercased,lowercased_partial,full_paraphrases,partial_paraphrases",
-        help="Comma-separated list of dataset types to generate. Options: lowercased, lowercased_partial, full_paraphrases, partial_paraphrases (default: all)",
+        default="lowercased,lowercased_partial,full_paraphrases,partial_paraphrases,random_suffix_shuffle",
+        help="Comma-separated list of dataset types to generate. Options: lowercased, lowercased_partial, full_paraphrases, partial_paraphrases, random_suffix_shuffle (default: all)",
+    )
+    parser.add_argument(
+        "--hub_dataset_id_random_suffix_shuffle",
+        type=str,
+        default=None,
+        help="HuggingFace Hub dataset ID for random suffix shuffle dataset (e.g., 'username/dataset-random-suffix-shuffle')",
     )
 
     args = parser.parse_args()
 
     # Parse and validate dataset types
-    valid_datasets = {"lowercased", "lowercased_partial", "full_paraphrases", "partial_paraphrases"}
+    valid_datasets = {"lowercased", "lowercased_partial", "full_paraphrases", "partial_paraphrases", "random_suffix_shuffle"}
     requested_datasets = [d.strip() for d in args.datasets.split(",") if d.strip()]
     invalid_datasets = set(requested_datasets) - valid_datasets
     if invalid_datasets:
@@ -498,6 +561,17 @@ def main():
             hub_dataset_id_lowercased_partial=args.hub_dataset_id_lowercased_partial,
         )
 
+    # Create random suffix shuffle dataset
+    if "random_suffix_shuffle" in datasets_to_generate:
+        create_random_suffix_shuffle_dataset(
+            dataset=dataset,
+            tokenizer=tokenizer,
+            prefix_tokens=args.prefix_tokens,
+            output_dir=args.output_dir,
+            push_to_hub=args.push_to_hub,
+            hub_dataset_id_random_suffix_shuffle=args.hub_dataset_id_random_suffix_shuffle,
+        )
+
     # Generate paraphrases
     if "full_paraphrases" in datasets_to_generate or "partial_paraphrases" in datasets_to_generate:
         full_dataset, partial_dataset = generate_paraphrases_for_dataset(
@@ -519,6 +593,8 @@ def main():
         print("  Lowercased dataset: generated")
     if "lowercased_partial" in datasets_to_generate:
         print("  Lowercased partial dataset: generated")
+    if "random_suffix_shuffle" in datasets_to_generate:
+        print("  Random suffix shuffle dataset: generated")
     if "full_paraphrases" in datasets_to_generate and full_dataset:
         print(f"  Full paraphrases: {len(full_dataset)} samples")
     if "partial_paraphrases" in datasets_to_generate and partial_dataset:
