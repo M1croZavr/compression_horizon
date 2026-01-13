@@ -14,12 +14,11 @@ Supported artifact layouts:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
 import textwrap
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -29,9 +28,6 @@ from tabulate import tabulate
 from tqdm.auto import tqdm
 
 # ------------------------------- Utilities --------------------------------- #
-
-# Run summary cache version - increment when RunSummary structure changes
-RUN_SUMMARY_VERSION = "1.0"
 
 
 @dataclass
@@ -170,41 +166,7 @@ abbreviation = {
 }
 
 
-def load_run_summary_cache(run_dir_parent: str) -> Optional[RunSummary]:
-    """Load RunSummary from cache file if it exists and version matches."""
-    cache_file = os.path.join(run_dir_parent, "run_summary_cache.json")
-    if not os.path.exists(cache_file):
-        return None
-    try:
-        with open(cache_file, "r") as f:
-            cache_data = json.load(f)
-        if cache_data.get("version") != RUN_SUMMARY_VERSION:
-            return None
-        # Reconstruct RunSummary from dict
-        summary_dict = cache_data.get("summary")
-        if summary_dict is None:
-            return None
-        return RunSummary(**summary_dict)
-    except Exception as e:
-        print(f"Failed to load cache from {cache_file}: {e}", file=sys.stderr)
-        return None
-
-
-def save_run_summary_cache(run_dir_parent: str, summary: RunSummary) -> None:
-    """Save RunSummary to cache file in experiment directory."""
-    cache_file = os.path.join(run_dir_parent, "run_summary_cache.json")
-    try:
-        cache_data = {
-            "version": RUN_SUMMARY_VERSION,
-            "summary": asdict(summary),
-        }
-        with open(cache_file, "w") as f:
-            json.dump(cache_data, f, indent=2)
-    except Exception as e:
-        print(f"Failed to save cache to {cache_file}: {e}", file=sys.stderr)
-
-
-def aggregate_non_progressive(run_dir: str, ds_rows: List[dict], force: bool = False) -> RunSummary:
+def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     # Pull common properties – they should be constant within a run
     props_from_rows: Dict[str, Optional[object]] = {}
     for key in (
@@ -232,13 +194,6 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict], force: bool = F
     fin_loss = [r.get("final_loss") for r in ds_rows if r.get("final_loss") is not None]
 
     run_dir_parent = str(Path(run_dir).parent)
-
-    # Try to load from cache if not forcing regeneration
-    if not force:
-        cached_summary = load_run_summary_cache(run_dir_parent)
-        if cached_summary is not None:
-            return cached_summary
-
     run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
     if not os.path.exists(run_hash_file):
         print("Can't find run hash file:", run_hash_file)
@@ -297,12 +252,10 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict], force: bool = F
         final_loss_mean=safe_mean([float(x) for x in fin_loss]),
         final_loss_std=safe_std([float(x) for x in fin_loss]),
     )
-    # Save to cache
-    save_run_summary_cache(run_dir_parent, summary)
     return summary
 
 
-def aggregate_progressive(run_dir: str, ds_rows: List[dict], force: bool = False) -> RunSummary:
+def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     """
     For progressive runs, aggregate final stage per sample_id.
     We compute final_loss, final_convergence for the last stage and steps_taken stats.
@@ -344,13 +297,6 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict], force: bool = False
             break
 
     run_dir_parent = str(Path(run_dir).parent)
-
-    # Try to load from cache if not forcing regeneration
-    if not force:
-        cached_summary = load_run_summary_cache(run_dir_parent)
-        if cached_summary is not None:
-            return cached_summary
-
     run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
     if not os.path.exists(run_hash_file):
         print("Can't find run hash file:", run_hash_file)
@@ -404,8 +350,6 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict], force: bool = False
         steps_taken_std=safe_std([float(x) for x in steps_taken]),
         convergence_threshold=(float(cthr) if cthr is not None else None),
     )
-    # Save to cache
-    save_run_summary_cache(run_dir_parent, summary)
     return summary
 
 
@@ -581,11 +525,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         "final_convergence_mean, final_loss_mean, steps_taken_mean, convergence_threshold. "
         "If not specified, all columns are included.",
     )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force regeneration of run summary cache, ignoring existing cache files.",
-    )
 
     # Property filters
     def _parse_bool(x: str) -> bool:
@@ -630,25 +569,15 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     summaries: List[RunSummary] = []
     for ds_path, ds_type in tqdm(ds_paths, desc="Processing Runs"):
-        run_dir_parent = str(Path(ds_path).parent)
-
-        # Try to load from cache first (lazy loading - skip dataset rows if cache is valid)
-        summary = None
-        if not args.force:
-            summary = load_run_summary_cache(run_dir_parent)
-
-        # Only load dataset rows if cache is not available or force is True
-        if summary is None:
-            try:
-                rows = load_dataset_rows(ds_path)
-            except Exception as e:
-                print(f"Failed to load dataset at {ds_path}: {e}", file=sys.stderr)
-                continue
-            if ds_type == "compressed_prefixes":
-                summary = aggregate_non_progressive(ds_path, rows, force=args.force)
-            else:
-                summary = aggregate_progressive(ds_path, rows, force=args.force)
-
+        try:
+            rows = load_dataset_rows(ds_path)
+        except Exception as e:
+            print(f"Failed to load dataset at {ds_path}: {e}", file=sys.stderr)
+            continue
+        if ds_type == "compressed_prefixes":
+            summary = aggregate_non_progressive(ds_path, rows)
+        else:
+            summary = aggregate_progressive(ds_path, rows)
         if summary is None:
             continue
         summaries.append(summary)
