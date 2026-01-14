@@ -66,7 +66,7 @@ def extract_trajectory(
 
     Returns:
         Tuple of (embeddings array [n_stages, n_features], labels list, statistics dict, final_embedding)
-        Statistics dict contains: 'num_embeddings', 'total_steps'
+        Statistics dict contains: 'num_embeddings', 'total_steps', 'trajectory_length'
         final_embedding is the last embedding in the trajectory
     """
     ds = load_progressive_dataset(dataset_path)
@@ -108,9 +108,18 @@ def extract_trajectory(
 
     X = np.stack(embeddings, axis=0)
     final_embedding = embeddings[-1]  # Last embedding
+
+    # Compute trajectory length as sum of linear distances between consecutive points
+    trajectory_length = 0.0
+    if len(embeddings) > 1:
+        for i in range(len(embeddings) - 1):
+            dist = np.linalg.norm(embeddings[i + 1] - embeddings[i])
+            trajectory_length += dist
+
     stats = {
         "num_embeddings": len(embeddings),
         "total_steps": total_steps,
+        "trajectory_length": trajectory_length,
     }
     return X, labels, stats, final_embedding
 
@@ -351,11 +360,11 @@ def print_statistics_table(
             [
                 name,
                 stats.get("num_embeddings", 0),
-                stats.get("total_steps", 0),
+                f"{stats.get('trajectory_length', 0.0):.4f}",
             ]
         )
 
-    headers = ["Experiment Label", "Number of Compressed Embeddings", "Total Optimization Steps"]
+    headers = ["Experiment Label", "Number of Compressed Embeddings", "Trajectory Length"]
     table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
 
     print("\n" + "=" * 80)
