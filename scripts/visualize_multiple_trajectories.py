@@ -408,7 +408,7 @@ def print_statistics_table(
             ]
         )
 
-    headers = ["Experiment Label", "Number of Compressed Embeddings", "Trajectory Length", "PCA components explained 99% var"]
+    headers = ["Experiment", "# Compr. Tok", "Traj. Len", "# PCA expl 99% var"]
     table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
 
     print("\n" + "=" * 80)
