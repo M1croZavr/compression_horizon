@@ -74,20 +74,19 @@ def compute_num_pca_explained_99_var(embeddings: List[np.ndarray]) -> float:
         return float("nan")
 
     n_samples, n_features = X.shape
-    n_components = min(4, n_samples - 1, n_features)
-
-    if n_components < 1:
-        return float("nan")
 
     # Fit PCA with up to 4 components
-    max_PCA_components = 128
+    max_PCA_components = min(512, n_samples - 1, n_features)
+    if max_PCA_components < 1:
+        return float("nan")
+
     pca = PCA(n_components=max_PCA_components, random_state=42)
     pca.fit(X)
     explained_var_ratio = pca.explained_variance_ratio_
 
     # Return cumulative explained variance
     cumulative_var = np.cumsum(explained_var_ratio)
-    num_pca_for99_var = (cumulative_var > 0.99).sum()
+    num_pca_for99_var = (cumulative_var < 0.99).sum()
     if num_pca_for99_var == max_PCA_components:
         num_pca_for99_var = -1
 
