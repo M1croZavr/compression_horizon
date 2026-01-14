@@ -179,6 +179,13 @@ if __name__ == "__main__":
     with open(os.path.join(output_dir, "cmd_hash.txt"), "w", encoding="utf-8") as f:
         f.write(cmd_hash8 + "\n")
 
+    # Set random seed early for reproducibility
+    from compression_horizon.utils.launch import set_launch_seed
+
+    random_seed = getattr(training_args, "random_seed", 42)
+    set_launch_seed(random_seed)
+    print(f"Random seed set to: {random_seed}")
+
     torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
     model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)

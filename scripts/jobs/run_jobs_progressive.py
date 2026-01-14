@@ -147,6 +147,12 @@ if __name__ == "__main__":
         help="Learning rate for optimization. If not specified, defaults to 0.01 and is not included in output dir.",
     )
     parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility. If not specified, defaults to 42 and is not included in output dir.",
+    )
+    parser.add_argument(
         "--progressive_reset_lr_scheduler_on_non_convergence",
         action="store_true",
         default=False,
@@ -304,6 +310,11 @@ if __name__ == "__main__":
         # Add learning_rate to output dir if specified (non-default)
         if args.learning_rate is not None and args.learning_rate != 0.01:
             exp_suffix = f"{exp_suffix}_lr_{args.learning_rate}"
+
+        # Add random_seed if specified (non-default)
+        if args.random_seed is not None and args.random_seed != 42:
+            cmd_args.append(f"--random_seed {args.random_seed}")
+            exp_suffix = f"{exp_suffix}_seed_{args.random_seed}"
 
         # Add lr_scheduler_type if specified
         if args.lr_scheduler_type is not None:
