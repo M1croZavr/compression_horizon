@@ -54,6 +54,46 @@ def collate_stages_by_sample(
     return by_sid
 
 
+def compute_num_pca_explained_99_var(embeddings: List[np.ndarray]) -> float:
+    """Compute cumulative explained variance using PCA with 4 components.
+
+    Args:
+        embeddings: List of flattened embedding arrays
+
+    Returns:
+        Cumulative explained variance ratio (0.0 to 1.0), or NaN if not computable
+    """
+    if len(embeddings) < 2:
+        return float("nan")
+
+    # Stack embeddings: [n_samples, n_features]
+    X = np.stack(embeddings, axis=0)
+
+    # Need at least 2 samples for PCA
+    if X.shape[0] < 2:
+        return float("nan")
+
+    n_samples, n_features = X.shape
+    n_components = min(4, n_samples - 1, n_features)
+
+    if n_components < 1:
+        return float("nan")
+
+    # Fit PCA with up to 4 components
+    max_PCA_components = 128
+    pca = PCA(n_components=max_PCA_components, random_state=42)
+    pca.fit(X)
+    explained_var_ratio = pca.explained_variance_ratio_
+
+    # Return cumulative explained variance
+    cumulative_var = np.cumsum(explained_var_ratio)
+    num_pca_for99_var = (cumulative_var > 0.99).sum()
+    if num_pca_for99_var == max_PCA_components:
+        num_pca_for99_var = -1
+
+    return num_pca_for99_var
+
+
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
@@ -116,10 +156,13 @@ def extract_trajectory(
             dist = np.linalg.norm(embeddings[i + 1] - embeddings[i])
             trajectory_length += dist
 
+    num_pca_explained_99_var = compute_num_pca_explained_99_var(embeddings)
+
     stats = {
         "num_embeddings": len(embeddings),
         "total_steps": total_steps,
         "trajectory_length": trajectory_length,
+        "num_pca_for99_var": num_pca_explained_99_var,
     }
     return X, labels, stats, final_embedding
 
@@ -361,10 +404,11 @@ def print_statistics_table(
                 name,
                 stats.get("num_embeddings", 0),
                 f"{stats.get('trajectory_length', 0.0):.4f}",
+                f"{stats.get('num_pca_for99_var', 0.0)}",
             ]
         )
 
-    headers = ["Experiment Label", "Number of Compressed Embeddings", "Trajectory Length"]
+    headers = ["Experiment Label", "Number of Compressed Embeddings", "Trajectory Length", "PCA components explained 99% var"]
     table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
 
     print("\n" + "=" * 80)
@@ -537,31 +581,27 @@ def main():
     final_embeddings = []
 
     for idx, checkpoint_path in enumerate(args.checkpoints):
-        try:
-            traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
-            trajectories.append(traj)
-            labels_list.append(labels)
-            statistics_list.append(stats)
-            final_embeddings.append(final_emb)
+        traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
+        trajectories.append(traj)
+        labels_list.append(labels)
+        statistics_list.append(stats)
+        final_embeddings.append(final_emb)
 
-            # Determine name for this checkpoint
-            if positional_names is not None:
-                # Use positional mapping
-                checkpoint_names.append(positional_names[idx])
-            elif checkpoint_path in path_mapping:
-                # Use path-based mapping
-                checkpoint_names.append(path_mapping[checkpoint_path])
-            else:
-                # Extract a short name from the path
-                name = os.path.basename(os.path.dirname(checkpoint_path))
-                if not name or name == ".":
-                    name = os.path.basename(checkpoint_path)
-                checkpoint_names.append(name)
+        # Determine name for this checkpoint
+        if positional_names is not None:
+            # Use positional mapping
+            checkpoint_names.append(positional_names[idx])
+        elif checkpoint_path in path_mapping:
+            # Use path-based mapping
+            checkpoint_names.append(path_mapping[checkpoint_path])
+        else:
+            # Extract a short name from the path
+            name = os.path.basename(os.path.dirname(checkpoint_path))
+            if not name or name == ".":
+                name = os.path.basename(checkpoint_path)
+            checkpoint_names.append(name)
 
-            print(f"Loaded trajectory from {checkpoint_path}: {traj.shape[0]} stages, {traj.shape[1]} features")
-        except Exception as e:
-            print(f"Warning: Failed to load {checkpoint_path}: {e}")
-            continue
+        print(f"Loaded trajectory from {checkpoint_path}: {traj.shape[0]} stages, {traj.shape[1]} features")
 
     if len(trajectories) == 0:
         raise ValueError("No valid trajectories loaded")
@@ -571,9 +611,9 @@ def main():
         print_statistics_table(checkpoint_names, statistics_list)
 
     # Compute and print pairwise distances
-    if len(final_embeddings) >= 2:
-        l2_distances, l1_distances, cosine_distances = compute_pairwise_distances(final_embeddings)
-        print_pairwise_distances_table(checkpoint_names, l2_distances, l1_distances, cosine_distances)
+    # if len(final_embeddings) >= 2:
+    #     l2_distances, l1_distances, cosine_distances = compute_pairwise_distances(final_embeddings)
+    #     print_pairwise_distances_table(checkpoint_names, l2_distances, l1_distances, cosine_distances)
 
     # Create output directory if needed
     os.makedirs(os.path.dirname(args.output) if os.path.dirname(args.output) else ".", exist_ok=True)
