@@ -30,11 +30,6 @@ class MyTrainingArguments(TrainingArguments):
         default=32,
         metadata={"help": "Dimension of small space for embeddings regularization"},
     )
-    low_dim_lr_scheduler_type: SchedulerType | str = field(
-        default="cosine",
-        metadata={"help": "The scheduler type to use."},
-    )
-    low_dim_warmup_steps: int = field(default=100, metadata={"help": "Linear warmup over warmup_steps."})
     low_dim_proj_checkpoint: str | None = field(
         default=None,
         metadata={"help": "Path to checkpoint file to load low-dimensional projection state from."},
@@ -153,6 +148,10 @@ class MyTrainingArguments(TrainingArguments):
     lr_scheduler_type: SchedulerType | str = field(
         default="cosine",
         metadata={"help": "The scheduler type to use."},
+    )
+    lr_scheduler_kwargs: dict | None = field(
+        default=None,
+        metadata={"help": "Additional keyword arguments to pass to the learning rate scheduler."},
     )
     ddp_find_unused_parameters: bool | None = field(
         default=False,

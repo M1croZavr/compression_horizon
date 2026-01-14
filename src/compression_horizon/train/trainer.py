@@ -11,7 +11,7 @@ from torch.optim import SGD, AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
-from transformers import get_cosine_with_min_lr_schedule_with_warmup
+from transformers import get_scheduler
 
 from compression_horizon.inference.generation import generate_from_compression
 from compression_horizon.utils.launch import (
@@ -575,11 +575,16 @@ class MyTrainer:
         lr_scheduler = None
         if num_training_steps is not None:
             print("self.args.lr_scheduler_type", self.args.lr_scheduler_type)
-            lr_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
-                optimizer=optimizer,
-                num_warmup_steps=self.args.warmup_steps,
-                num_training_steps=num_training_steps,
-                min_lr=1e-3,
+            scheduler_kwargs = {
+                "optimizer": optimizer,
+                "num_warmup_steps": self.args.warmup_steps,
+                "num_training_steps": num_training_steps,
+            }
+            if self.args.lr_scheduler_kwargs is not None:
+                scheduler_kwargs.update(self.args.lr_scheduler_kwargs)
+            lr_scheduler = get_scheduler(
+                name=self.args.lr_scheduler_type,
+                **scheduler_kwargs,
             )
 
         return optimizer, lr_scheduler
@@ -1314,11 +1319,16 @@ class MyTrainer:
             low_dim_optim = AdamW(
                 low_dim_prjoection.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay
             )
-            low_dim_scheduler = get_cosine_with_min_lr_schedule_with_warmup(
-                optimizer=low_dim_optim,
-                num_warmup_steps=self.args.low_dim_warmup_steps,
-                num_training_steps=self.args.max_optimization_steps_per_sample,
-                min_lr=1e-3,
+            scheduler_kwargs = {
+                "optimizer": low_dim_optim,
+                "num_warmup_steps": self.args.warmup_steps,
+                "num_training_steps": self.args.max_optimization_steps_per_sample,
+            }
+            if self.args.lr_scheduler_kwargs is not None:
+                scheduler_kwargs.update(self.args.lr_scheduler_kwargs)
+            low_dim_scheduler = get_scheduler(
+                name=self.args.lr_scheduler_type,
+                **scheduler_kwargs,
             )
         else:
             # Freeze the projection parameters

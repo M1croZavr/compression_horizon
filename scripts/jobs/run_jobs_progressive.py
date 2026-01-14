@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 import time
@@ -145,6 +146,18 @@ if __name__ == "__main__":
         default=None,
         help="Learning rate for optimization. If not specified, defaults to 0.01 and is not included in output dir.",
     )
+    parser.add_argument(
+        "--lr_scheduler_type",
+        type=str,
+        default=None,
+        help="Learning rate scheduler type. If not specified, defaults to 'cosine' and is not included in output dir.",
+    )
+    parser.add_argument(
+        "--lr_scheduler_kwargs",
+        type=str,
+        default=None,
+        help="Learning rate scheduler kwargs as JSON string (e.g., '{\"min_lr\":1e-3}'). If not specified, not included in output dir.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -285,6 +298,27 @@ if __name__ == "__main__":
         # Add learning_rate to output dir if specified (non-default)
         if args.learning_rate is not None and args.learning_rate != 0.01:
             exp_suffix = f"{exp_suffix}_lr_{args.learning_rate}"
+
+        # Add lr_scheduler_type if specified
+        if args.lr_scheduler_type is not None:
+            cmd_args.append(f"--lr_scheduler_type {args.lr_scheduler_type}")
+            # Add to suffix only if non-default
+            if args.lr_scheduler_type != "cosine":
+                exp_suffix = f"{exp_suffix}_sched_{args.lr_scheduler_type}"
+
+        # Add lr_scheduler_kwargs if specified
+        if args.lr_scheduler_kwargs is not None:
+            # Validate JSON format
+            try:
+                json.loads(args.lr_scheduler_kwargs)
+                cmd_args.append(f"--lr_scheduler_kwargs '{args.lr_scheduler_kwargs}'")
+                # Create a short identifier from kwargs for suffix
+                kwargs_dict = json.loads(args.lr_scheduler_kwargs)
+                kwargs_parts = [f"{k}_{v}" for k, v in sorted(kwargs_dict.items())]
+                kwargs_suffix = "_".join(kwargs_parts).replace(".", "p").replace("-", "m")
+                exp_suffix = f"{exp_suffix}_schedkw_{kwargs_suffix}"
+            except json.JSONDecodeError:
+                raise ValueError(f"Invalid JSON format for --lr_scheduler_kwargs: {args.lr_scheduler_kwargs}")
 
         out_dir_name = f"artifacts/experiments_progressive/{exp_suffix}"
         if os.path.exists(out_dir_name):
