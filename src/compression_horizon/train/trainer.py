@@ -1448,6 +1448,8 @@ class MyTrainer:
             stage_index = 0
 
             while True:
+                # Track if we've reset the scheduler for this stage (to prevent double resets)
+                scheduler_reset_used = False
                 # Slice to current effective sequence length
                 input_ids = full_input_ids[:, :seq_len]
                 inputs_embeds = full_model_token_embeddings[:, :seq_len, :]
@@ -1465,95 +1467,128 @@ class MyTrainer:
                 steps_taken = 0
                 converged = False
 
-                for i in pbar:
-                    # Reconstruct compression tokens from PCA coefficients if using pretrained_pca
-                    if init_method == "pretrained_pca":
-                        # Reconstruct: [batch, n_components] @ [n_components, flattened_dim] + [flattened_dim] -> [batch, flattened_dim]
-                        reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(
-                            0
+                # Training loop - may be repeated once if scheduler reset is enabled
+                while True:
+                    for i in pbar:
+                        # Reconstruct compression tokens from PCA coefficients if using pretrained_pca
+                        if init_method == "pretrained_pca":
+                            # Reconstruct: [batch, n_components] @ [n_components, flattened_dim] + [flattened_dim] -> [batch, flattened_dim]
+                            reconstructed_flat = torch.matmul(
+                                pca_coefficients, pca_components_device
+                            ) + pca_mean_device.unsqueeze(0)
+                            compression_tokens = reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size)
+                        # else: compression_tokens is already defined in the outer scope
+
+                        current_compression_tokens = compression_tokens.clone()
+                        if self.args.low_dim_projection:
+                            current_compression_tokens = low_dim_prjoection(compression_tokens)
+
+                        model_tokens_with_compression_tokens = torch.cat(
+                            [current_compression_tokens.to(inputs_embeds.device).to(inputs_embeds.dtype), inputs_embeds], dim=1
                         )
-                        compression_tokens = reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size)
-                    # else: compression_tokens is already defined in the outer scope
+                        attention_mask_with_compression_tokens = torch.cat(
+                            [compression_tokens_attention_mask, attention_mask], dim=1
+                        )
+                        # print("input_ids.shape", input_ids.shape)
+                        loss, alignment_loss, convergece_per_sample, generated_text, ground_truth_text = self.compute_loss(
+                            model,
+                            input_ids,
+                            inputs_embeds,
+                            attention_mask,
+                            model_tokens_with_compression_tokens,
+                            attention_mask_with_compression_tokens,
+                            num_compression_tokens,
+                        )
+                        loss.backward()
+                        steps_taken += 1
+                        pbar.update(1)
 
-                    current_compression_tokens = compression_tokens.clone()
-                    if self.args.low_dim_projection:
-                        current_compression_tokens = low_dim_prjoection(compression_tokens)
+                        # Get gradient norm from coefficients or compression_tokens
+                        if init_method == "pretrained_pca":
+                            grad_norm = pca_coefficients.grad.norm(2).item() if pca_coefficients.grad is not None else 0.0
+                            comp_mean = compression_tokens.mean().item()
+                            comp_std = compression_tokens.std().item()
+                        else:
+                            grad_norm = compression_tokens.grad.norm(2).item() if compression_tokens.grad is not None else 0.0
+                            comp_mean = compression_tokens.mean().item()
+                            comp_std = compression_tokens.std().item()
 
-                    model_tokens_with_compression_tokens = torch.cat(
-                        [current_compression_tokens.to(inputs_embeds.device).to(inputs_embeds.dtype), inputs_embeds], dim=1
-                    )
-                    attention_mask_with_compression_tokens = torch.cat(
-                        [compression_tokens_attention_mask, attention_mask], dim=1
-                    )
-                    # print("input_ids.shape", input_ids.shape)
-                    loss, alignment_loss, convergece_per_sample, generated_text, ground_truth_text = self.compute_loss(
-                        model,
-                        input_ids,
-                        inputs_embeds,
-                        attention_mask,
-                        model_tokens_with_compression_tokens,
-                        attention_mask_with_compression_tokens,
-                        num_compression_tokens,
-                    )
-                    loss.backward()
-                    steps_taken += 1
-                    pbar.update(1)
+                        log_lr = self.args.learning_rate
+                        if lr_scheduler is not None:
+                            log_lr = lr_scheduler.get_last_lr()[0]
 
-                    # Get gradient norm from coefficients or compression_tokens
-                    if init_method == "pretrained_pca":
-                        grad_norm = pca_coefficients.grad.norm(2).item() if pca_coefficients.grad is not None else 0.0
-                        comp_mean = compression_tokens.mean().item()
-                        comp_std = compression_tokens.std().item()
+                        low_dim_lr = None
+                        if self.args.low_dim_projection and low_dim_scheduler is not None:
+                            low_dim_lr = low_dim_scheduler.get_last_lr()[0]
+
+                        pbar.set_postfix(
+                            loss=loss.item(),
+                            convergece_per_sample=convergece_per_sample.mean().item(),
+                            compression_tokens_mean=comp_mean,
+                            compression_tokens_std=comp_std,
+                            grad=grad_norm,
+                            lr=log_lr,
+                            low_dim_lr=low_dim_lr,
+                        )
+
+                        # For logging, use compression_tokens (reconstructed if using PCA)
+                        self._log_step(
+                            loss,
+                            alignment_loss,
+                            convergece_per_sample,
+                            compression_tokens,
+                            lr_scheduler,
+                            generated_text,
+                            ground_truth_text,
+                        )
+
+                        optimizer.step()
+                        if lr_scheduler is not None:
+                            lr_scheduler.step()
+                        optimizer.zero_grad(set_to_none=True)
+
+                        if self.args.low_dim_projection and self.args.low_dim_proj_train and low_dim_optim is not None:
+                            low_dim_optim.step()
+                            low_dim_optim.zero_grad()
+                            if low_dim_scheduler is not None:
+                                low_dim_scheduler.step()
+
+                        last_loss_val = float(loss.item())
+                        last_conv = convergece_per_sample.detach().cpu()
+
+                        if convergece_per_sample.mean().item() >= threshold:
+                            converged = True
+                            break
+
+                    # Check convergence after training loop
+                    if converged:
+                        break
+
+                    # If not converged and reset is enabled and not yet used, reset scheduler and retry
+                    if (
+                        not converged
+                        and self.args.progressive_reset_lr_scheduler_on_non_convergence
+                        and not scheduler_reset_used
+                    ):
+                        print(f"Not converged at seq_len={seq_len}, resetting LR scheduler and retrying...")
+                        # Rebuild scheduler with same parameters
+                        if init_method == "pretrained_pca":
+                            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(pca_coefficients)
+                        else:
+                            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
+                                compression_tokens, num_training_steps=self.args.max_optimization_steps_per_token
+                            )
+                        scheduler_reset_used = True
+                        # Reset progress bar and continue training
+                        pbar = tqdm(
+                            range(self.args.max_optimization_steps_per_token),
+                            total=self.args.max_optimization_steps_per_token,
+                            leave=False,
+                        )
+                        pbar.set_description(f"Stage L={seq_len} (retry)")
+                        continue
                     else:
-                        grad_norm = compression_tokens.grad.norm(2).item() if compression_tokens.grad is not None else 0.0
-                        comp_mean = compression_tokens.mean().item()
-                        comp_std = compression_tokens.std().item()
-
-                    log_lr = self.args.learning_rate
-                    if lr_scheduler is not None:
-                        log_lr = lr_scheduler.get_last_lr()[0]
-
-                    low_dim_lr = None
-                    if self.args.low_dim_projection and low_dim_scheduler is not None:
-                        low_dim_lr = low_dim_scheduler.get_last_lr()[0]
-
-                    pbar.set_postfix(
-                        loss=loss.item(),
-                        convergece_per_sample=convergece_per_sample.mean().item(),
-                        compression_tokens_mean=comp_mean,
-                        compression_tokens_std=comp_std,
-                        grad=grad_norm,
-                        lr=log_lr,
-                        low_dim_lr=low_dim_lr,
-                    )
-
-                    # For logging, use compression_tokens (reconstructed if using PCA)
-                    self._log_step(
-                        loss,
-                        alignment_loss,
-                        convergece_per_sample,
-                        compression_tokens,
-                        lr_scheduler,
-                        generated_text,
-                        ground_truth_text,
-                    )
-
-                    optimizer.step()
-                    if lr_scheduler is not None:
-                        lr_scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
-
-                    if self.args.low_dim_projection and self.args.low_dim_proj_train and low_dim_optim is not None:
-                        low_dim_optim.step()
-                        low_dim_optim.zero_grad()
-                        if low_dim_scheduler is not None:
-                            low_dim_scheduler.step()
-
-                    last_loss_val = float(loss.item())
-                    last_conv = convergece_per_sample.detach().cpu()
-
-                    if convergece_per_sample.mean().item() >= threshold:
-                        converged = True
+                        # Not converged and either reset disabled or already used - break inner loop
                         break
 
                 # Save snapshot for this stage

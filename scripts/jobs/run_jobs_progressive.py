@@ -147,6 +147,12 @@ if __name__ == "__main__":
         help="Learning rate for optimization. If not specified, defaults to 0.01 and is not included in output dir.",
     )
     parser.add_argument(
+        "--progressive_reset_lr_scheduler_on_non_convergence",
+        action="store_true",
+        default=False,
+        help="Enable LR scheduler reset on non-convergence in progressive training. If not specified, not included in output dir.",
+    )
+    parser.add_argument(
         "--lr_scheduler_type",
         type=str,
         default=None,
@@ -319,6 +325,11 @@ if __name__ == "__main__":
                 exp_suffix = f"{exp_suffix}_schedkw_{kwargs_suffix}"
             except json.JSONDecodeError:
                 raise ValueError(f"Invalid JSON format for --lr_scheduler_kwargs: {args.lr_scheduler_kwargs}")
+
+        # Add progressive_reset_lr_scheduler_on_non_convergence if specified
+        if args.progressive_reset_lr_scheduler_on_non_convergence:
+            cmd_args.append("--progressive_reset_lr_scheduler_on_non_convergence")
+            exp_suffix = f"{exp_suffix}_resetlr"
 
         out_dir_name = f"artifacts/experiments_progressive/{exp_suffix}"
         if os.path.exists(out_dir_name):

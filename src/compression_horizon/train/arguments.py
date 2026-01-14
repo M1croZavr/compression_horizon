@@ -196,6 +196,10 @@ class MyTrainingArguments(TrainingArguments):
         default=0,
         metadata={"help": "Optional cap on number of progressive stages (0 = no cap)."},
     )
+    progressive_reset_lr_scheduler_on_non_convergence: bool = field(
+        default=False,
+        metadata={"help": "If True, reset LR scheduler and continue training when convergence fails (only once per stage)."},
+    )
     save_progressive_artifacts: bool = field(
         default=True,
         metadata={"help": "Whether to persist intermediate compression tokens for each stage."},
