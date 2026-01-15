@@ -983,6 +983,7 @@ class MyTrainer:
         hidden_size = model.config.hidden_size
 
         dataloader = self._create_dataloader()
+        final_projection = None
         for batch in tqdm(dataloader):
             model.train()
             input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
@@ -1191,10 +1192,29 @@ class MyTrainer:
                     # Store final compression tokens for saving (from last batch)
                     final_compression_token_embeddings_cpu = compression_token_embeddings_cpu
 
+            # Track final projection for saving (from last batch)
+            final_projection = projection
+
         # Close TensorBoard writer
         if self.writer is not None:
             self.writer.flush()
             self.writer.close()
+
+        # Save projection weights if training was enabled
+        if final_projection is not None and self.args.low_dim_proj_train:
+            output_dir = self.args.output_dir
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+                projection_save_path = os.path.join(output_dir, "low_dim_projection.pt")
+                torch.save(
+                    {
+                        "low_dim_projection": final_projection.state_dict(),
+                        "low_dim_size": self.args.low_dim_size,
+                        "hidden_size": hidden_size,
+                    },
+                    projection_save_path,
+                )
+                print(f"Saved low-dimensional projection weights to {projection_save_path}")
 
         # Persist artifacts
         save_path = self._save_artifacts(final_compression_token_embeddings_cpu, collected_rows, "compressed_prefixes")

@@ -170,6 +170,12 @@ if __name__ == "__main__":
         default=None,
         help="Learning rate scheduler kwargs as JSON string (e.g., '{\"min_lr\":1e-3}'). If not specified, not included in output dir.",
     )
+    parser.add_argument(
+        "--max_sequence_length",
+        type=int,
+        default=None,
+        help="Maximum sequence length. If not specified, defaults to 2048 and is not included in output dir.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -209,21 +215,19 @@ if __name__ == "__main__":
             print(f"\033[33mNo models matched the filter: {args.model}\033[0m")
             sys.exit(0)
 
-    max_seq_len = 2048
     max_optimization_steps_per_sample = 1_000
 
     for model_checkpoint in checkpoints:
-        exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[1]}"
-
         # Build command arguments
-        limit_dataset_items = args.limit_dataset_items if args.limit_dataset_items is not None else 10
+        max_seq_len = args.max_sequence_length if args.max_sequence_length is not None else 128
+        limit_dataset_items = args.limit_dataset_items if args.limit_dataset_items is not None else 100
         embedding_init_method = args.embedding_init_method if args.embedding_init_method is not None else "random0.02"
         learning_rate = args.learning_rate if args.learning_rate is not None else 0.01
         per_device_train_batch_size = args.per_device_train_batch_size if args.per_device_train_batch_size else 100
 
         assert (
-            limit_dataset_items > per_device_train_batch_size
-        ), f"limit_dataset_items > per_device_train_batch_size, {limit_dataset_items} > {per_device_train_batch_size}"
+            limit_dataset_items >= per_device_train_batch_size
+        ), f"limit_dataset_items > per_device_train_batch_size, {limit_dataset_items} >= {per_device_train_batch_size}"
 
         cmd_args = [
             "--remove_unused_columns False",
@@ -238,6 +242,8 @@ if __name__ == "__main__":
             f"--embedding_init_method {embedding_init_method}",
             f"--limit_dataset_items {limit_dataset_items}",
         ]
+
+        exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[1]}"
 
         # Add dataset_name if specified (non-default)
         if args.dataset_name is not None:
@@ -322,9 +328,9 @@ if __name__ == "__main__":
         # Add lr_scheduler_type if specified
         if args.lr_scheduler_type is not None:
             cmd_args.append(f"--lr_scheduler_type {args.lr_scheduler_type}")
+            print("args.lr_scheduler_type", args.lr_scheduler_type is None, args.lr_scheduler_type)
             # Add to suffix only if non-default
-            if args.lr_scheduler_type != "cosine":
-                exp_suffix = f"{exp_suffix}_sched_{args.lr_scheduler_type}"
+            exp_suffix = f"{exp_suffix}_sched_{args.lr_scheduler_type}"
 
         # Add lr_scheduler_kwargs if specified
         if args.lr_scheduler_kwargs is not None:
@@ -339,9 +345,6 @@ if __name__ == "__main__":
                 exp_suffix = f"{exp_suffix}_schedkw_{kwargs_suffix}"
             except json.JSONDecodeError:
                 raise ValueError(f"Invalid JSON format for --lr_scheduler_kwargs: {args.lr_scheduler_kwargs}")
-
-        if args.per_device_train_batch_size is not None:
-            cmd_args.append(f"--lr_scheduler_type {args.lr_scheduler_type}")
 
         out_dir_name = f"artifacts/experiments_low_dim/{exp_suffix}"
         if os.path.exists(out_dir_name):
