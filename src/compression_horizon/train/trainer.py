@@ -1568,7 +1568,9 @@ class MyTrainer:
             else:
                 # Assume the checkpoint is the state_dict itself
                 low_dim_prjoection.load_state_dict(checkpoint)
-            print(f"Loaded low-dimensional projection state from {self.args.low_dim_proj_checkpoint}")
+            print(
+                f"Loaded low-dimensional projection state from {self.args.low_dim_proj_checkpoint}, low dim size = {self.args.low_dim_size}"
+            )
 
         # Only create optimizer and scheduler if training is enabled
         if self.args.low_dim_proj_train:

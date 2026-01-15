@@ -111,6 +111,10 @@ class MyTrainingArguments(TrainingArguments):
         default=False,
     )
     limit_dataset_items: int | None = field(default=1)
+    offset_dataset_items: int | None = field(
+        default=None,
+        metadata={"help": "Offset for dataset items selection (applied before limit_dataset_items)."},
+    )
 
     # Overrides with changed defaults
     optim: str = field(

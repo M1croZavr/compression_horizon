@@ -33,6 +33,7 @@ def load_or_create_tokenized_dataset(
     max_sequence_length: int,
     model_checkpoint: str,
     limit_dataset_items: int | None = None,
+    offset_dataset_items: int | None = None,
     cache_prefix: str = "dataset",
     num_proc: int = 4,
     fallback_length: int | None = None,
@@ -48,6 +49,7 @@ def load_or_create_tokenized_dataset(
         max_sequence_length: Maximum sequence length for tokenization
         model_checkpoint: Model checkpoint name (for cache key)
         limit_dataset_items: Optional limit on number of items to select
+        offset_dataset_items: Optional offset for dataset items selection (applied before limit)
         cache_prefix: Prefix for cache file name (default: "dataset")
         num_proc: Number of processes for dataset loading
         fallback_length: If provided and limit_dataset_items is None, use this length
@@ -60,6 +62,7 @@ def load_or_create_tokenized_dataset(
         "dataset": dataset_name,
         "split": split,
         "limit_dataset_items": limit_dataset_items,
+        "offset_dataset_items": offset_dataset_items,
         "max_sequence_length": max_sequence_length,
         "model_checkpoint": model_checkpoint,
     }
@@ -76,7 +79,19 @@ def load_or_create_tokenized_dataset(
     print("Tokenizing dataset (this may take a while)...")
     raw_dataset = load_dataset(dataset_name, split=split, num_proc=num_proc)
 
-    if limit_dataset_items is not None:
+    # Apply offset and limit
+    if offset_dataset_items is not None:
+        start_idx = offset_dataset_items
+        if limit_dataset_items is not None:
+            end_idx = start_idx + limit_dataset_items
+            dataset = raw_dataset.select(range(start_idx, end_idx))
+        elif fallback_length is not None:
+            end_idx = start_idx + fallback_length
+            dataset = raw_dataset.select(range(start_idx, end_idx))
+        else:
+            # If only offset is provided, select from offset to end
+            dataset = raw_dataset.select(range(start_idx, len(raw_dataset)))
+    elif limit_dataset_items is not None:
         dataset = raw_dataset.select(range(limit_dataset_items))
     elif fallback_length is not None:
         dataset = raw_dataset.select(range(fallback_length))
@@ -204,6 +219,7 @@ if __name__ == "__main__":
         max_sequence_length=training_args.max_sequence_length,
         model_checkpoint=training_args.model_checkpoint,
         limit_dataset_items=getattr(training_args, "limit_dataset_items", None),
+        offset_dataset_items=getattr(training_args, "offset_dataset_items", None),
         cache_prefix="dataset",
     )
 
@@ -224,6 +240,7 @@ if __name__ == "__main__":
             max_sequence_length=eval_seq_length,
             model_checkpoint=training_args.model_checkpoint,
             limit_dataset_items=getattr(training_args, "limit_dataset_items", None),
+            offset_dataset_items=getattr(training_args, "offset_dataset_items", None),
             cache_prefix="eval_dataset",
             fallback_length=len(train_dataset),
         )

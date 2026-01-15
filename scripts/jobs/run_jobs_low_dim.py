@@ -50,6 +50,17 @@ def get_in_progress_jobs(client, region, statuses=None):
 
 
 if __name__ == "__main__":
+
+    def str_to_bool(v):
+        if isinstance(v, bool):
+            return v
+        if str(v).lower() in ("true", "1", "yes", "t"):
+            return True
+        elif str(v).lower() in ("false", "0", "no", "f"):
+            return False
+        else:
+            raise argparse.ArgumentTypeError(f"Boolean value expected, got: {v}")
+
     parser = argparse.ArgumentParser(description="Launch low dim compression_horizon training jobs.")
     parser.add_argument(
         "--dry",
@@ -92,6 +103,12 @@ if __name__ == "__main__":
         help="Limit the number of dataset items to use. If not specified, defaults to 10 and is not included in output dir.",
     )
     parser.add_argument(
+        "--offset_dataset_items",
+        type=int,
+        default=None,
+        help="Offset for dataset items selection (applied before limit_dataset_items). If not specified, not included in output dir.",
+    )
+    parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
         default=None,
@@ -122,11 +139,17 @@ if __name__ == "__main__":
         help="Path to checkpoint file to load low-dimensional projection state from. If not specified, not included in output dir.",
     )
     parser.add_argument(
+        "--low_dim_proj_train",
+        type=str_to_bool,
+        default=None,
+        help="Whether to optimize the low-dimensional projection (True/1/yes to train, False/0/no to freeze). If not specified, defaults to True and is not included in output dir.",
+    )
+    parser.add_argument(
         "--no_low_dim_proj_train",
+        action="store_const",
+        const=False,
         dest="low_dim_proj_train",
-        action="store_false",
-        default=True,
-        help="Disable optimization of the low-dimensional projection (freeze it). Default: projection is trained.",
+        help="Disable optimization of the low-dimensional projection (freeze it). This is equivalent to --low_dim_proj_train False.",
     )
     parser.add_argument(
         "--embedding_init_path",
@@ -243,6 +266,10 @@ if __name__ == "__main__":
             f"--limit_dataset_items {limit_dataset_items}",
         ]
 
+        # Add offset_dataset_items if specified
+        if args.offset_dataset_items is not None:
+            cmd_args.append(f"--offset_dataset_items {args.offset_dataset_items}")
+
         exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[1]}"
 
         # Add dataset_name if specified (non-default)
@@ -260,6 +287,10 @@ if __name__ == "__main__":
         # Add limit_dataset_items to output dir if specified (non-default)
         if args.limit_dataset_items is not None and args.limit_dataset_items != 10:
             exp_suffix = f"{exp_suffix}_limit_{args.limit_dataset_items}"
+
+        # Add offset_dataset_items to output dir if specified
+        if args.offset_dataset_items is not None:
+            exp_suffix = f"{exp_suffix}_offset_{args.offset_dataset_items}"
 
         # Add low_dim_size if specified
         if args.low_dim_size is not None:
@@ -279,9 +310,10 @@ if __name__ == "__main__":
             exp_suffix = f"{exp_suffix}_lowprojckpt_{checkpoint_name}"
 
         # Add low_dim_proj_train if specified (non-default)
-        if not args.low_dim_proj_train:
-            cmd_args.append("--low_dim_proj_train False")
-            exp_suffix = f"{exp_suffix}_lowprojfrozen"
+        if args.low_dim_proj_train is not None:
+            cmd_args.append(f"--low_dim_proj_train {args.low_dim_proj_train}")
+            if not args.low_dim_proj_train:
+                exp_suffix = f"{exp_suffix}_lowprojfrozen"
 
         # Add embedding_init_method to output dir if specified (non-default)
         if args.embedding_init_method is not None and args.embedding_init_method != "random0.02":
