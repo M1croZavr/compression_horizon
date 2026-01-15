@@ -245,7 +245,7 @@ class MyTrainer:
                     if not os.path.exists(self.args.pretrained_pca_path):
                         raise ValueError(f"pretrained_pca_path does not exist: {self.args.pretrained_pca_path}")
                     progressive_ds = Dataset.load_from_disk(self.args.pretrained_pca_path)
-                    first_sample_embeddings = []
+                    all_embeddings = []
                     for i in range(len(progressive_ds)):
                         row = progressive_ds[i]
                         if int(row.get("sample_id", -1)) == 0:
@@ -256,10 +256,10 @@ class MyTrainer:
                                 else:
                                     emb_tensor = torch.tensor(embedding, dtype=torch.float32)
                                 emb_flat = emb_tensor.reshape(-1).to(torch.float32).detach().cpu().numpy()
-                                first_sample_embeddings.append(emb_flat)
-                    if len(first_sample_embeddings) == 0:
+                                all_embeddings.append(emb_flat)
+                    if len(all_embeddings) == 0:
                         raise ValueError(f"No embeddings found for sample_id=0 in {self.args.pretrained_pca_path}")
-                    X = np.stack(first_sample_embeddings, axis=0)
+                    X = np.stack(all_embeddings, axis=0)
                     n_components = min(self.args.pretrained_pca_num_components, X.shape[0] - 1, X.shape[1])
                     if n_components < 1:
                         raise ValueError(f"Cannot fit PCA: need at least 2 samples, got {X.shape[0]}")
@@ -325,26 +325,25 @@ class MyTrainer:
             progressive_ds = Dataset.load_from_disk(self.args.pretrained_pca_path)
 
             # Get first sample's embeddings across all stages
-            first_sample_embeddings = []
+            all_embeddings = []
             for i in range(len(progressive_ds)):
                 row = progressive_ds[i]
-                if int(row.get("sample_id", -1)) == 0:  # First sample (sample_id=0)
-                    embedding = row.get("embedding")
-                    if embedding is not None:
-                        # Convert to numpy array and flatten if needed
-                        if isinstance(embedding, list):
-                            emb_tensor = torch.tensor(embedding, dtype=torch.float32)
-                        else:
-                            emb_tensor = torch.tensor(embedding, dtype=torch.float32)
-                        # Flatten: [num_compression_tokens, hidden_size] -> [num_compression_tokens * hidden_size]
-                        emb_flat = emb_tensor.reshape(-1).to(torch.float32).detach().cpu().numpy()
-                        first_sample_embeddings.append(emb_flat)
+                embedding = row.get("embedding")
+                if embedding is not None:
+                    # Convert to numpy array and flatten if needed
+                    if isinstance(embedding, list):
+                        emb_tensor = torch.tensor(embedding, dtype=torch.float32)
+                    else:
+                        emb_tensor = torch.tensor(embedding, dtype=torch.float32)
+                    # Flatten: [num_compression_tokens, hidden_size] -> [num_compression_tokens * hidden_size]
+                    emb_flat = emb_tensor.reshape(-1).to(torch.float32).detach().cpu().numpy()
+                    all_embeddings.append(emb_flat)
 
-            if len(first_sample_embeddings) == 0:
+            if len(all_embeddings) == 0:
                 raise ValueError(f"No embeddings found for sample_id=0 in {self.args.pretrained_pca_path}")
 
             # Stack embeddings: [n_stages, flattened_dim]
-            X = np.stack(first_sample_embeddings, axis=0)
+            X = np.stack(all_embeddings, axis=0)
 
             # Fit PCA
             n_components = min(self.args.pretrained_pca_num_components, X.shape[0] - 1, X.shape[1])
@@ -759,7 +758,7 @@ class MyTrainer:
             progress_bar = tqdm(
                 range(self.args.max_optimization_steps_per_sample),
                 total=self.args.max_optimization_steps_per_sample,
-                disable=True,
+                # disable=True,
             )
             progress_bar.set_description("Training")
 
