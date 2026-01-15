@@ -150,11 +150,11 @@ class MyTrainingArguments(TrainingArguments):
     )
     max_grad_norm: float = field(default=1.0, metadata={"help": "Max gradient norm."})
     lr_scheduler_type: SchedulerType | str = field(
-        default="cosine",
+        default="cosine_warmup_with_min_lr",
         metadata={"help": "The scheduler type to use."},
     )
     lr_scheduler_kwargs: dict | None = field(
-        default=None,
+        default_factory=lambda: {"min_lr": 1e-3},
         metadata={"help": "Additional keyword arguments to pass to the learning rate scheduler."},
     )
     ddp_find_unused_parameters: bool | None = field(

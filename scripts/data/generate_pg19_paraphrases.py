@@ -3,9 +3,11 @@ import os
 import random
 from typing import Optional
 
+import torch
 from datasets import Dataset, load_dataset
 from openai import OpenAI
-from transformers import AutoTokenizer
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Example run:
 # python scripts/data/generate_pg19_paraphrases.py \
@@ -273,6 +275,119 @@ def create_random_suffix_shuffle_dataset(
     return shuffled_dataset
 
 
+def create_model_sampled_dataset(
+    dataset: Dataset,
+    tokenizer: AutoTokenizer,
+    model: AutoModelForCausalLM,
+    prefix_tokens: int,
+    max_tokens: int,
+    output_dir: str,
+    push_to_hub: bool = False,
+    hub_dataset_id_model_sampled: Optional[str] = None,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    batch_size: int = 16,
+    temperature: Optional[float] = None,
+):
+    """Create a model_sampled version: use first prefix_tokens as prefix, generate continuation with greedy or temperature sampling."""
+    os.makedirs(output_dir, exist_ok=True)
+    model.eval()
+    model.to(device)
+
+    print("Creating model_sampled dataset...")
+    results = []
+    total_samples = len(dataset)
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    total_batches = (total_samples + batch_size - 1) // batch_size
+
+    # Process in batches
+    for batch_start in tqdm(range(0, total_samples, batch_size), desc="Generating batches", total=total_batches):
+        batch_end = min(batch_start + batch_size, total_samples)
+        batch_examples = dataset[batch_start:batch_end]
+        current_batch_size = batch_end - batch_start
+
+        # Extract prefix token IDs for all examples in batch
+        # Note: dataset[batch_start:batch_end] returns a dict with column names as keys and lists as values
+        prefix_input_ids_list = []
+        batch_metadata = []
+
+        for idx in range(current_batch_size):
+            truncated_text = batch_examples["truncated_text"][idx]
+            # Tokenize to extract prefix token IDs directly
+            tokens = tokenizer(truncated_text, return_tensors="pt")["input_ids"][0]
+            prefix_tokens_list = tokens[:prefix_tokens]
+            prefix_input_ids_list.append(prefix_tokens_list)
+            batch_metadata.append(
+                {
+                    "original_text": batch_examples["original_text"][idx],
+                    "truncated_text": truncated_text,
+                    "num_tokens": batch_examples["num_tokens"][idx],
+                }
+            )
+
+        # Pad sequences to the same length for batching
+        max_prefix_len = max(len(seq) for seq in prefix_input_ids_list)
+        padded_prefix_ids = []
+        attention_masks = []
+
+        for prefix_ids in prefix_input_ids_list:
+            padding_length = max_prefix_len - len(prefix_ids)
+            padded = torch.cat([prefix_ids, torch.full((padding_length,), pad_token_id, dtype=prefix_ids.dtype)])
+            padded_prefix_ids.append(padded)
+            attention_mask = torch.cat(
+                [torch.ones(len(prefix_ids), dtype=torch.bool), torch.zeros(padding_length, dtype=torch.bool)]
+            )
+            attention_masks.append(attention_mask)
+
+        # Stack into batch tensor
+        batch_input_ids = torch.stack(padded_prefix_ids).to(device)
+        batch_attention_mask = torch.stack(attention_masks).to(device)
+
+        # Generate continuation with greedy or temperature sampling for entire batch
+        generate_kwargs = {
+            "input_ids": batch_input_ids,
+            "attention_mask": batch_attention_mask,
+            "max_new_tokens": max_tokens,
+            "pad_token_id": pad_token_id,
+        }
+        if temperature is not None and temperature > 0:
+            generate_kwargs["do_sample"] = True
+            generate_kwargs["temperature"] = temperature
+        else:
+            generate_kwargs["do_sample"] = False  # Greedy sampling
+
+        with torch.no_grad():
+            generated_output = model.generate(**generate_kwargs)
+
+        # Decode each generated sequence
+        for idx in range(current_batch_size):
+            generated_text = tokenizer.decode(generated_output[idx], skip_special_tokens=True)
+            results.append(
+                {
+                    "text": generated_text,
+                    "original_text": batch_metadata[idx]["original_text"],
+                    "truncated_text": batch_metadata[idx]["truncated_text"],
+                    "num_tokens": batch_metadata[idx]["num_tokens"],
+                }
+            )
+
+    # Create dataset from results
+    model_sampled_dataset = Dataset.from_list(results)
+
+    model_sampled_path = os.path.join(output_dir, "model_sampled")
+    model_sampled_dataset.save_to_disk(model_sampled_path)
+    print(f"Saved model_sampled dataset to {model_sampled_path} ({len(model_sampled_dataset)} samples)")
+
+    # Push to hub if requested
+    if push_to_hub and hub_dataset_id_model_sampled:
+        print(f"\nPushing model_sampled dataset to hub: {hub_dataset_id_model_sampled}")
+        model_sampled_dataset.push_to_hub(hub_dataset_id_model_sampled)
+        print(f"Successfully pushed model_sampled dataset to {hub_dataset_id_model_sampled}")
+    elif push_to_hub and not hub_dataset_id_model_sampled:
+        print("Warning: push_to_hub is True but hub_dataset_id_model_sampled is not specified, skipping...")
+
+    return model_sampled_dataset
+
+
 def generate_paraphrases_for_dataset(
     dataset: Dataset,
     client: OpenAI,
@@ -494,7 +609,7 @@ def main():
         "--datasets",
         type=str,
         default="lowercased,lowercased_partial,full_paraphrases,partial_paraphrases,random_suffix_shuffle",
-        help="Comma-separated list of dataset types to generate. Options: lowercased, lowercased_partial, full_paraphrases, partial_paraphrases, random_suffix_shuffle (default: all)",
+        help="Comma-separated list of dataset types to generate. Options: lowercased, lowercased_partial, full_paraphrases, partial_paraphrases, random_suffix_shuffle, model_sampled (default: all)",
     )
     parser.add_argument(
         "--hub_dataset_id_random_suffix_shuffle",
@@ -502,11 +617,36 @@ def main():
         default=None,
         help="HuggingFace Hub dataset ID for random suffix shuffle dataset (e.g., 'username/dataset-random-suffix-shuffle')",
     )
+    parser.add_argument(
+        "--model_checkpoint",
+        type=str,
+        default=None,
+        help="Model checkpoint for model_sampled dataset generation (e.g., 'HuggingFaceTB/SmolLM2-135M')",
+    )
+    parser.add_argument(
+        "--hub_dataset_id_model_sampled",
+        type=str,
+        default=None,
+        help="HuggingFace Hub dataset ID for model_sampled dataset (e.g., 'username/dataset-model-sampled')",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Temperature for sampling in model_sampled dataset generation. If None or 0, uses greedy sampling (default: None)",
+    )
 
     args = parser.parse_args()
 
     # Parse and validate dataset types
-    valid_datasets = {"lowercased", "lowercased_partial", "full_paraphrases", "partial_paraphrases", "random_suffix_shuffle"}
+    valid_datasets = {
+        "lowercased",
+        "lowercased_partial",
+        "full_paraphrases",
+        "partial_paraphrases",
+        "random_suffix_shuffle",
+        "model_sampled",
+    }
     requested_datasets = [d.strip() for d in args.datasets.split(",") if d.strip()]
     invalid_datasets = set(requested_datasets) - valid_datasets
     if invalid_datasets:
@@ -572,6 +712,25 @@ def main():
             hub_dataset_id_random_suffix_shuffle=args.hub_dataset_id_random_suffix_shuffle,
         )
 
+    # Create model_sampled dataset
+    if "model_sampled" in datasets_to_generate:
+        if not args.model_checkpoint:
+            raise ValueError("--model_checkpoint is required when generating model_sampled dataset")
+        print(f"Loading model for generation: {args.model_checkpoint}")
+        generation_model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint)
+        create_model_sampled_dataset(
+            dataset=dataset,
+            tokenizer=tokenizer,
+            model=generation_model,
+            prefix_tokens=args.prefix_tokens,
+            max_tokens=args.max_tokens,
+            output_dir=args.output_dir,
+            push_to_hub=args.push_to_hub,
+            hub_dataset_id_model_sampled=args.hub_dataset_id_model_sampled,
+            batch_size=8,
+            temperature=args.temperature,
+        )
+
     # Generate paraphrases
     if "full_paraphrases" in datasets_to_generate or "partial_paraphrases" in datasets_to_generate:
         full_dataset, partial_dataset = generate_paraphrases_for_dataset(
@@ -595,6 +754,8 @@ def main():
         print("  Lowercased partial dataset: generated")
     if "random_suffix_shuffle" in datasets_to_generate:
         print("  Random suffix shuffle dataset: generated")
+    if "model_sampled" in datasets_to_generate:
+        print("  Model sampled dataset: generated")
     if "full_paraphrases" in datasets_to_generate and full_dataset:
         print(f"  Full paraphrases: {len(full_dataset)} samples")
     if "partial_paraphrases" in datasets_to_generate and partial_dataset:

@@ -579,11 +579,9 @@ class MyTrainer:
                 "num_warmup_steps": self.args.warmup_steps,
                 "num_training_steps": num_training_steps,
             }
-            if self.args.lr_scheduler_kwargs is not None:
-                scheduler_kwargs.update(self.args.lr_scheduler_kwargs)
+
             lr_scheduler = get_scheduler(
-                name=self.args.lr_scheduler_type,
-                **scheduler_kwargs,
+                name=self.args.lr_scheduler_type, **scheduler_kwargs, scheduler_specific_kwargs=self.args.lr_scheduler_kwargs
             )
 
         return optimizer, lr_scheduler
@@ -1642,6 +1640,7 @@ class MyTrainer:
                 low_dim_prjoection, low_dim_optim, low_dim_scheduler = self._prepare_low_dim_proj(
                     embedding_dim=model.model.embed_tokens.embedding_dim
                 )
+                print("low_dim_prjoection", low_dim_prjoection, "low_dim_optim", low_dim_optim)
 
             # Handle pretrained_pca initialization: optimize only coefficients
             if init_method == "pretrained_pca":
@@ -1775,18 +1774,13 @@ class MyTrainer:
                         if lr_scheduler is not None:
                             log_lr = lr_scheduler.get_last_lr()[0]
 
-                        low_dim_lr = None
-                        if self.args.low_dim_projection and low_dim_scheduler is not None:
-                            low_dim_lr = low_dim_scheduler.get_last_lr()[0]
-
                         pbar.set_postfix(
                             loss=loss.item(),
                             convergece_per_sample=convergece_per_sample.mean().item(),
-                            compression_tokens_mean=comp_mean,
-                            compression_tokens_std=comp_std,
+                            compr_t_mean=comp_mean,
+                            compr_t_std=comp_std,
                             grad=grad_norm,
                             lr=log_lr,
-                            low_dim_lr=low_dim_lr,
                         )
 
                         # For logging, use compression_tokens (reconstructed if using PCA)
