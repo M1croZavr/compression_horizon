@@ -101,46 +101,102 @@ def extract_trajectory(
 
     Args:
         dataset_path: Path to the progressive embeddings dataset
-        sample_id: Optional sample_id to filter. If None, uses first available sample.
+        sample_id: Optional sample_id to filter. If None, uses first available sample for visualization,
+                   but computes statistics across all samples in the dataset.
 
     Returns:
         Tuple of (embeddings array [n_stages, n_features], labels list, statistics dict, final_embedding)
-        Statistics dict contains: 'num_embeddings', 'total_steps', 'trajectory_length'
-        final_embedding is the last embedding in the trajectory
+        Statistics dict contains: 'num_embeddings', 'total_steps', 'trajectory_length', 'num_pca_for99_var'
+        All stats are formatted as mean ± std across all samples in the dataset.
+        final_embedding is the last embedding in the trajectory (for the selected sample)
     """
     ds = load_progressive_dataset(dataset_path)
-    rows = filter_records(ds, sample_id=sample_id)
+    # Load all rows to compute statistics across all samples
+    all_rows = filter_records(ds, sample_id=None)
 
-    if not rows:
+    if not all_rows:
         raise ValueError(f"No records found in {dataset_path}")
 
-    # Group by sample_id
-    by_sid = collate_stages_by_sample(rows)
+    # Group all rows by sample_id
+    all_by_sid = collate_stages_by_sample(all_rows)
 
-    # If sample_id was specified, use it; otherwise use first available
+    # Compute statistics for all samples
+    all_num_embeddings = []
+    all_total_steps = []
+    all_trajectory_lengths = []
+    all_num_pca_for99_var = []
+
+    all_embeds = []
+
+    for sid, stages in all_by_sid.items():
+        # Extract embeddings for this sample
+        sample_embeddings = []
+        sample_total_steps = 0
+        for stage in stages:
+            emb = flatten_embedding(stage)
+            sample_embeddings.append(emb)
+            steps = int(stage.get("steps_taken", 0))
+            sample_total_steps += steps
+
+        if len(sample_embeddings) == 0:
+            continue
+
+        # Compute metrics for this sample
+        all_num_embeddings.append(len(sample_embeddings))
+        all_total_steps.append(sample_total_steps)
+
+        # Compute trajectory length
+        trajectory_length = 0.0
+        if len(sample_embeddings) > 1:
+            for i in range(len(sample_embeddings) - 1):
+                dist = np.linalg.norm(sample_embeddings[i + 1] - sample_embeddings[i])
+                trajectory_length += dist
+        all_trajectory_lengths.append(trajectory_length)
+
+        # Compute PCA metric
+        all_embeds.extend(sample_embeddings)
+        num_pca_explained_99_var = compute_num_pca_explained_99_var(sample_embeddings)
+        if not np.isnan(num_pca_explained_99_var):
+            all_num_pca_for99_var.append(num_pca_explained_99_var)
+
+    num_pca_explained_99_var_all_embeds = compute_num_pca_explained_99_var(all_embeds)
+
+    # Compute mean and std for all metrics
+    def format_mean_std(values: List[float], precision: int = 4) -> str:
+        """Format mean ± std as string."""
+        if len(values) == 0:
+            return "nan"
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+        return f"{mean_val:.{precision}f}±{std_val:.{precision}f}"
+
+    stats = {
+        "num_embeddings": format_mean_std(all_num_embeddings, precision=2),
+        "total_steps": format_mean_std(all_total_steps, precision=2),
+        "trajectory_length": format_mean_std(all_trajectory_lengths, precision=2),
+        "num_pca_for99_var": format_mean_std(all_num_pca_for99_var, precision=2) if len(all_num_pca_for99_var) > 0 else "nan",
+        "num_pca_for99_var_all_embeds": num_pca_explained_99_var_all_embeds,
+    }
+
+    # Now extract trajectory for visualization (use specified sample_id or first available)
     if sample_id is not None:
-        if sample_id not in by_sid:
+        if sample_id not in all_by_sid:
             raise ValueError(f"Sample {sample_id} not found in {dataset_path}")
-        stages = by_sid[sample_id]
+        stages = all_by_sid[sample_id]
     else:
         # Use first available sample
-        first_sid = sorted(by_sid.keys())[0]
-        stages = by_sid[first_sid]
+        first_sid = sorted(all_by_sid.keys())[0]
+        stages = all_by_sid[first_sid]
         sample_id = first_sid
 
-    # Extract embeddings in order and collect statistics
+    # Extract embeddings in order for visualization
     embeddings = []
     labels = []
-    total_steps = 0
     for stage in stages:
         emb = flatten_embedding(stage)
         embeddings.append(emb)
         stage_seq_len = int(stage.get("stage_seq_len", -1))
-        # stage_idx = int(stage.get("stage_index", -1))
         labels.append(f"L{stage_seq_len}")
-        # Sum up optimization steps
-        steps = int(stage.get("steps_taken", 0))
-        total_steps += steps
 
     if len(embeddings) == 0:
         raise ValueError(f"No embeddings found for sample {sample_id} in {dataset_path}")
@@ -148,21 +204,6 @@ def extract_trajectory(
     X = np.stack(embeddings, axis=0)
     final_embedding = embeddings[-1]  # Last embedding
 
-    # Compute trajectory length as sum of linear distances between consecutive points
-    trajectory_length = 0.0
-    if len(embeddings) > 1:
-        for i in range(len(embeddings) - 1):
-            dist = np.linalg.norm(embeddings[i + 1] - embeddings[i])
-            trajectory_length += dist
-
-    num_pca_explained_99_var = compute_num_pca_explained_99_var(embeddings)
-
-    stats = {
-        "num_embeddings": len(embeddings),
-        "total_steps": total_steps,
-        "trajectory_length": trajectory_length,
-        "num_pca_for99_var": num_pca_explained_99_var,
-    }
     return X, labels, stats, final_embedding
 
 
@@ -401,13 +442,14 @@ def print_statistics_table(
         table_data.append(
             [
                 name,
-                stats.get("num_embeddings", 0),
-                f"{stats.get('trajectory_length', 0.0):.4f}",
-                f"{stats.get('num_pca_for99_var', 0.0)}",
+                stats.get("num_embeddings", "nan"),
+                stats.get("trajectory_length", "nan"),
+                stats.get("num_pca_for99_var", "nan"),
+                stats.get("num_pca_for99_var_all_embeds", "nan"),
             ]
         )
 
-    headers = ["Experiment", "# Compr. Tok", "Traj. Len", "# PCA expl 99% var"]
+    headers = ["Experiment", "# Compr. Tok", "Traj. Len", "PCA 99%", "PCA ALL 99%"]
     table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
 
     print("\n" + "=" * 80)
