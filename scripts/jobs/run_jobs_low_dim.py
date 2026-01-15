@@ -92,6 +92,12 @@ if __name__ == "__main__":
         help="Limit the number of dataset items to use. If not specified, defaults to 10 and is not included in output dir.",
     )
     parser.add_argument(
+        "--per_device_train_batch_size",
+        type=int,
+        default=None,
+        help="Limit the number of dataset items to use. If not specified, defaults to 10 and is not included in output dir.",
+    )
+    parser.add_argument(
         "--dataset_name",
         type=str,
         default=None,
@@ -213,13 +219,19 @@ if __name__ == "__main__":
         limit_dataset_items = args.limit_dataset_items if args.limit_dataset_items is not None else 10
         embedding_init_method = args.embedding_init_method if args.embedding_init_method is not None else "random0.02"
         learning_rate = args.learning_rate if args.learning_rate is not None else 0.01
+        per_device_train_batch_size = args.per_device_train_batch_size if args.per_device_train_batch_size else 100
+
+        assert (
+            limit_dataset_items > per_device_train_batch_size
+        ), f"limit_dataset_items > per_device_train_batch_size, {limit_dataset_items} > {per_device_train_batch_size}"
+
         cmd_args = [
             "--remove_unused_columns False",
             "--loss_type cross_entropy",
             f"--max_sequence_length {max_seq_len}",
             "--warmup_steps 100",
             f"--model_checkpoint {model_checkpoint}",
-            "--per_device_train_batch_size 1",
+            f"--per_device_train_batch_size {per_device_train_batch_size}",
             f"--max_optimization_steps_per_sample {max_optimization_steps_per_sample}",
             f"--learning_rate {learning_rate}",
             "--low_dim_train 1",
@@ -327,6 +339,9 @@ if __name__ == "__main__":
                 exp_suffix = f"{exp_suffix}_schedkw_{kwargs_suffix}"
             except json.JSONDecodeError:
                 raise ValueError(f"Invalid JSON format for --lr_scheduler_kwargs: {args.lr_scheduler_kwargs}")
+
+        if args.per_device_train_batch_size is not None:
+            cmd_args.append(f"--lr_scheduler_type {args.lr_scheduler_type}")
 
         out_dir_name = f"artifacts/experiments_low_dim/{exp_suffix}"
         if os.path.exists(out_dir_name):

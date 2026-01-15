@@ -1007,10 +1007,9 @@ class MyTrainer:
                 loaded_embeddings=loaded_embeddings,
             )  # [batch, mem, low_dim_size]
 
-            projection = nn.Linear(self.args.low_dim_size, hidden_size)
-            projection_optimizer, projection_lr_scheduler = self._build_optimizer_and_scheduler(
-                projection.parameters(), num_training_steps=self.args.max_optimization_steps_per_sample
-            )
+            projection, projection_optimizer, projection_lr_scheduler = self._prepare_low_dim_proj(embedding_dim=hidden_size)
+            projection = projection.to(device)
+            print("projection_optimizer", projection_optimizer)
 
             # Move to device and save initialization embedding (before optimization)
             # Create new Parameter on device to avoid non-leaf tensor issue
@@ -1096,7 +1095,8 @@ class MyTrainer:
                 # compression_token_embeddings_clone = compression_token_embeddings.detach().clone()
 
                 optimizer.step()
-                projection_optimizer.step()
+                if projection_optimizer is not None:
+                    projection_optimizer.step()
 
                 # Log current step progress
                 with torch.no_grad():
@@ -1131,8 +1131,10 @@ class MyTrainer:
                 # Update learning rate
                 optimizer.zero_grad(set_to_none=True)
                 lr_scheduler.step()
-                projection_optimizer.zero_grad(set_to_none=True)
-                projection_lr_scheduler.step()
+                if projection_optimizer is not None:
+                    projection_optimizer.zero_grad(set_to_none=True)
+                if projection_lr_scheduler is not None:
+                    projection_lr_scheduler.step()
 
             total_per_sample_convergence_sum = total_per_sample_convergence.sum(dim=0)
             print("total_per_sample_convergence_sum", total_per_sample_convergence_sum)
