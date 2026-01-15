@@ -248,6 +248,8 @@ if __name__ == "__main__":
         training_artifacts = trainer.progressive_train()
     elif training_args.noop_train:
         training_artifacts = trainer.train_noop()
+    elif training_args.low_dim_train:
+        training_artifacts = trainer.train_low_dim()
     else:
         training_artifacts = trainer.train()
     print(f"Saved compressed prefixes to: {training_artifacts}")

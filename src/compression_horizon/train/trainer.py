@@ -554,17 +554,17 @@ class MyTrainer:
             raise ValueError(f"unsupported init method: {init_method}")
         return trainable_embeddings
 
-    def _build_optimizer_and_scheduler(self, compression_token_embeddings, num_training_steps=None):
+    def _build_optimizer_and_scheduler(self, params, num_training_steps=None):
         if self.args.optim == "adamw_torch":
             optimizer = AdamW(
-                [compression_token_embeddings],
+                params,
                 lr=self.args.learning_rate,
                 weight_decay=self.args.weight_decay,
                 betas=(self.args.adam_beta1, self.args.adam_beta2),
             )
         elif self.args.optim == "sgd":
             optimizer = SGD(
-                [compression_token_embeddings],
+                params,
                 lr=self.args.learning_rate,
                 weight_decay=self.args.weight_decay,
             )
@@ -720,7 +720,7 @@ class MyTrainer:
 
                 # Optimizer only optimizes coefficients
                 optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
-                    pca_coefficients, num_training_steps=self.args.max_optimization_steps_per_sample
+                    [pca_coefficients], num_training_steps=self.args.max_optimization_steps_per_sample
                 )
             else:
                 # Standard initialization: optimize full compression tokens
@@ -741,7 +741,7 @@ class MyTrainer:
                 compression_token_embeddings = torch.nn.Parameter(compression_token_embeddings.data.to(device))
                 initialization_embeddings = compression_token_embeddings.detach().clone().cpu()  # [batch, mem, hidden]
                 optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
-                    compression_token_embeddings, num_training_steps=self.args.max_optimization_steps_per_sample
+                    [compression_token_embeddings], num_training_steps=self.args.max_optimization_steps_per_sample
                 )
 
             compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
@@ -965,6 +965,241 @@ class MyTrainer:
             return save_path
         return None
 
+    def train_low_dim(self):
+
+        print("Train low dim!!")
+
+        set_launch_seed(self.args.random_seed)
+        device = get_device()
+        model = self.model.to(device)
+        freeze_model_parameters(model)
+        init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = self._prepare_embedding_init(model)
+        num_compression_tokens = self.args.number_of_mem_tokens
+
+        # Collect per-sample artifacts for optional saving
+        collected_rows = []
+        sample_id_counter = 0
+
+        hidden_size = model.config.hidden_size
+
+        dataloader = self._create_dataloader()
+        for batch in tqdm(dataloader):
+            model.train()
+            input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
+            # print("input_ids", input_ids.shape)
+            batch_size = input_ids.shape[0]
+
+            attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
+            with torch.no_grad():
+                token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+
+            # Standard initialization: optimize full compression tokens
+            compression_token_embeddings = self._init_compression_tokens(
+                batch_size,
+                num_compression_tokens,
+                self.args.low_dim_size,
+                init_method,
+                mvn_dist,
+                single_compressed_embeddings_initialization=None,
+                token_embeddings=token_embeddings,
+                pca_components=pca_components,
+                pca_mean=pca_mean,
+                loaded_embeddings=loaded_embeddings,
+            )  # [batch, mem, low_dim_size]
+
+            projection = nn.Linear(self.args.low_dim_size, hidden_size)
+            projection_optimizer, projection_lr_scheduler = self._build_optimizer_and_scheduler(
+                projection.parameters(), num_training_steps=self.args.max_optimization_steps_per_sample
+            )
+
+            # Move to device and save initialization embedding (before optimization)
+            # Create new Parameter on device to avoid non-leaf tensor issue
+            compression_token_embeddings = torch.nn.Parameter(compression_token_embeddings.data.to(device))
+            initialization_embeddings = compression_token_embeddings.detach().clone().cpu()  # [batch, mem, hidden]
+            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
+                [compression_token_embeddings], num_training_steps=self.args.max_optimization_steps_per_sample
+            )
+
+            compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
+                batch_size, num_compression_tokens
+            )  # [batch, mem]
+
+            (
+                loss,
+                alignment_loss,
+                convergence_per_sample,
+                generated_text,
+                ground_truth_text,
+            ) = (None, None, None, None, None)
+            progress_bar = tqdm(
+                range(self.args.max_optimization_steps_per_sample),
+                total=self.args.max_optimization_steps_per_sample,
+                # disable=True,
+            )
+            progress_bar.set_description("Training")
+
+            total_per_sample_convergence = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    input_ids.shape[0],
+                ],
+                dtype=torch.long,
+            )
+
+            total_per_sample_convergence_099 = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    input_ids.shape[0],
+                ],
+                dtype=torch.long,
+            )
+            total_per_sample_convergence_095 = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    input_ids.shape[0],
+                ],
+                dtype=torch.long,
+            )
+
+            for step_i in progress_bar:
+                # Reconstruct compression tokens from PCA coefficients if using pretrained_pca
+                # Rebuild concatenations each step to avoid reusing the same autograd graph
+
+                compression_token_embeddings_llm = projection(compression_token_embeddings)
+
+                united_token_embeddings = torch.cat(
+                    [compression_token_embeddings_llm.to(token_embeddings.device).to(token_embeddings.dtype), token_embeddings],
+                    dim=1,
+                )  # [batch, mem + sequence, hidden]
+                united_attention_mask = torch.cat(
+                    [compression_attention_mask, attention_mask],
+                    dim=1,
+                )  # [batch, mem + sequence]
+                (
+                    loss,
+                    alignment_loss,
+                    convergence_per_sample,
+                    generated_text,
+                    ground_truth_text,
+                ) = self.compute_loss(
+                    model,
+                    input_ids,
+                    token_embeddings,
+                    attention_mask,
+                    united_token_embeddings,
+                    united_attention_mask,
+                    num_compression_tokens,
+                )
+                # Calculate gradients and update compression embeddings
+                loss.backward()
+
+                # compression_token_embeddings_clone = compression_token_embeddings.detach().clone()
+
+                optimizer.step()
+                projection_optimizer.step()
+
+                # Log current step progress
+                with torch.no_grad():
+                    progress_bar.update(1)
+                    alignment_loss_item = None
+                    if alignment_loss is not None:
+                        alignment_loss_item = alignment_loss.item()
+                    progress_bar.set_postfix(
+                        loss=loss.item(),
+                        loss_alignment=alignment_loss_item,
+                        convergece_per_sample=convergence_per_sample.mean().item(),
+                        lr=lr_scheduler.get_last_lr()[0],
+                    )
+                    self._log_step(
+                        loss,
+                        alignment_loss,
+                        convergence_per_sample,
+                        compression_token_embeddings,
+                        lr_scheduler,
+                        generated_text,
+                        ground_truth_text,
+                    )
+
+                total_per_sample_convergence[step_i, :] = convergence_per_sample < 1.0
+                total_per_sample_convergence_099[step_i, :] = convergence_per_sample < 0.99
+                total_per_sample_convergence_095[step_i, :] = convergence_per_sample < 0.95
+
+                if (convergence_per_sample == 1.0).all():
+                    print(f"Early stopping: compression converged in {step_i} steps")
+                    break
+
+                # Update learning rate
+                optimizer.zero_grad(set_to_none=True)
+                lr_scheduler.step()
+                projection_optimizer.zero_grad(set_to_none=True)
+                projection_lr_scheduler.step()
+
+            total_per_sample_convergence_sum = total_per_sample_convergence.sum(dim=0)
+            print("total_per_sample_convergence_sum", total_per_sample_convergence_sum)
+            total_per_sample_convergence_099_sum = total_per_sample_convergence_099.sum(dim=0)
+            print("total_per_sample_convergence_099_sum", total_per_sample_convergence_099_sum)
+            total_per_sample_convergence_095_sum = total_per_sample_convergence_095.sum(dim=0)
+            print("total_per_sample_convergence_095_sum", total_per_sample_convergence_095_sum)
+
+            # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
+            with torch.no_grad():
+                tokenizer = self.processing_class
+                last_loss = loss.item()
+                last_convergence_per_sample = convergence_per_sample.cpu()
+                # Reconstruct compression tokens if using PCA (for saving)
+                pca_coefficients_to_save = None
+                compression_token_embeddings_cpu = compression_token_embeddings.detach().cpu()
+                for j in range(batch_size):
+                    sample_attention_mask = attention_mask[j].bool()
+                    sample_input_ids = input_ids[j][sample_attention_mask]
+                    sample_text = tokenizer.decode(sample_input_ids, skip_special_tokens=True)
+                    embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
+                    initialization_embedding = initialization_embeddings[j].to(torch.float32).numpy().tolist()
+                    compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
+                    compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
+                    item_convergence_per_sample = total_per_sample_convergence_sum[j].item()
+                    collected_rows.append(
+                        {
+                            "sample_id": sample_id_counter,
+                            "text": sample_text,
+                            "embedding": embedding,  # [mem, hidden]
+                            "pca_coefficients": pca_coefficients_to_save[j] if pca_coefficients_to_save is not None else None,
+                            "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization
+                            "final_loss": last_loss,
+                            "final_convergence": last_convergence_per_sample[j].item(),
+                            "convergence_after_steps": item_convergence_per_sample,
+                            "convergence_0.99_after_steps": int(total_per_sample_convergence_099_sum[j].item()),
+                            "convergence_0.95_after_steps": int(total_per_sample_convergence_095_sum[j].item()),
+                            "compression_tokens_mean": compression_token_embeddings_mean,
+                            "compression_tokens_std": compression_token_embeddings_std,
+                            "num_input_tokens": int(sample_attention_mask.sum().item()),
+                            "num_compression_tokens": int(num_compression_tokens),
+                            "hidden_size": hidden_size,
+                            "fix_position_ids": self.args.fix_position_ids,
+                            "loss_type": self.args.loss_type,
+                            "hybrid_alpha": self.args.hybrid_alpha,
+                            "dtype": self.args.dtype,
+                            "embedding_init_method": self.args.embedding_init_method,
+                            "num_alignment_layers": self.args.num_alignment_layers,
+                            "model_checkpoint": self.args.model_checkpoint,
+                            "max_optimization_steps_per_sample": self.args.max_optimization_steps_per_sample,
+                        }
+                    )
+                    sample_id_counter += 1
+                    # Store final compression tokens for saving (from last batch)
+                    final_compression_token_embeddings_cpu = compression_token_embeddings_cpu
+
+        # Close TensorBoard writer
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+
+        # Persist artifacts
+        save_path = self._save_artifacts(final_compression_token_embeddings_cpu, collected_rows, "compressed_prefixes")
+        if save_path is not None:
+            return save_path
+        return None
+
     def _evaluate_noop_on_longer_sequences(self, model, compression_token_embeddings_single, num_compression_tokens):
         """Evaluate compression embeddings on sequences that are twice as long as training sequences."""
         model.eval()
@@ -1056,7 +1291,7 @@ class MyTrainer:
         dataloader = self._create_dataloader()
         num_training_steps = self.args.num_train_epochs * len(dataloader) / self.args.gradient_accumulation_steps
         optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
-            compression_token_embeddings_single, num_training_steps=num_training_steps
+            [compression_token_embeddings_single], num_training_steps=num_training_steps
         )
 
         gradient_accumulation_steps = self.args.gradient_accumulation_steps
@@ -1415,7 +1650,7 @@ class MyTrainer:
                 )
 
                 # Optimizer only optimizes coefficients
-                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(pca_coefficients)
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler([pca_coefficients])
             else:
                 # Standard initialization: optimize full compression tokens
                 compression_tokens = self._init_compression_tokens(
@@ -1433,7 +1668,7 @@ class MyTrainer:
                 compression_tokens = torch.nn.Parameter(compression_tokens.data.to(device))
                 initialization_embeddings = compression_tokens.detach().clone().cpu()  # [batch, mem, hidden]
                 optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
-                    compression_tokens, num_training_steps=self.args.max_optimization_steps_per_sample
+                    [compression_tokens], num_training_steps=self.args.max_optimization_steps_per_sample
                 )
 
             compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype).repeat(
@@ -1572,10 +1807,10 @@ class MyTrainer:
                         print(f"Not converged at seq_len={seq_len}, resetting LR scheduler and retrying...")
                         # Rebuild scheduler with same parameters
                         if init_method == "pretrained_pca":
-                            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(pca_coefficients)
+                            optimizer, lr_scheduler = self._build_optimizer_and_scheduler([pca_coefficients])
                         else:
                             optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
-                                compression_tokens, num_training_steps=self.args.max_optimization_steps_per_token
+                                [compression_tokens], num_training_steps=self.args.max_optimization_steps_per_token
                             )
                         scheduler_reset_used = True
                         # Reset progress bar and continue training

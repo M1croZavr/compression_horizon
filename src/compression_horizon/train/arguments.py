@@ -172,6 +172,9 @@ class MyTrainingArguments(TrainingArguments):
         },
     )
 
+    # TODO
+    low_dim_train: bool = field(default=False, metadata={"help": "Whether to use low_dim training."})
+    low_dim_size: int = field(default=64)
     # Progressive training control
     noop_train: bool = field(default=False, metadata={"help": "Whether to use noop training."})
     noop_convergence_threshold: float = field(
