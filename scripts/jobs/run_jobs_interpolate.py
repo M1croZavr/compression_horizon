@@ -56,6 +56,7 @@ if __name__ == "__main__":
                 "job_desc": f"CH: interpolate {checkpoint1} {checkpoint2} #{author_name} #multimodal #notify_completed @mrsndmn",
                 "env_variables": {
                     "PYTHONPATH": "./src",
+                    "HF_HOME": "/workspace-SR004.nfs2/.cache/huggingface",
                 },
                 "instance_type": "a100.1gpu",
                 "region": extra_options["region"],

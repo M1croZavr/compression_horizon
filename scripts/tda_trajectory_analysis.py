@@ -370,9 +370,11 @@ def plot_trajectory_space_embedding(
 
     if method == "tsne":
         # Use distance matrix for t-SNE
+        # Note: init="random" is required when using metric="precomputed"
         embedding = TSNE(
             n_components=2,
             metric="precomputed",
+            init="random",
             random_state=42,
             perplexity=min(30, len(distance_matrix) - 1),
         ).fit_transform(distance_matrix)

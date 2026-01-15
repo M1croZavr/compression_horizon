@@ -77,6 +77,9 @@ def load_or_create_tokenized_dataset(
 
     # Create dataset if not cached
     print("Tokenizing dataset (this may take a while)...")
+    if dataset_name == "mrsndmn/pg19-model-sampled-llama3.1-8B-prefix-64-max_len-2048":
+        split = "train"
+
     raw_dataset = load_dataset(dataset_name, split=split, num_proc=num_proc)
 
     # Apply offset and limit

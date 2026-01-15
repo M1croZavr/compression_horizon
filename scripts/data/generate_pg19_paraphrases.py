@@ -371,7 +371,7 @@ def create_model_sampled_dataset(
             )
 
     # Create dataset from results
-    model_sampled_dataset = Dataset.from_list(results)
+    model_sampled_dataset = Dataset.from_list(results, split="test")
 
     model_sampled_path = os.path.join(output_dir, "model_sampled")
     model_sampled_dataset.save_to_disk(model_sampled_path)

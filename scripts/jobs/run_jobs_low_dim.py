@@ -398,6 +398,7 @@ if __name__ == "__main__":
             "job_desc": job_desc,
             "env_variables": {
                 "PYTHONPATH": "./src",
+                "HF_HOME": "/workspace-SR004.nfs2/.cache/huggingface",
             },
             "instance_type": "a100.1gpu",
             "region": extra_options["region"],
