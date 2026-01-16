@@ -144,6 +144,7 @@ def compute_attention_mass_for_stages(
     stages: List[Dict[str, Any]],
     device: torch.device,
     attention_block_size: int = 16,
+    target_seq_lengths_override: Optional[List[int]] = None,
 ) -> Dict[int, Dict[int, float]]:
     """
     Compute attention mass percent for all stages.
@@ -231,8 +232,11 @@ def compute_attention_mass_for_stages(
                 "Try setting model.set_attn_implementation('eager') before loading."
             )
 
-    # Get all unique sequence lengths from stages
-    target_seq_lengths = sorted(set(int(s.get("stage_seq_len", -1)) for s in stages if int(s.get("stage_seq_len", -1)) > 0))
+    if target_seq_lengths_override is not None:
+        target_seq_lengths = list(target_seq_lengths_override)
+    else:
+        # Get all unique sequence lengths from stages
+        target_seq_lengths = sorted(set(int(s.get("stage_seq_len", -1)) for s in stages if int(s.get("stage_seq_len", -1)) > 0))
 
     # Extract attention mass for all sequence lengths at once
     print(f"Extracting attention mass for {len(target_seq_lengths)} sequence lengths...")
@@ -306,6 +310,32 @@ def plot_attention_hijacking_heatmap(
     print(f"Saved heatmap to: {output_path}")
 
 
+def average_attention_mass_results(
+    results_list: List[Dict[int, Dict[int, float]]],
+) -> Dict[int, Dict[int, float]]:
+    if not results_list:
+        return {}
+
+    sums: Dict[int, Dict[int, float]] = {}
+    counts: Dict[int, Dict[int, int]] = {}
+    for res in results_list:
+        for seq_len, layer_map in res.items():
+            for layer_idx, val in layer_map.items():
+                sums.setdefault(seq_len, {}).setdefault(layer_idx, 0.0)
+                counts.setdefault(seq_len, {}).setdefault(layer_idx, 0)
+                sums[seq_len][layer_idx] += float(val)
+                counts[seq_len][layer_idx] += 1
+
+    out: Dict[int, Dict[int, float]] = {}
+    for seq_len in sorted(sums.keys()):
+        out[seq_len] = {}
+        for layer_idx in sorted(sums[seq_len].keys()):
+            c = counts[seq_len][layer_idx]
+            if c > 0:
+                out[seq_len][layer_idx] = sums[seq_len][layer_idx] / c
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="Visualize attention hijacking with compression tokens")
     parser.add_argument(
@@ -331,6 +361,12 @@ def main():
         type=str,
         default=None,
         help="Directory to save figures (default: inferred from dataset_path)",
+    )
+    parser.add_argument(
+        "--min_seq_length",
+        type=int,
+        default=1,
+        help="Filter out samples whose max stage_seq_len is < this value.",
     )
     parser.add_argument(
         "--attention_block_size",
@@ -404,25 +440,72 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     # Process each sample
-    for sample_id, stages in by_sid.items():
-        print(f"\nProcessing sample {sample_id} with {len(stages)} stages...")
+    if args.min_seq_length < 1:
+        raise ValueError("--min_seq_length must be >= 1")
 
-        # Compute attention mass for all stages
-        results = compute_attention_mass_for_stages(
-            model=model,
-            tokenizer=tokenizer,
-            stages=stages,
-            device=device,
-            attention_block_size=args.attention_block_size,
+    if args.sample_id is None:
+        # Average heatmaps over all samples, limiting to the minimum max sequence length across samples.
+        eligible_by_sid: Dict[int, List[Dict[str, Any]]] = {}
+        per_sample_max = []
+        for _sid, stages in by_sid.items():
+            max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
+            if max_len >= args.min_seq_length:
+                eligible_by_sid[_sid] = stages
+                per_sample_max.append(max_len)
+        if not per_sample_max:
+            raise ValueError(
+                f"No samples with max stage_seq_len >= {args.min_seq_length} found. "
+                "Lower --min_seq_length or check the dataset."
+            )
+
+        min_max_len = min(per_sample_max)
+        print(
+            f"\nAveraging over {len(eligible_by_sid)} samples; "
+            f"using target_seq_len in [{args.min_seq_length}, {min_max_len}]"
         )
+        target_seq_lengths_override = list(range(args.min_seq_length, min_max_len + 1))
 
-        # Plot heatmap
-        output_path = os.path.join(output_dir, f"attention_hijacking_sample_{sample_id}.png")
+        all_results: List[Dict[int, Dict[int, float]]] = []
+        for sample_id, stages in eligible_by_sid.items():
+            print(f"\nProcessing sample {sample_id} with {len(stages)} stages...")
+            results = compute_attention_mass_for_stages(
+                model=model,
+                tokenizer=tokenizer,
+                stages=stages,
+                device=device,
+                attention_block_size=args.attention_block_size,
+                target_seq_lengths_override=target_seq_lengths_override,
+            )
+            if results:
+                all_results.append(results)
+
+        avg_results = average_attention_mass_results(all_results)
+        output_path = os.path.join(output_dir, "attention_hijacking_avg.png")
         plot_attention_hijacking_heatmap(
-            results=results,
-            sample_id=sample_id,
+            results=avg_results,
+            sample_id=None,
             output_path=output_path,
         )
+    else:
+        for sample_id, stages in by_sid.items():
+            max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
+            if max_len < args.min_seq_length:
+                print(f"\nSkipping sample {sample_id}: max stage_seq_len={max_len} < min_seq_length={args.min_seq_length}")
+                continue
+            print(f"\nProcessing sample {sample_id} with {len(stages)} stages...")
+            results = compute_attention_mass_for_stages(
+                model=model,
+                tokenizer=tokenizer,
+                stages=stages,
+                device=device,
+                attention_block_size=args.attention_block_size,
+            )
+            output_path = os.path.join(output_dir, f"attention_hijacking_sample_{sample_id}.png")
+            plot_attention_hijacking_heatmap(
+                results=results,
+                sample_id=sample_id,
+                output_path=output_path,
+            )
 
     print(f"\nAll visualizations saved to: {output_dir}")
 
