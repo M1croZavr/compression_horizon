@@ -1,11 +1,14 @@
 """Generate text using greedy decoding from progressive training artifacts."""
 
 import argparse
+import json
 import os
+import sys
 from typing import Optional
 
 import torch
 from datasets import Dataset
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 
 from compression_horizon.inference.generation import generate_from_compression
@@ -22,10 +25,19 @@ def generate_with_token_tracking(
     compressed_embeddings: torch.Tensor,  # [1, mem, hidden]
     max_new_tokens: int,
     stage_seq_len: int,
+    only_new_tokens: bool = False,
+    show_progress: bool = True,
+    stream_tokens: bool = False,
 ) -> tuple[str, list[int], list[int]]:
     """
     Generate text and return both the text and a list indicating which token positions
     are out of bounds (beyond stage_seq_len).
+
+    Args:
+        only_new_tokens: If True, skip generating tokens up to stage_seq_len and only
+                        generate tokens beyond that point.
+        show_progress: If True, show tqdm progress bar
+        stream_tokens: If True, stream tokens to stdout as they're generated
 
     Returns:
         (generated_text, out_of_bounds_mask, token_ids) where:
@@ -47,7 +59,20 @@ def generate_with_token_tracking(
     input_embeddings = model.get_input_embeddings()
     torch_dtype = input_embeddings.weight.dtype
 
-    for _ in range(max_new_tokens):
+    # If only_new_tokens is True, we need to generate stage_seq_len dummy tokens first
+    # to position ourselves at the right point, then generate the actual new tokens
+    tokens_to_generate = max_new_tokens
+    if only_new_tokens and stage_seq_len > 0:
+        # First, generate stage_seq_len tokens (these will be discarded or not shown)
+        # Then generate max_new_tokens tokens beyond that
+        tokens_to_generate = stage_seq_len + max_new_tokens
+
+    # Create progress bar
+    pbar = None
+    if show_progress:
+        pbar = tqdm(total=tokens_to_generate, desc="Generating tokens", unit="token", ncols=100)
+
+    for step in range(tokens_to_generate):
         if generated_token_ids.size(1) == 0:
             generated_embeddings = torch.empty(batch_size, 0, hidden_size, device=device)
         else:
@@ -74,18 +99,47 @@ def generate_with_token_tracking(
 
         generated_token_ids = torch.cat([generated_token_ids, next_token_ids.unsqueeze(-1)], dim=-1)
 
+        # Update progress bar and optionally stream token
+        if pbar is not None:
+            pbar.update(1)
+            if stream_tokens:
+                token_text = tokenizer.decode([next_token_ids[0].item()], skip_special_tokens=False)
+                sys.stdout.write(token_text)
+                sys.stdout.flush()
+
         if eos_token_id is not None and torch.all(next_token_ids.eq(eos_token_id)):
             break
 
-    generated_text = tokenizer.batch_decode(generated_token_ids, skip_special_tokens=True)[0]
+    if pbar is not None:
+        pbar.close()
+    if stream_tokens:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
-    # Determine which tokens are out of bounds
-    # Tokens beyond stage_seq_len are out of bounds
-    num_generated_tokens = generated_token_ids.shape[1]
-    out_of_bounds_mask = [1 if i >= stage_seq_len else 0 for i in range(num_generated_tokens)]
+    # If only_new_tokens is True, slice to only keep tokens beyond stage_seq_len
+    if only_new_tokens and stage_seq_len > 0:
+        if generated_token_ids.shape[1] > stage_seq_len:
+            new_tokens_only = generated_token_ids[:, stage_seq_len:]
+            generated_text = tokenizer.batch_decode(new_tokens_only, skip_special_tokens=True)[0]
+            token_ids_for_output = new_tokens_only[0].cpu().tolist()
+            # All remaining tokens are "new" (out of bounds of training)
+            num_new_tokens = len(token_ids_for_output)
+            out_of_bounds_mask = [1] * num_new_tokens
+        else:
+            # Not enough tokens generated, return empty
+            generated_text = ""
+            token_ids_for_output = []
+            out_of_bounds_mask = []
+    else:
+        generated_text = tokenizer.batch_decode(generated_token_ids, skip_special_tokens=True)[0]
+        token_ids_for_output = generated_token_ids[0].cpu().tolist()
+        # Determine which tokens are out of bounds
+        # Tokens beyond stage_seq_len are out of bounds
+        num_generated_tokens = generated_token_ids.shape[1]
+        out_of_bounds_mask = [1 if i >= stage_seq_len else 0 for i in range(num_generated_tokens)]
 
     # Return both the text and the token IDs for accurate highlighting
-    return generated_text, out_of_bounds_mask, generated_token_ids[0].cpu().tolist()
+    return generated_text, out_of_bounds_mask, token_ids_for_output
 
 
 def highlight_out_of_bounds_tokens(
@@ -122,6 +176,91 @@ def highlight_out_of_bounds_tokens(
             highlighted_parts.append(token_text)
 
     return "".join(highlighted_parts)
+
+
+@torch.no_grad()
+def generate_from_text_prefix(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    text_prefix: str,
+    max_new_tokens: int,
+    show_progress: bool = True,
+    stream_tokens: bool = False,
+) -> tuple[str, list[int]]:
+    """
+    Generate text from a text prefix using standard greedy decoding (without compression tokens).
+
+    Args:
+        model: The language model
+        tokenizer: The tokenizer
+        text_prefix: The text prefix to generate from
+        max_new_tokens: Maximum number of new tokens to generate
+        show_progress: If True, show tqdm progress bar
+        stream_tokens: If True, stream tokens to stdout as they're generated
+
+    Returns:
+        (generated_text, token_ids) where:
+        - generated_text: The full generated text (prefix + continuation)
+        - token_ids: List of all token IDs (prefix + generated tokens)
+    """
+    device = next(model.parameters()).device
+    model = model.to(device)
+    model.eval()
+
+    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+    eos_token_id = tokenizer.eos_token_id
+
+    # Tokenize the prefix
+    prefix_ids = tokenizer.encode(text_prefix, return_tensors="pt", add_special_tokens=True).to(device)
+    input_ids = prefix_ids.clone()
+
+    # Create progress bar
+    pbar = None
+    if show_progress:
+        pbar = tqdm(total=max_new_tokens, desc="Generating baseline tokens", unit="token", ncols=100)
+
+    # Generate continuation
+    for step in range(max_new_tokens):
+        outputs = model(input_ids=input_ids)
+        logits = outputs.logits[:, -1, :]
+        next_token_id = torch.argmax(logits, dim=-1)
+
+        # Handle EOS
+        if eos_token_id is not None:
+            if input_ids.size(1) > prefix_ids.size(1):
+                reached_eos = input_ids[:, -1].eq(eos_token_id)
+                next_token_id = torch.where(
+                    reached_eos,
+                    torch.full_like(next_token_id, eos_token_id),
+                    next_token_id,
+                )
+
+        input_ids = torch.cat([input_ids, next_token_id.unsqueeze(-1)], dim=-1)
+
+        # Update progress bar and optionally stream token
+        if pbar is not None:
+            pbar.update(1)
+            if stream_tokens:
+                token_text = tokenizer.decode([next_token_id.item()], skip_special_tokens=False)
+                sys.stdout.write(token_text)
+                sys.stdout.flush()
+
+        # Stop early if all sequences just produced eos and had eos previously
+        if eos_token_id is not None and torch.all(next_token_id.eq(eos_token_id)):
+            break
+
+    if pbar is not None:
+        pbar.close()
+    if stream_tokens:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    # Decode the full sequence
+    generated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+    token_ids = input_ids[0].cpu().tolist()
+
+    return generated_text, token_ids
 
 
 def load_progressive_artifact(
@@ -232,6 +371,35 @@ def main() -> None:
         default=None,
         help="Optional path to save generated text to a file",
     )
+    parser.add_argument(
+        "--only_new_tokens",
+        action="store_true",
+        help="Only generate tokens beyond the trained sequence length (skip tokens up to stage_seq_len)",
+    )
+    parser.add_argument(
+        "--no_baseline_generation",
+        dest="baseline_generation",
+        action="store_false",
+        help="Disable baseline generation (default: enabled)",
+    )
+    parser.set_defaults(baseline_generation=True)
+    parser.add_argument(
+        "--no_save_to_artifacts",
+        dest="save_to_artifacts",
+        action="store_false",
+        help="Disable saving to artifacts directory (default: enabled)",
+    )
+    parser.set_defaults(save_to_artifacts=True)
+    parser.add_argument(
+        "--stream_tokens",
+        action="store_true",
+        help="Stream tokens to stdout as they're generated (for real-time viewing)",
+    )
+    parser.add_argument(
+        "--no_progress",
+        action="store_true",
+        help="Disable progress bars",
+    )
 
     args = parser.parse_args()
 
@@ -282,8 +450,26 @@ def main() -> None:
     # Add batch dimension: [1, num_compression_tokens, hidden_size]
     compression_tokens = embedding.unsqueeze(0)
 
-    # Generate with token tracking
+    # Determine artifacts output directory
+    artifacts_output_dir = None
+    show_progress = not args.no_progress
+    if args.save_to_artifacts:
+        # Infer output directory from artifacts_path
+        # e.g., artifacts/experiments_progressive/exp_name/progressive_prefixes -> artifacts/experiments_progressive/exp_name
+        artifacts_path_normalized = os.path.normpath(args.artifacts_path)
+        if "progressive_prefixes" in artifacts_path_normalized:
+            artifacts_output_dir = os.path.dirname(artifacts_path_normalized)
+        elif "compressed_prefixes" in artifacts_path_normalized:
+            artifacts_output_dir = os.path.dirname(artifacts_path_normalized)
+        else:
+            # Fallback: use parent directory
+            artifacts_output_dir = os.path.dirname(artifacts_path_normalized)
+        os.makedirs(artifacts_output_dir, exist_ok=True)
+        print(f"\nWill save results to artifacts directory: {artifacts_output_dir}")
+
+    # Generate with compression tokens
     stage_seq_len = artifact.get("stage_seq_len", -1)
+    token_ids = None
     if stage_seq_len <= 0:
         print(f"\nWarning: stage_seq_len={stage_seq_len} is invalid, cannot highlight out-of-bounds tokens")
         print(f"Generating {args.num_tokens} tokens using greedy decoding...")
@@ -297,24 +483,62 @@ def main() -> None:
         generated_text = generated_texts[0]
         highlighted_text = generated_text
     else:
-        print(f"\nGenerating {args.num_tokens} tokens using greedy decoding...")
-        print(f"Tokens beyond position {stage_seq_len} will be highlighted in red (out of bounds)")
+        if args.only_new_tokens:
+            print(f"\nGenerating {args.num_tokens} new tokens (skipping first {stage_seq_len} tokens)...")
+            print(f"Only tokens beyond position {stage_seq_len} will be generated and shown")
+        else:
+            print(f"\nGenerating {args.num_tokens} tokens using greedy decoding...")
+            print(f"Tokens beyond position {stage_seq_len} will be highlighted in red (out of bounds)")
         generated_text, out_of_bounds_mask, token_ids = generate_with_token_tracking(
             model=model,
             tokenizer=tokenizer,
             compressed_embeddings=compression_tokens,
             max_new_tokens=args.num_tokens,
             stage_seq_len=stage_seq_len,
+            only_new_tokens=args.only_new_tokens,
+            show_progress=show_progress,
+            stream_tokens=args.stream_tokens,
         )
-        highlighted_text = highlight_out_of_bounds_tokens(
-            tokenizer=tokenizer,
-            token_ids=token_ids,
-            out_of_bounds_mask=out_of_bounds_mask,
-        )
+        if args.only_new_tokens:
+            # All tokens are new, so all should be highlighted
+            highlighted_text = highlight_out_of_bounds_tokens(
+                tokenizer=tokenizer,
+                token_ids=token_ids,
+                out_of_bounds_mask=out_of_bounds_mask,
+            )
+        else:
+            highlighted_text = highlight_out_of_bounds_tokens(
+                tokenizer=tokenizer,
+                token_ids=token_ids,
+                out_of_bounds_mask=out_of_bounds_mask,
+            )
 
-    print("\n=== Generated text ===")
-    print("(Red text indicates tokens beyond the trained sequence length)")
+    print("\n=== Generated text (with compression tokens) ===")
+    if args.only_new_tokens and stage_seq_len > 0:
+        print(f"(Only new tokens beyond position {stage_seq_len} are shown, all in red)")
+    else:
+        print("(Red text indicates tokens beyond the trained sequence length)")
     print(highlighted_text)
+
+    # Generate baseline (without compression tokens) if requested
+    baseline_text = None
+    baseline_token_ids = None
+    if args.baseline_generation:
+        if not artifact["text"]:
+            print("\nWarning: No reference text found in artifact, cannot generate baseline")
+        else:
+            if not args.stream_tokens:
+                print("\n=== Generating baseline (without compression tokens) ===")
+            baseline_text, baseline_token_ids = generate_from_text_prefix(
+                model=model,
+                tokenizer=tokenizer,
+                text_prefix=artifact["text"],
+                max_new_tokens=args.num_tokens,
+                show_progress=show_progress,
+                stream_tokens=args.stream_tokens,
+            )
+            if not args.stream_tokens:
+                print(baseline_text)
 
     # Save to file if requested
     if args.output_file:
@@ -325,11 +549,80 @@ def main() -> None:
             f.write(f"Stage Seq Len: {artifact.get('stage_seq_len', 'N/A')}\n")
             f.write(f"Model: {model_checkpoint}\n")
             f.write(f"Number of tokens generated: {args.num_tokens}\n")
+            if args.only_new_tokens:
+                f.write(f"Only new tokens mode: True (skipped first {stage_seq_len} tokens)\n")
             f.write(f"\nReference text:\n{artifact['text']}\n")
             f.write(f"\nGenerated text:\n{generated_text}\n")
             if stage_seq_len > 0:
-                f.write(f"\nNote: Tokens beyond position {stage_seq_len} are out of bounds of the trained sequence length.\n")
+                if args.only_new_tokens:
+                    f.write(f"\nNote: Only tokens beyond position {stage_seq_len} were generated (new tokens only).\n")
+                else:
+                    f.write(
+                        f"\nNote: Tokens beyond position {stage_seq_len} are out of bounds of the trained sequence length.\n"
+                    )
+            if baseline_text:
+                f.write("\n=== Baseline generation (without compression tokens) ===\n")
+                f.write(f"{baseline_text}\n")
         print(f"\nSaved output to: {os.path.abspath(args.output_file)}")
+
+    # Save to artifacts directory if requested
+    if args.save_to_artifacts and artifacts_output_dir:
+        results = {
+            "sample_id": artifact["sample_id"],
+            "stage_index": artifact["stage_index"],
+            "stage_seq_len": artifact.get("stage_seq_len", -1),
+            "model_checkpoint": model_checkpoint,
+            "num_tokens": args.num_tokens,
+            "only_new_tokens": args.only_new_tokens,
+            "seed": args.seed,
+            "reference_text": artifact["text"],
+            "generated_with_compression": {
+                "text": generated_text,
+                "token_ids": token_ids if stage_seq_len > 0 else None,
+            },
+        }
+
+        if baseline_text:
+            results["generated_baseline"] = {
+                "text": baseline_text,
+                "token_ids": baseline_token_ids,
+            }
+
+        # Save JSON file
+        output_filename = f"generation_sample_{artifact['sample_id']}_stage_{artifact['stage_index']}.json"
+        output_path = os.path.join(artifacts_output_dir, output_filename)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        print(f"\nSaved generation results to: {output_path}")
+
+        # Also save as readable text files
+        compression_output_file = os.path.join(
+            artifacts_output_dir,
+            f"generation_with_compression_sample_{artifact['sample_id']}_stage_{artifact['stage_index']}.txt",
+        )
+        with open(compression_output_file, "w", encoding="utf-8") as f:
+            f.write(f"Sample ID: {artifact['sample_id']}\n")
+            f.write(f"Stage Index: {artifact['stage_index']}\n")
+            f.write(f"Stage Seq Len: {artifact.get('stage_seq_len', 'N/A')}\n")
+            f.write(f"Model: {model_checkpoint}\n")
+            f.write(f"Number of tokens: {args.num_tokens}\n")
+            f.write(f"Only new tokens: {args.only_new_tokens}\n")
+            f.write(f"\nReference text:\n{artifact['text']}\n")
+            f.write(f"\nGenerated text (with compression tokens):\n{generated_text}\n")
+        print(f"Saved compression generation to: {compression_output_file}")
+
+        if baseline_text:
+            baseline_output_file = os.path.join(
+                artifacts_output_dir, f"generation_baseline_sample_{artifact['sample_id']}_stage_{artifact['stage_index']}.txt"
+            )
+            with open(baseline_output_file, "w", encoding="utf-8") as f:
+                f.write(f"Sample ID: {artifact['sample_id']}\n")
+                f.write(f"Stage Index: {artifact['stage_index']}\n")
+                f.write(f"Model: {model_checkpoint}\n")
+                f.write(f"Number of tokens: {args.num_tokens}\n")
+                f.write(f"\nReference text (prefix):\n{artifact['text']}\n")
+                f.write(f"\nGenerated text (baseline, without compression tokens):\n{baseline_text}\n")
+            print(f"Saved baseline generation to: {baseline_output_file}")
 
 
 if __name__ == "__main__":
