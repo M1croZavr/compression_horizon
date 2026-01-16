@@ -93,6 +93,66 @@ def compute_num_pca_explained_99_var(embeddings: List[np.ndarray]) -> float:
     return num_pca_for99_var
 
 
+def compute_num_random_projections_explained_99_var(
+    embeddings: List[np.ndarray], n_projections: int = 1000, random_state: int = 42
+) -> float:
+    """Compute how many random projections explain 99% of variation in embeddings path.
+
+    Args:
+        embeddings: List of flattened embedding arrays
+        n_projections: Number of random projection directions to generate
+        random_state: Random seed for reproducibility
+
+    Returns:
+        Number of random projections needed to explain 99% variance, or NaN if not computable
+    """
+    if len(embeddings) < 2:
+        return float("nan")
+
+    # Stack embeddings: [n_samples, n_features]
+    X = np.stack(embeddings, axis=0)
+
+    # Need at least 2 samples
+    if X.shape[0] < 2:
+        return float("nan")
+
+    n_samples, n_features = X.shape
+
+    # Center the data
+    X_centered = X - X.mean(axis=0, keepdims=True)
+
+    # Generate random projection directions (unit vectors)
+    rng = np.random.RandomState(random_state)
+    random_directions = rng.randn(n_projections, n_features)
+    # Normalize to unit vectors
+    norms = np.linalg.norm(random_directions, axis=1, keepdims=True)
+    random_directions = random_directions / (norms + 1e-12)
+
+    # Project embeddings onto each random direction
+    projections = X_centered @ random_directions.T  # [n_samples, n_projections]
+
+    # Compute variance along each projection direction
+    variances = np.var(projections, axis=0)  # [n_projections]
+
+    # Sort by variance (descending)
+    sorted_indices = np.argsort(variances)[::-1]
+    sorted_variances = variances[sorted_indices]
+
+    # Compute cumulative variance
+    total_variance = np.sum(sorted_variances)
+    if total_variance == 0:
+        return float("nan")
+
+    cumulative_var = np.cumsum(sorted_variances) / total_variance
+
+    # Find number of projections needed for 99% variance
+    num_projections = (cumulative_var < 0.99).sum() + 1
+    if num_projections > n_projections:
+        num_projections = -1
+
+    return float(num_projections)
+
+
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
@@ -106,7 +166,7 @@ def extract_trajectory(
 
     Returns:
         Tuple of (embeddings array [n_stages, n_features], labels list, statistics dict, final_embedding)
-        Statistics dict contains: 'num_embeddings', 'total_steps', 'trajectory_length', 'num_pca_for99_var'
+        Statistics dict contains: 'num_embeddings', 'total_steps', 'trajectory_length', 'num_pca_for99_var', 'num_random_projections_for99_var'
         All stats are formatted as mean ± std across all samples in the dataset.
         final_embedding is the last embedding in the trajectory (for the selected sample)
     """
@@ -125,6 +185,7 @@ def extract_trajectory(
     all_total_steps = []
     all_trajectory_lengths = []
     all_num_pca_for99_var = []
+    all_num_random_projections_for99_var = []
 
     all_embeds = []
 
@@ -159,6 +220,11 @@ def extract_trajectory(
         if not np.isnan(num_pca_explained_99_var):
             all_num_pca_for99_var.append(num_pca_explained_99_var)
 
+        # Compute random projections metric
+        num_random_projections = compute_num_random_projections_explained_99_var(sample_embeddings)
+        if not np.isnan(num_random_projections):
+            all_num_random_projections_for99_var.append(num_random_projections)
+
     num_pca_explained_99_var_all_embeds = compute_num_pca_explained_99_var(all_embeds)
 
     # Compute mean and std for all metrics
@@ -176,6 +242,11 @@ def extract_trajectory(
         "trajectory_length": format_mean_std(all_trajectory_lengths, precision=2),
         "num_pca_for99_var": format_mean_std(all_num_pca_for99_var, precision=2) if len(all_num_pca_for99_var) > 0 else "nan",
         "num_pca_for99_var_all_embeds": num_pca_explained_99_var_all_embeds,
+        "num_random_projections_for99_var": (
+            format_mean_std(all_num_random_projections_for99_var, precision=2)
+            if len(all_num_random_projections_for99_var) > 0
+            else "nan"
+        ),
     }
 
     # Now extract trajectory for visualization (use specified sample_id or first available)
@@ -446,10 +517,11 @@ def print_statistics_table(
                 stats.get("trajectory_length", "nan"),
                 stats.get("num_pca_for99_var", "nan"),
                 stats.get("num_pca_for99_var_all_embeds", "nan"),
+                stats.get("num_random_projections_for99_var", "nan"),
             ]
         )
 
-    headers = ["Experiment", "# Compr. Tok", "Traj. Len", "PCA 99%", "PCA ALL 99%"]
+    headers = ["Experiment", "# Compr. Tok", "Traj. Len", "PCA 99%", "PCA ALL 99%", "Rand. Proj. 99%"]
     table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
 
     print("\n" + "=" * 80)
