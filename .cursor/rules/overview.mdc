@@ -66,3 +66,9 @@ For all python commands use python interpreter path: /home/jovyan/.mlspace/envs/
 ### Notes
 - The base model weights remain frozen; only the prepended compression tokens are optimized per-sample.
 - `loss_type` and `num_alignment_layers` significantly influence behavior; start with `l2` and `0` respectively, then ablate.
+
+# Artifacts
+
+## Progressive training artifacts
+
+Ceckout training method to see how artifacts are saved: `def progressive_train` @src/compression_horizon/train/trainer.py
