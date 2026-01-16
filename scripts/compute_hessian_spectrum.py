@@ -12,6 +12,7 @@ Hypothesis: "Walls" in optimization show up as eigenvalue spikes, and compressio
 works by finding "flat" regions in specific directions.
 """
 import argparse
+import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -225,6 +226,8 @@ def compute_hessian_eigenvalues(
     hybrid_alpha: Optional[float] = None,
     num_eigenvalues: int = 20,
     use_lanczos: bool = True,
+    hvp_mode: str = "auto",
+    finite_diff_eps: float = 1e-3,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute Hessian eigenvalues w.r.t. compression tokens.
@@ -241,6 +244,8 @@ def compute_hessian_eigenvalues(
         hybrid_alpha: Weight for alignment loss
         num_eigenvalues: Number of eigenvalues to compute
         use_lanczos: Whether to use Lanczos method (more efficient for large Hessians)
+        hvp_mode: HVP method: "auto" (autograd then fallback), "autograd", or "finite_diff"
+        finite_diff_eps: Epsilon for finite-difference HVPs
 
     Returns:
         eigenvalues: Tensor of eigenvalues (sorted descending)
@@ -282,7 +287,13 @@ def compute_hessian_eigenvalues(
     # Always use Lanczos for now as it's more memory efficient
     if use_lanczos or flattened.numel() > 500:
         # Use iterative method to compute top eigenvalues
-        eigenvalues, eigenvectors = compute_hessian_eigenvalues_lanczos(loss_fn, flattened, num_eigenvalues=num_eigenvalues)
+        eigenvalues, eigenvectors = compute_hessian_eigenvalues_lanczos(
+            loss_fn,
+            flattened,
+            num_eigenvalues=num_eigenvalues,
+            hvp_mode=hvp_mode,
+            finite_diff_eps=finite_diff_eps,
+        )
     else:
         # Compute full Hessian for small parameter spaces
         try:
@@ -301,7 +312,13 @@ def compute_hessian_eigenvalues(
         except (ImportError, RuntimeError) as e:
             # Fallback: use Lanczos method
             print(f"Warning: Full Hessian computation failed ({e}), using Lanczos method")
-            eigenvalues, eigenvectors = compute_hessian_eigenvalues_lanczos(loss_fn, flattened, num_eigenvalues=num_eigenvalues)
+            eigenvalues, eigenvectors = compute_hessian_eigenvalues_lanczos(
+                loss_fn,
+                flattened,
+                num_eigenvalues=num_eigenvalues,
+                hvp_mode=hvp_mode,
+                finite_diff_eps=finite_diff_eps,
+            )
 
     return eigenvalues.detach().cpu(), eigenvectors.detach().cpu()
 
@@ -311,6 +328,9 @@ def compute_hessian_eigenvalues_lanczos(
     params: torch.Tensor,
     num_eigenvalues: int = 20,
     num_lanczos_iterations: Optional[int] = None,
+    debug: Optional[Dict[str, Any]] = None,
+    hvp_mode: str = "auto",
+    finite_diff_eps: float = 1e-3,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute top eigenvalues using Lanczos algorithm with Hessian-vector products.
@@ -323,8 +343,28 @@ def compute_hessian_eigenvalues_lanczos(
     device = params.device
     dtype = params.dtype
 
+    def _fd_hvp(v: torch.Tensor) -> torch.Tensor:
+        """Finite-difference Hessian-vector product: (g(x+e v)-g(x-e v)) / (2e)."""
+        eps = float(finite_diff_eps)
+        if eps <= 0:
+            raise ValueError(f"finite_diff_eps must be > 0, got {finite_diff_eps}")
+
+        v = v.detach()
+        with torch.enable_grad():
+            p_plus = (params.detach() + eps * v).requires_grad_(True)
+            loss_plus = loss_fn(p_plus)
+            g_plus = torch.autograd.grad(loss_plus, p_plus, create_graph=False, retain_graph=False, only_inputs=True)[0]
+
+            p_minus = (params.detach() - eps * v).requires_grad_(True)
+            loss_minus = loss_fn(p_minus)
+            g_minus = torch.autograd.grad(loss_minus, p_minus, create_graph=False, retain_graph=False, only_inputs=True)[0]
+
+        return ((g_plus - g_minus) / (2.0 * eps)).detach()
+
     def hvp(v: torch.Tensor) -> torch.Tensor:
         """Hessian-vector product: H @ v"""
+        if debug is not None:
+            debug["hvp_calls"] = int(debug.get("hvp_calls", 0)) + 1
         # Params should already require grad from outer scope
         # We need to ensure params is used directly in the computation graph
         # Compute loss - this must use params in a way that creates gradients
@@ -355,9 +395,21 @@ def compute_hessian_eigenvalues_lanczos(
             raise
         if grad is None:
             # If grad is None, params weren't actually connected; treat as zero curvature.
+            if debug is not None:
+                debug["hvp_zero_grad_none"] = int(debug.get("hvp_zero_grad_none", 0)) + 1
             return torch.zeros_like(params)
         if not grad.requires_grad:
-            # If the gradient is a constant w.r.t. params (e.g., linear loss), Hessian is zero.
+            # If the gradient is a constant w.r.t. params OR the graph does not support
+            # double-backward (common with some fused attention kernels), Hessian is zero here.
+            if debug is not None:
+                debug["hvp_zero_grad_no_grad_fn"] = int(debug.get("hvp_zero_grad_no_grad_fn", 0)) + 1
+                debug["hvp_mode_selected"] = debug.get("hvp_mode_selected", None) or hvp_mode
+            if hvp_mode in {"auto", "finite_diff"}:
+                if debug is not None:
+                    debug["hvp_finite_diff_used"] = int(debug.get("hvp_finite_diff_used", 0)) + 1
+                return _fd_hvp(v)
+            if debug is not None:
+                debug["hvp_autograd_double_backward_unavailable"] = True
             return torch.zeros_like(params)
         # Compute HVP: derivative of (grad @ v) w.r.t. params
         # This is equivalent to H @ v where H is the Hessian
@@ -370,9 +422,18 @@ def compute_hessian_eigenvalues_lanczos(
             # In that case the Hessian is effectively zero.
             msg = str(e)
             if "does not require grad" in msg or "does not have a grad_fn" in msg:
+                if debug is not None:
+                    debug["hvp_zero_double_backward_error"] = int(debug.get("hvp_zero_double_backward_error", 0)) + 1
+                    debug["hvp_last_error"] = msg
+                if hvp_mode in {"auto", "finite_diff"}:
+                    if debug is not None:
+                        debug["hvp_finite_diff_used"] = int(debug.get("hvp_finite_diff_used", 0)) + 1
+                    return _fd_hvp(v)
                 return torch.zeros_like(params)
             raise
         if hvp_val is None:
+            if debug is not None:
+                debug["hvp_zero_hvp_none"] = int(debug.get("hvp_zero_hvp_none", 0)) + 1
             return torch.zeros_like(params)
         return hvp_val.detach()
 
@@ -410,6 +471,8 @@ def compute_hessian_eigenvalues_lanczos(
     n = len(alpha)
     if n < 2:
         # Fallback: return dummy values
+        if debug is not None:
+            debug["lanczos_iterations_used"] = int(n)
         eigenvals = torch.zeros(num_eigenvalues, device=device, dtype=dtype)
         eigenvecs = torch.eye(params.numel(), num_eigenvalues, device=device, dtype=dtype)
         return eigenvals.detach().cpu(), eigenvecs.detach().cpu().T
@@ -431,6 +494,8 @@ def compute_hessian_eigenvalues_lanczos(
     Q_matrix = torch.stack(Q, dim=1)  # [param_dim, num_iterations]
     eigenvecs = Q_matrix @ eigenvecs_tridiag  # [param_dim, num_eigenvalues]
 
+    if debug is not None:
+        debug["lanczos_iterations_used"] = int(n)
     return eigenvals.detach().cpu(), eigenvecs.detach().cpu().T
 
 
@@ -443,6 +508,9 @@ def compute_hessian_for_stage(
     loss_type: str = "cross_entropy",
     num_alignment_layers: int = 0,
     hybrid_alpha: Optional[float] = None,
+    debug_hessian: bool = False,
+    hvp_mode: str = "auto",
+    finite_diff_eps: float = 1e-3,
 ) -> Dict[str, Any]:
     """Compute Hessian eigenvalues for a single stage."""
     # Extract data from row
@@ -479,18 +547,57 @@ def compute_hessian_for_stage(
     num_compression_tokens = embedding.shape[1]
 
     # Compute Hessian eigenvalues
-    eigenvalues, eigenvectors = compute_hessian_eigenvalues(
-        model,
-        embedding.unsqueeze(0),  # Add batch dimension
-        input_ids,
-        token_embeddings,
-        attention_mask,
-        num_compression_tokens,
-        loss_type=loss_type,
-        num_alignment_layers=num_alignment_layers,
-        hybrid_alpha=hybrid_alpha,
-        num_eigenvalues=num_eigenvalues,
-    )
+    debug_info: Optional[Dict[str, Any]] = {} if debug_hessian else None
+    if debug_hessian:
+        eigenvalues, eigenvectors = compute_hessian_eigenvalues(
+            model,
+            embedding.unsqueeze(0),  # Add batch dimension
+            input_ids,
+            token_embeddings,
+            attention_mask,
+            num_compression_tokens,
+            loss_type=loss_type,
+            num_alignment_layers=num_alignment_layers,
+            hybrid_alpha=hybrid_alpha,
+            num_eigenvalues=num_eigenvalues,
+            hvp_mode=hvp_mode,
+            finite_diff_eps=finite_diff_eps,
+        )
+        # Re-run Lanczos once with debug enabled to capture why curvature might be zero.
+        # This keeps the main compute path unchanged while providing diagnostics.
+        _ = compute_hessian_eigenvalues_lanczos(
+            lambda flat_params: compute_loss_for_hessian(
+                model,
+                flat_params.reshape(embedding.unsqueeze(0).shape),
+                input_ids,
+                token_embeddings,
+                attention_mask,
+                num_compression_tokens,
+                loss_type,
+                num_alignment_layers,
+                hybrid_alpha,
+            ),
+            embedding.unsqueeze(0).detach().clone().reshape(-1).requires_grad_(True),
+            num_eigenvalues=min(3, num_eigenvalues),
+            debug=debug_info,
+            hvp_mode=hvp_mode,
+            finite_diff_eps=finite_diff_eps,
+        )
+    else:
+        eigenvalues, eigenvectors = compute_hessian_eigenvalues(
+            model,
+            embedding.unsqueeze(0),  # Add batch dimension
+            input_ids,
+            token_embeddings,
+            attention_mask,
+            num_compression_tokens,
+            loss_type=loss_type,
+            num_alignment_layers=num_alignment_layers,
+            hybrid_alpha=hybrid_alpha,
+            num_eigenvalues=num_eigenvalues,
+            hvp_mode=hvp_mode,
+            finite_diff_eps=finite_diff_eps,
+        )
 
     return {
         "eigenvalues": eigenvalues.numpy(),
@@ -498,6 +605,7 @@ def compute_hessian_for_stage(
         "stage_index": int(row.get("stage_index", -1)),
         "stage_seq_len": stage_seq_len,
         "sample_id": int(row.get("sample_id", -1)),
+        "debug": debug_info,
     }
 
 
@@ -677,6 +785,37 @@ def main():
         default=None,
         help="Directory to save plots (if None, inferred from dataset_path)",
     )
+    parser.add_argument(
+        "--debug_hessian",
+        action="store_true",
+        help="Write per-stage diagnostics explaining zero-curvature cases",
+    )
+    parser.add_argument(
+        "--hvp_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "autograd", "finite_diff"],
+        help="How to compute Hessian-vector products (HVPs). 'finite_diff' is slow but works without double backward.",
+    )
+    parser.add_argument(
+        "--finite_diff_eps",
+        type=float,
+        default=1e-3,
+        help="Epsilon for finite-difference HVPs (only used when hvp_mode=finite_diff or auto fallback)",
+    )
+    parser.add_argument(
+        "--sdp_backend",
+        type=str,
+        default="math",
+        choices=["math", "default"],
+        help="Select PyTorch SDP backend. 'math' is slow but supports double backward; 'default' may yield zero Hessians.",
+    )
+    parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="eager",
+        help="HF attention implementation hint (e.g. eager/sdpa). Ignored if unsupported by transformers version.",
+    )
 
     args = parser.parse_args()
 
@@ -718,7 +857,19 @@ def main():
     # Load model and tokenizer
     device = get_device()
     print(f"Loading model: {model_checkpoint}")
-    model = AutoModelForCausalLM.from_pretrained(model_checkpoint).to(device)
+    if args.sdp_backend == "math" and torch.cuda.is_available():
+        enable_flash = getattr(torch.backends.cuda, "enable_flash_sdp", None)
+        enable_mem_efficient = getattr(torch.backends.cuda, "enable_mem_efficient_sdp", None)
+        enable_math = getattr(torch.backends.cuda, "enable_math_sdp", None)
+        if callable(enable_flash) and callable(enable_mem_efficient) and callable(enable_math):
+            enable_flash(False)
+            enable_mem_efficient(False)
+            enable_math(True)
+
+    try:
+        model = AutoModelForCausalLM.from_pretrained(model_checkpoint, attn_implementation=args.attn_implementation).to(device)
+    except TypeError:
+        model = AutoModelForCausalLM.from_pretrained(model_checkpoint).to(device)
     model.eval()
     freeze_model_parameters(model)
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
@@ -733,7 +884,7 @@ def main():
         print(f"\nProcessing sample_id={sample_id} with {len(stage_rows)} stages")
 
         all_spectra = []
-        for row in tqdm(stage_rows, desc=f"Computing Hessian for sample {sample_id}", leave=False):
+        for row in tqdm(stage_rows[:10], desc=f"Computing Hessian for sample {sample_id}", leave=False):
             spectrum_data = compute_hessian_for_stage(
                 model,
                 row,
@@ -743,6 +894,9 @@ def main():
                 loss_type=args.loss_type,
                 num_alignment_layers=args.num_alignment_layers,
                 hybrid_alpha=args.hybrid_alpha,
+                debug_hessian=args.debug_hessian,
+                hvp_mode=args.hvp_mode,
+                finite_diff_eps=args.finite_diff_eps,
             )
             all_spectra.append(spectrum_data)
 
@@ -755,6 +909,15 @@ def main():
             os.path.join(out_dir, f"hessian_spectrum_sample_{sample_id}.npz"),
             **{f"stage_{s['stage_index']}": s["eigenvalues"] for s in all_spectra},
         )
+        if args.debug_hessian:
+            debug_path = os.path.join(out_dir, f"hessian_spectrum_sample_{sample_id}_debug.json")
+            debug_payload = [
+                {"stage_index": int(s["stage_index"]), "stage_seq_len": int(s["stage_seq_len"]), "debug": s.get("debug")}
+                for s in all_spectra
+            ]
+            with open(debug_path, "w", encoding="utf-8") as f:
+                json.dump(debug_payload, f, indent=2, sort_keys=True)
+            print(f"Saved Hessian debug info to: {debug_path}")
 
         # Create visualizations
         plot_spectrum_evolution(
