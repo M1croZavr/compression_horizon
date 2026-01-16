@@ -327,6 +327,7 @@ def main() -> None:
         required=True,
         help="Path to progressive_prefixes dataset (saved with Dataset.save_to_disk)",
     )
+    parser.add_argument("--add_noise", action="store_true")
     parser.add_argument(
         "--sample_id",
         type=int,
@@ -471,6 +472,7 @@ def main() -> None:
             compressed_embeddings=compression_tokens,
             max_new_tokens=args.num_tokens,
             num_return_sequences=1,
+            add_noise=args.add_noise,
         )
         generated_text = generated_texts[0]
         highlighted_text = generated_text

@@ -723,6 +723,52 @@ def main():
     if len(statistics_list) > 0:
         print_statistics_table(checkpoint_names, statistics_list)
 
+    # Compute PCA over all embeddings from all experiments
+    if len(trajectories) > 0:
+        # Combine all embeddings from all trajectories
+        all_embeddings = np.vstack(trajectories)
+        n_samples, n_features = all_embeddings.shape
+
+        if n_samples >= 2 and n_features >= 1:
+            # Determine maximum number of components
+            max_components = min(n_samples - 1, n_features, 512)
+            if max_components >= 1:
+                # Fit PCA with maximum components
+                pca = PCA(n_components=max_components, random_state=42)
+                pca.fit(all_embeddings)
+
+                # Compute cumulative explained variance
+                explained_var_ratio = pca.explained_variance_ratio_
+                cumulative_var = np.cumsum(explained_var_ratio)
+
+                # Find number of components needed for 99% variance
+                num_components_99 = (cumulative_var < 0.99).sum() + 1
+                if num_components_99 > max_components:
+                    num_components_99 = max_components
+                    actual_variance = cumulative_var[-1]
+                    print(f"\n{'=' * 80}")
+                    print("PCA Analysis Over All Embeddings (All Experiments)")
+                    print(f"{'=' * 80}")
+                    print(f"Total embeddings: {n_samples}")
+                    print(f"Embedding dimension: {n_features}")
+                    print(
+                        f"With {num_components_99} components, explained variance: {actual_variance:.4f} ({actual_variance*100:.2f}%)"
+                    )
+                    print(f"Note: 99% variance requires more than {max_components} components")
+                    print(f"{'=' * 80}\n")
+                else:
+                    actual_variance = cumulative_var[num_components_99 - 1]
+                    print(f"\n{'=' * 80}")
+                    print("PCA Analysis Over All Embeddings (All Experiments)")
+                    print(f"{'=' * 80}")
+                    print(f"Total embeddings: {n_samples}")
+                    print(f"Embedding dimension: {n_features}")
+                    print(f"Number of PCA components to explain 99% variance: {num_components_99}")
+                    print(
+                        f"Actual explained variance with {num_components_99} components: {actual_variance:.4f} ({actual_variance*100:.2f}%)"
+                    )
+                    print(f"{'=' * 80}\n")
+
     # Compute and print pairwise distances
     # if len(final_embeddings) >= 2:
     #     l2_distances, l1_distances, cosine_distances = compute_pairwise_distances(final_embeddings)

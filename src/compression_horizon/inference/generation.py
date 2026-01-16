@@ -11,6 +11,7 @@ def generate_from_compression(
     compressed_embeddings: torch.Tensor,  # [1, mem, hidden]
     max_new_tokens: int,
     num_return_sequences: int = 1,
+    add_noise=False,
 ) -> list[str]:
     """Generates a sequence using only compressed embeddings."""
     # Cast to the same device
@@ -27,6 +28,12 @@ def generate_from_compression(
     # Prepare batch of prefixes
     if num_return_sequences > 1:
         compressed_embeddings = compressed_embeddings.expand(num_return_sequences, -1, -1)  # [batch, mem, hidden]
+
+    if add_noise:
+        noise = torch.randn_like(compressed_embeddings) * 0.01
+        compressed_embeddings += noise
+        print("Add noise", "compressed_embeddings.norm", compressed_embeddings.norm(2), "noise.norm", noise.norm(2))
+
     batch_size, num_compression_tokens, hidden_size = compressed_embeddings.shape
 
     # Container for generated token ids
