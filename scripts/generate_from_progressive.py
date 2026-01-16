@@ -59,13 +59,10 @@ def generate_with_token_tracking(
     input_embeddings = model.get_input_embeddings()
     torch_dtype = input_embeddings.weight.dtype
 
-    # If only_new_tokens is True, we need to generate stage_seq_len dummy tokens first
-    # to position ourselves at the right point, then generate the actual new tokens
+    # If only_new_tokens is True, we only generate new tokens beyond stage_seq_len
+    # The compression tokens already represent positions 0 to stage_seq_len-1,
+    # so we just generate max_new_tokens directly (starting from position stage_seq_len)
     tokens_to_generate = max_new_tokens
-    if only_new_tokens and stage_seq_len > 0:
-        # First, generate stage_seq_len tokens (these will be discarded or not shown)
-        # Then generate max_new_tokens tokens beyond that
-        tokens_to_generate = stage_seq_len + max_new_tokens
 
     # Create progress bar
     pbar = None
@@ -116,20 +113,15 @@ def generate_with_token_tracking(
         sys.stdout.write("\n")
         sys.stdout.flush()
 
-    # If only_new_tokens is True, slice to only keep tokens beyond stage_seq_len
+    # If only_new_tokens is True, all generated tokens are new (beyond stage_seq_len)
+    # The compression tokens already represent the first stage_seq_len tokens,
+    # so all generated tokens are new
     if only_new_tokens and stage_seq_len > 0:
-        if generated_token_ids.shape[1] > stage_seq_len:
-            new_tokens_only = generated_token_ids[:, stage_seq_len:]
-            generated_text = tokenizer.batch_decode(new_tokens_only, skip_special_tokens=True)[0]
-            token_ids_for_output = new_tokens_only[0].cpu().tolist()
-            # All remaining tokens are "new" (out of bounds of training)
-            num_new_tokens = len(token_ids_for_output)
-            out_of_bounds_mask = [1] * num_new_tokens
-        else:
-            # Not enough tokens generated, return empty
-            generated_text = ""
-            token_ids_for_output = []
-            out_of_bounds_mask = []
+        generated_text = tokenizer.batch_decode(generated_token_ids, skip_special_tokens=True)[0]
+        token_ids_for_output = generated_token_ids[0].cpu().tolist()
+        # All generated tokens are "new" (beyond the compressed sequence)
+        num_new_tokens = len(token_ids_for_output)
+        out_of_bounds_mask = [1] * num_new_tokens
     else:
         generated_text = tokenizer.batch_decode(generated_token_ids, skip_special_tokens=True)[0]
         token_ids_for_output = generated_token_ids[0].cpu().tolist()
