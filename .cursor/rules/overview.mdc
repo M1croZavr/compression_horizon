@@ -42,8 +42,11 @@ alwaysApply: true
 
 
 ### How to run
+
+For all python commands use python interpreter path: /home/jovyan/.mlspace/envs/compression_horizon/bin/python
+
 ```bash
-python -m scripts.activation_distillation \
+/home/jovyan/.mlspace/envs/compression_horizon/bin/python -m scripts.activation_distillation \
   --model_checkpoint HuggingFaceTB/SmolLM2-135M \
   --per_device_train_batch_size 1 \
   --max_sequence_length 128 \
