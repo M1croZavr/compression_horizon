@@ -170,6 +170,24 @@ if __name__ == "__main__":
         default=None,
         help="Learning rate scheduler kwargs as JSON string (e.g., '{\"min_lr\":1e-3}'). If not specified, not included in output dir.",
     )
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default=None,
+        help="Loss type for activation alignment: l2, l1, cosine, or cross_entropy. If not specified, defaults to 'cross_entropy' and is not included in output dir.",
+    )
+    parser.add_argument(
+        "--hybrid_alpha",
+        type=float,
+        default=None,
+        help="Multiplier in the loss function for hybrid loss. If not specified, not included in output dir.",
+    )
+    parser.add_argument(
+        "--num_alignment_layers",
+        type=int,
+        default=None,
+        help="Number of transformer layers to align (0 = all layers). If not specified, defaults to 1 and is not included in output dir.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -220,10 +238,12 @@ if __name__ == "__main__":
         limit_dataset_items = args.limit_dataset_items if args.limit_dataset_items is not None else 10
         embedding_init_method = args.embedding_init_method if args.embedding_init_method is not None else "random0.02"
         learning_rate = args.learning_rate if args.learning_rate is not None else 0.01
+        loss_type = args.loss_type if args.loss_type is not None else "cross_entropy"
+        num_alignment_layers = args.num_alignment_layers if args.num_alignment_layers is not None else 1
         cmd_args = [
             "--remove_unused_columns False",
-            "--num_alignment_layers 1",
-            "--loss_type cross_entropy",
+            f"--num_alignment_layers {num_alignment_layers}",
+            f"--loss_type {loss_type}",
             f"--max_sequence_length {max_seq_len}",
             "--warmup_steps 100",
             f"--model_checkpoint {model_checkpoint}",
@@ -235,6 +255,10 @@ if __name__ == "__main__":
             f"--embedding_init_method {embedding_init_method}",
             f"--limit_dataset_items {limit_dataset_items}",
         ]
+
+        # Add hybrid_alpha if specified
+        if args.hybrid_alpha is not None:
+            cmd_args.append(f"--hybrid_alpha {args.hybrid_alpha}")
 
         # Add dataset_name if specified (non-default)
         if args.dataset_name is not None:
@@ -341,6 +365,18 @@ if __name__ == "__main__":
         if args.progressive_reset_lr_scheduler_on_non_convergence:
             cmd_args.append("--progressive_reset_lr_scheduler_on_non_convergence")
             exp_suffix = f"{exp_suffix}_resetlr"
+
+        # Add loss_type to output dir if specified (non-default)
+        if args.loss_type is not None and args.loss_type != "cross_entropy":
+            exp_suffix = f"{exp_suffix}_loss_{args.loss_type}"
+
+        # Add hybrid_alpha to output dir if specified
+        if args.hybrid_alpha is not None:
+            exp_suffix = f"{exp_suffix}_hybrid_{args.hybrid_alpha}"
+
+        # Add num_alignment_layers to output dir if specified (non-default)
+        if args.num_alignment_layers is not None and args.num_alignment_layers != 1:
+            exp_suffix = f"{exp_suffix}_align_{args.num_alignment_layers}"
 
         out_dir_name = f"artifacts/experiments_progressive/{exp_suffix}"
         if os.path.exists(out_dir_name):
