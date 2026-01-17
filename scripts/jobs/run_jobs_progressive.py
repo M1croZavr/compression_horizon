@@ -188,6 +188,12 @@ if __name__ == "__main__":
         default=None,
         help="Number of transformer layers to align (0 = all layers). If not specified, defaults to 1 and is not included in output dir.",
     )
+    parser.add_argument(
+        "--max_seq_len",
+        type=int,
+        default=4096,
+        help="Truncate dataset to sequence length",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -227,7 +233,7 @@ if __name__ == "__main__":
             print(f"\033[33mNo models matched the filter: {args.model}\033[0m")
             sys.exit(0)
 
-    max_seq_len = 2048
+    max_seq_len = args.max_seq_len
     max_optimization_steps_per_sample = 10_000
     max_optimization_steps_per_token = 1_000
 
