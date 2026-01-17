@@ -14,12 +14,12 @@ import os
 from typing import Optional
 
 import torch
-import torch.nn.functional as F
 from datasets import load_dataset
 from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_scheduler
 
+from compression_horizon.train.loss import compute_hybrid_cross_entropy_and_alignment_loss
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 
@@ -169,14 +169,18 @@ def compress_prefixes_batch(
         total_loss = 0.0
         for i in range(batch_size):
             seq_len = attention_mask[i].sum().item()
-            sample_logits = compression_outputs.logits[
-                i : i + 1, num_compression_tokens - 1 : num_compression_tokens - 1 + seq_len
-            ]
-            sample_labels = batch_labels[i : i + 1, :seq_len]
-            sample_loss = F.cross_entropy(
-                sample_logits.flatten(0, 1),
-                sample_labels.flatten(),
-                reduction="mean",
+            sample_logits = compression_outputs.logits[i : i + 1, : num_compression_tokens + seq_len]
+            sample_input_ids = input_ids[i : i + 1, :seq_len]
+            sample_attention_mask = attention_mask[i : i + 1, :seq_len]
+            sample_loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
+                logits=sample_logits,
+                input_ids=sample_input_ids,
+                attention_mask=sample_attention_mask,
+                num_prefix_tokens=num_compression_tokens,
+                loss_type="cross_entropy",
+                hybrid_alpha=None,
+                num_alignment_layers=0,
+                inverted_alignment=False,
             )
             total_loss = total_loss + sample_loss
 
@@ -273,10 +277,15 @@ def compress_prefix(
 
         labels = input_ids.clone()
         labels[attention_mask == 0] = -100
-        loss = F.cross_entropy(
-            compression_outputs.logits[:, num_compression_tokens - 1 : -1].flatten(0, 1),
-            labels.flatten(),
-            reduction="mean",
+        loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
+            logits=compression_outputs.logits,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            num_prefix_tokens=num_compression_tokens,
+            loss_type="cross_entropy",
+            hybrid_alpha=None,
+            num_alignment_layers=0,
+            inverted_alignment=False,
         )
 
         loss.backward()

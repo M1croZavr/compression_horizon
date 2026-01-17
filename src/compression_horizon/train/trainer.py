@@ -14,6 +14,10 @@ from tqdm.auto import tqdm
 from transformers import get_scheduler
 
 from compression_horizon.inference.generation import generate_from_compression
+from compression_horizon.train.loss import (
+    compute_hybrid_cross_entropy_and_alignment_loss,
+    token_argmax_match_rate_with_prefix,
+)
 from compression_horizon.utils.launch import (
     freeze_model_parameters,
     get_device,
@@ -75,73 +79,31 @@ class MyTrainer:
             **extra_kwargs,
         )
 
-        # Number of hidden states: 1 (embedder) + number of transformer decoder layers
-        total_layers = len(outputs.hidden_states)
-        if self.args.num_alignment_layers > 0:
-            num_layers = max(0, min(self.args.num_alignment_layers, total_layers))
-            if self.args.inverted_alignment:
-                alignment_layer_indices = range(total_layers - num_layers, total_layers)
-            else:
-                alignment_layer_indices = range(num_layers)
-        else:
-            alignment_layer_indices = range(total_layers)
-
-        # Cross entropy loss
-        labels = input_ids.clone()
-        labels[attention_mask == 0] = -100
-        loss = F.cross_entropy(
-            compression_outputs.logits[:, num_compression_tokens - 1 : -1].flatten(0, 1),
-            labels.flatten(),
-            reduction="mean",
-        )
-
         # Activation alignment loss
         loss_type = self.args.loss_type.lower()
         hybrid_alpha = self.args.hybrid_alpha
-        alignment_loss = None
-        if hybrid_alpha is not None and loss_type != "cross_entropy":
-            alignment_loss = 0
-            for i in alignment_layer_indices:
-                compression_hidden_states = compression_outputs.hidden_states[i][
-                    :, num_compression_tokens:
-                ]  # [batch, sequence, hidden]
-                target_hidden_states = outputs.hidden_states[i]  # [batch, sequence, hidden]
-                if loss_type == "l2":
-                    layer_alignment_loss = (
-                        F.mse_loss(
-                            compression_hidden_states,
-                            target_hidden_states,
-                            reduction="none",
-                        )
-                        .sum(dim=-1)
-                        .sqrt()
-                        .mean()
-                    )
-                elif loss_type == "l1":
-                    layer_alignment_loss = (
-                        F.l1_loss(
-                            compression_hidden_states,
-                            target_hidden_states,
-                            reduction="none",
-                        )
-                        .sum(dim=-1)
-                        .mean()
-                    )
-                elif loss_type == "cosine":
-                    cosine = F.cosine_similarity(compression_hidden_states, target_hidden_states, dim=-1)
-                    layer_alignment_loss = (1.0 - cosine).mean()
-                else:
-                    raise ValueError(f"Unsupported loss_type: {loss_type}")
-                alignment_loss = alignment_loss + layer_alignment_loss
-            loss = loss + hybrid_alpha * alignment_loss
+        loss, alignment_loss = compute_hybrid_cross_entropy_and_alignment_loss(
+            logits=compression_outputs.logits,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            num_prefix_tokens=num_compression_tokens,
+            target_hidden_states=outputs.hidden_states,
+            compression_hidden_states=compression_outputs.hidden_states,
+            num_alignment_layers=self.args.num_alignment_layers,
+            inverted_alignment=self.args.inverted_alignment,
+            loss_type=loss_type,
+            hybrid_alpha=hybrid_alpha,
+        )
 
         model.eval()
         with torch.no_grad():
             # Accuracy by logits
-            convergence_numerator = (
-                compression_outputs.logits[:, num_compression_tokens - 1 : -1].argmax(dim=-1) == input_ids
-            ).sum(dim=-1)
-            convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)
+            convergence_per_sample = token_argmax_match_rate_with_prefix(
+                compression_outputs.logits,
+                input_ids,
+                attention_mask,
+                num_compression_tokens,
+            )
 
             # Accuracy by autoregressive generation
             # Generate tokens from compressed trained embedding
