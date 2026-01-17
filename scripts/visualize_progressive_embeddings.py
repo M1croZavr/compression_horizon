@@ -479,6 +479,7 @@ def plot_pca_4_components(
     loss_type: str = "l2",
     max_radius: float = 2.0,
     points_step: int = 1,
+    points_limit: Optional[int] = None,
 ):
     """Plot all pairs of the 4 main PCA components in subplots.
 
@@ -494,6 +495,7 @@ def plot_pca_4_components(
         loss_type: Type of loss to compute ('l2', 'l1', 'cosine', 'cross_entropy')
         max_radius: Maximum radius for neighborhood loss computation in PCA space
         points_step: Compute landscape only for every Nth point (default: 1, compute for all points)
+        points_limit: Limit number of points for GIF visualization (default: None, use all points)
     """
     if X.shape[0] < 2 or X.shape[1] < 2:
         return
@@ -580,10 +582,23 @@ def plot_pca_4_components(
             return
 
         # Number of trajectory points
-        n_points = pca_data.shape[0]
-        mean_pca_coords = np.mean(pca_data, axis=0)
+        n_points_total = pca_data.shape[0]
+        # Apply points_limit if specified - take first N points
+        if points_limit is not None and points_limit > 0:
+            n_points = min(points_limit, n_points_total)
+            # Take first N points (not evenly spaced)
+            pca_data_limited = pca_data[:n_points]
+            # labels_limited = labels[:n_points]
+        else:
+            n_points = n_points_total
+            pca_data_limited = pca_data
+            # labels_limited = labels
+
+        mean_pca_coords = np.mean(pca_data_limited, axis=0)
         t_setup = time.time() - t_setup_start
-        print(f"[PROFILE] GIF setup: {t_setup:.3f}s (n_points={n_points}, n_pairs={n_pairs})")
+        print(
+            f"[PROFILE] GIF setup: {t_setup:.3f}s (n_points={n_points}/{n_points_total}, n_pairs={n_pairs}, points_step={points_step})"
+        )
 
         # Pre-compute tokenization and target outputs once (reused for all frames)
         t_precompute_start = time.time()
@@ -608,11 +623,11 @@ def plot_pca_4_components(
         t_loss_total = 0.0
         t_plot_total = 0.0
         cached_landscapes = None  # Cache landscapes for non-sampled points
-        mesh_resolution = 7
+        mesh_resolution = 20
 
         for point_idx in tqdm(range(n_points), desc="Generating GIF frames"):
             t_frame_start = time.time()
-            current_pca_coords = pca_data[point_idx]
+            current_pca_coords = pca_data_limited[point_idx]
 
             # Create figure with same layout as main plot
             fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
@@ -633,29 +648,38 @@ def plot_pca_4_components(
                 all_mesh_info = []  # Store (pair_idx, i, j, X_mesh, Y_mesh, x_data, y_data) for each pair
 
                 for idx, (i, j) in enumerate(pairs):
-                    x_data = pca_data[:, i]
-                    y_data = pca_data[:, j]
+                    x_data = pca_data_limited[:, i]
+                    y_data = pca_data_limited[:, j]
 
                     # Compute loss landscape in neighborhood around current point
                     current_x = current_pca_coords[i]
                     current_y = current_pca_coords[j]
 
-                    # Create mesh around current point
+                    # Create circular mesh around current point
                     x_range = np.linspace(current_x - max_radius, current_x + max_radius, mesh_resolution)
                     y_range = np.linspace(current_y - max_radius, current_y + max_radius, mesh_resolution)
                     X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
 
-                    # Prepare batch of PCA coordinates for loss computation
+                    # Create circular mask: only include points within max_radius
+                    center_x = current_x
+                    center_y = current_y
+                    distances = np.sqrt((X_mesh - center_x) ** 2 + (Y_mesh - center_y) ** 2)
+                    circular_mask = distances <= max_radius
+
+                    # Prepare batch of PCA coordinates for loss computation (only within circle)
                     mesh_points = []
+                    mesh_indices = []  # Store (yi, xi) for valid points
                     for yi in range(mesh_resolution):
                         for xi in range(mesh_resolution):
-                            pca_coords = mean_pca_coords.copy()
-                            pca_coords[i] = X_mesh[yi, xi]
-                            pca_coords[j] = Y_mesh[yi, xi]
-                            mesh_points.append(pca_coords)
+                            if circular_mask[yi, xi]:
+                                pca_coords = mean_pca_coords.copy()
+                                pca_coords[i] = X_mesh[yi, xi]
+                                pca_coords[j] = Y_mesh[yi, xi]
+                                mesh_points.append(pca_coords)
+                                mesh_indices.append((yi, xi))
 
                     all_mesh_points.extend(mesh_points)
-                    all_mesh_info.append((idx, i, j, X_mesh, Y_mesh, x_data, y_data))
+                    all_mesh_info.append((idx, i, j, X_mesh, Y_mesh, x_data, y_data, circular_mask, mesh_indices))
 
                 # Reconstruct all embeddings from PCA coordinates at once
                 all_mesh_points_array = np.array(all_mesh_points)
@@ -663,7 +687,7 @@ def plot_pca_4_components(
                 t_mesh = time.time() - t_mesh_start
 
                 # Compute loss for all pairs in a single batched forward pass
-                batch_size = 512  # Increased batch size
+                batch_size = 256  # Increased batch size
                 t_loss_start = time.time()
                 all_loss_values = None
                 try:
@@ -702,19 +726,37 @@ def plot_pca_4_components(
                     # Fallback: create empty landscapes if no cache available
                     all_mesh_info = []
                     for idx, (i, j) in enumerate(pairs):
-                        x_data = pca_data[:, i]
-                        y_data = pca_data[:, j]
+                        x_data = pca_data_limited[:, i]
+                        y_data = pca_data_limited[:, j]
                         current_x = current_pca_coords[i]
                         current_y = current_pca_coords[j]
                         x_range = np.linspace(current_x - max_radius, current_x + max_radius, mesh_resolution)
                         y_range = np.linspace(current_y - max_radius, current_y + max_radius, mesh_resolution)
                         X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
-                        all_mesh_info.append((idx, i, j, X_mesh, Y_mesh, x_data, y_data))
-                    all_loss_values = np.full(len(all_mesh_info) * mesh_resolution * mesh_resolution, np.nan)
+                        # Create circular mask
+                        distances = np.sqrt((X_mesh - current_x) ** 2 + (Y_mesh - current_y) ** 2)
+                        circular_mask = distances <= max_radius
+                        mesh_indices = [
+                            (yi, xi) for yi in range(mesh_resolution) for xi in range(mesh_resolution) if circular_mask[yi, xi]
+                        ]
+                        all_mesh_info.append((idx, i, j, X_mesh, Y_mesh, x_data, y_data, circular_mask, mesh_indices))
+                    # Estimate number of points (circular area is ~π * r^2, square is 4*r^2, so ~78% of square)
+                    estimated_points = int(len(all_mesh_info) * mesh_resolution * mesh_resolution * 0.785)
+                    all_loss_values = np.full(estimated_points, np.nan)
 
             # Split results back to individual pairs and plot
             loss_idx = 0
-            for idx, i, j, X_mesh, Y_mesh, x_data, y_data in all_mesh_info:
+            for mesh_info_item in all_mesh_info:
+                if len(mesh_info_item) == 8:
+                    # New format with circular mask
+                    idx, i, j, X_mesh, Y_mesh, x_data, y_data, circular_mask, mesh_indices = mesh_info_item
+                else:
+                    # Fallback for cached data (old format)
+                    idx, i, j, X_mesh, Y_mesh, x_data, y_data = mesh_info_item[:7]
+                    # Create a full mask for old format
+                    circular_mask = np.ones((mesh_resolution, mesh_resolution), dtype=bool)
+                    mesh_indices = [(yi, xi) for yi in range(mesh_resolution) for xi in range(mesh_resolution)]
+
                 ax = axes[idx]
 
                 # Plot all points in gray
@@ -732,12 +774,17 @@ def plot_pca_4_components(
                     zorder=10,
                 )
 
-                # Extract loss values for this pair
-                pair_loss_values = all_loss_values[loss_idx : loss_idx + mesh_resolution * mesh_resolution]
-                Z_mesh = pair_loss_values.reshape(mesh_resolution, mesh_resolution)
-                loss_idx += mesh_resolution * mesh_resolution
+                # Extract loss values for this pair (only for points within circle)
+                n_valid_points = len(mesh_indices)
+                pair_loss_values = all_loss_values[loss_idx : loss_idx + n_valid_points]
+                loss_idx += n_valid_points
 
-                # Plot loss landscape
+                # Create full mesh with NaN for points outside circle
+                Z_mesh = np.full((mesh_resolution, mesh_resolution), np.nan)
+                for (yi, xi), loss_val in zip(mesh_indices, pair_loss_values):
+                    Z_mesh[yi, xi] = loss_val
+
+                # Plot loss landscape (pcolormesh will handle NaN by not plotting those regions)
                 im = ax.pcolormesh(X_mesh, Y_mesh, Z_mesh, cmap="viridis", alpha=0.6, shading="auto")
                 plt.colorbar(im, ax=ax, label=f"Loss ({loss_type})")
 
@@ -795,7 +842,7 @@ def plot_pca_4_components(
         # Save GIF
         t_save_start = time.time()
         if frames:
-            imageio.mimsave(gif_outfile, frames, duration=0.5, loop=0)
+            imageio.mimsave(gif_outfile, frames, duration=1.5, loop=0)
             t_save = time.time() - t_save_start
             t_gif_total = time.time() - t_gif_start
             print(f"[PROFILE] GIF generation complete: total={t_gif_total:.3f}s")
@@ -1864,6 +1911,12 @@ def main():
         default=1,
         help="Compute landscape only for every Nth point (default: 1, compute for all points)",
     )
+    parser.add_argument(
+        "--draw-landscape-points-limit",
+        type=int,
+        default=None,
+        help="Limit number of points for GIF visualization (default: None, use all points)",
+    )
 
     args = parser.parse_args()
 
@@ -1978,6 +2031,7 @@ def main():
                 loss_type=loss_type if args.draw_landscape else "l2",
                 max_radius=args.max_radius if args.draw_landscape else 2.0,
                 points_step=args.draw_landscape_points_step if args.draw_landscape else 1,
+                points_limit=args.draw_landscape_points_limit if args.draw_landscape else None,
             )
             plot_cumulative_explained_variance(
                 X,
