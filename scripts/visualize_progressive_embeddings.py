@@ -1,6 +1,7 @@
 import argparse
 import math
 import os
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -257,6 +258,10 @@ def compute_loss_batch(
     model.eval()
     all_losses = []
 
+    # Profiling: tokenization and setup
+    t_start = time.time()
+    t_tokenize_start = time.time()
+
     # Tokenize text once
     enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
     input_ids = enc["input_ids"].to(device)
@@ -266,6 +271,9 @@ def compute_loss_batch(
     input_embeddings_layer = model.get_input_embeddings()
     input_text_embeds = input_embeddings_layer(input_ids)
 
+    t_tokenize = time.time() - t_tokenize_start
+    t_target_start = time.time()
+
     # Get target hidden states from model without compression tokens (once)
     with torch.no_grad():
         target_outputs = model(
@@ -273,6 +281,123 @@ def compute_loss_batch(
             attention_mask=attention_mask,
             output_hidden_states=(loss_type != "cross_entropy"),
         )
+
+    t_target = time.time() - t_target_start
+    print(f"[PROFILE] compute_loss_batch setup: tokenize={t_tokenize:.3f}s, target_forward={t_target:.3f}s")
+
+    # Process in batches
+    num_embeddings = compression_embeddings.shape[0]
+    t_batch_total = 0.0
+    n_batches = 0
+    for batch_start in range(0, num_embeddings, batch_size):
+        batch_end = min(batch_start + batch_size, num_embeddings)
+        batch_embeddings = compression_embeddings[batch_start:batch_end]
+
+        t_batch_start = time.time()
+        with torch.no_grad():
+            # Reshape batch embeddings to original shape
+            batch_size_actual = batch_embeddings.shape[0]
+            compression_embeddings_reshaped = batch_embeddings.reshape(batch_size_actual, *original_shape).to(device)
+
+            # Concatenate compression embeddings with input text embeddings
+            num_compression_tokens = compression_embeddings_reshaped.shape[1]
+            # Expand input_text_embeds for batch
+            input_text_embeds_batch = input_text_embeds.expand(batch_size_actual, -1, -1)
+            input_embeds = torch.cat([compression_embeddings_reshaped, input_text_embeds_batch], dim=1)
+
+            # Extend attention mask
+            comp_attention = torch.ones((batch_size_actual, num_compression_tokens), device=device, dtype=attention_mask.dtype)
+            extended_attention_mask = torch.cat([comp_attention, attention_mask.expand(batch_size_actual, -1)], dim=1)
+
+            # Forward pass with compression tokens
+            compression_outputs = model(
+                inputs_embeds=input_embeds,
+                attention_mask=extended_attention_mask,
+                output_hidden_states=True,
+            )
+
+            if loss_type == "cross_entropy":
+                # Cross entropy loss
+                labels = input_ids.clone().expand(batch_size_actual, -1)
+                labels[attention_mask.expand(batch_size_actual, -1) == 0] = -100
+                batch_losses = F.cross_entropy(
+                    compression_outputs.logits[:, num_compression_tokens - 1 : -1].flatten(0, 1),
+                    labels.flatten(),
+                    reduction="none",
+                )
+                # Reshape to get per-sample losses
+                batch_losses = batch_losses.view(batch_size_actual, -1).mean(dim=1)
+                all_losses.append(batch_losses.cpu().numpy())
+            else:
+                # For alignment losses, compare hidden states
+                total_layers = len(compression_outputs.hidden_states)
+                batch_losses = torch.zeros(batch_size_actual, device=device)
+
+                for layer_idx in range(total_layers):
+                    compression_hidden = compression_outputs.hidden_states[layer_idx][:, num_compression_tokens:]
+                    target_hidden = target_outputs.hidden_states[layer_idx].expand(batch_size_actual, -1, -1)
+
+                    if loss_type == "l2":
+                        layer_loss = (
+                            F.mse_loss(compression_hidden, target_hidden, reduction="none").sum(dim=-1).sqrt().mean(dim=1)
+                        )
+                    elif loss_type == "l1":
+                        layer_loss = F.l1_loss(compression_hidden, target_hidden, reduction="none").sum(dim=-1).mean(dim=1)
+                    elif loss_type == "cosine":
+                        cosine = F.cosine_similarity(compression_hidden, target_hidden, dim=-1)
+                        layer_loss = (1.0 - cosine).mean(dim=1)
+                    else:
+                        raise ValueError(f"Unsupported loss_type: {loss_type}")
+                    batch_losses += layer_loss
+
+                batch_losses = batch_losses / total_layers
+                all_losses.append(batch_losses.cpu().numpy())
+
+        t_batch = time.time() - t_batch_start
+        t_batch_total += t_batch
+        n_batches += 1
+        if n_batches <= 3 or n_batches % 10 == 0:
+            print(f"[PROFILE] compute_loss_batch batch {n_batches}: {t_batch:.3f}s (size={batch_end-batch_start})")
+
+    t_total = time.time() - t_start
+    print(
+        f"[PROFILE] compute_loss_batch total: {t_total:.3f}s ({n_batches} batches, avg={t_batch_total/n_batches:.3f}s/batch, {num_embeddings} embeddings)"
+    )
+
+    return np.concatenate(all_losses)
+
+
+def compute_loss_batch_optimized(
+    compression_embeddings: torch.Tensor,
+    original_shape: Tuple[int, ...],
+    model: AutoModelForCausalLM,
+    device: torch.device,
+    input_ids: torch.Tensor,
+    input_text_embeds: torch.Tensor,
+    attention_mask: torch.Tensor,
+    target_outputs: Any,
+    loss_type: str,
+    batch_size: int = 16,
+) -> np.ndarray:
+    """Optimized batch loss computation using pre-computed tokenization and target outputs.
+
+    Args:
+        compression_embeddings: Batch of reconstructed embeddings [batch_size, flattened_size]
+        original_shape: Original shape of the embedding [num_compression_tokens, hidden_dim]
+        model: Model for forward pass
+        device: Device for computation
+        input_ids: Pre-computed input IDs
+        input_text_embeds: Pre-computed input text embeddings
+        attention_mask: Pre-computed attention mask
+        target_outputs: Pre-computed target model outputs
+        loss_type: Type of loss ('l2', 'l1', 'cosine', 'cross_entropy')
+        batch_size: Batch size for processing
+
+    Returns:
+        Array of loss values [batch_size]
+    """
+    model.eval()
+    all_losses = []
 
     # Process in batches
     num_embeddings = compression_embeddings.shape[0]
@@ -438,7 +563,10 @@ def plot_pca_4_components(
         gif_outfile = outfile.replace(".png", "_landscape.gif")
         print(f"Generating landscape GIF: {gif_outfile}")
 
+        t_gif_start = time.time()
+
         # Get reference embedding and text
+        t_setup_start = time.time()
         reference_stage = max(stages, key=lambda s: int(s.get("stage_seq_len", 0)))
         reference_emb = torch.tensor(reference_stage["embedding"], dtype=torch.float32)
         if reference_emb.ndim == 1:
@@ -452,10 +580,33 @@ def plot_pca_4_components(
         # Number of trajectory points
         n_points = pca_data.shape[0]
         mean_pca_coords = np.mean(pca_data, axis=0)
+        t_setup = time.time() - t_setup_start
+        print(f"[PROFILE] GIF setup: {t_setup:.3f}s (n_points={n_points}, n_pairs={n_pairs})")
+
+        # Pre-compute tokenization and target outputs once (reused for all frames)
+        t_precompute_start = time.time()
+        enc = tokenizer(reference_text, truncation=True, padding=False, return_tensors="pt")
+        input_ids = enc["input_ids"].to(device)
+        attention_mask = enc["attention_mask"].to(device)
+        input_embeddings_layer = model.get_input_embeddings()
+        input_text_embeds = input_embeddings_layer(input_ids)
+        model.eval()
+        with torch.no_grad():
+            target_outputs = model(
+                inputs_embeds=input_text_embeds,
+                attention_mask=attention_mask,
+                output_hidden_states=(loss_type != "cross_entropy"),
+            )
+        t_precompute = time.time() - t_precompute_start
+        print(f"[PROFILE] Pre-computed tokenization and target outputs: {t_precompute:.3f}s (reused for all frames)")
 
         # Generate frames
         frames = []
+        t_frame_total = 0.0
+        t_loss_total = 0.0
+        t_plot_total = 0.0
         for point_idx in tqdm(range(n_points), desc="Generating GIF frames"):
+            t_frame_start = time.time()
             current_pca_coords = pca_data[point_idx]
 
             # Create figure with same layout as main plot
@@ -465,6 +616,7 @@ def plot_pca_4_components(
             else:
                 axes = axes.flatten()
 
+            t_plot_start = time.time()
             for idx, (i, j) in enumerate(pairs):
                 ax = axes[idx]
                 x_data = pca_data[:, i]
@@ -496,6 +648,7 @@ def plot_pca_4_components(
                 X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
 
                 # Prepare batch of PCA coordinates for loss computation
+                t_mesh_start = time.time()
                 mesh_points = []
                 for yi in range(mesh_resolution):
                     for xi in range(mesh_resolution):
@@ -507,19 +660,24 @@ def plot_pca_4_components(
                 # Reconstruct embeddings from PCA coordinates
                 mesh_points_array = np.array(mesh_points)
                 reconstructed_embeddings = pca.inverse_transform(mesh_points_array)
+                t_mesh = time.time() - t_mesh_start
 
-                # Compute loss in batches
+                # Compute loss in batches (using pre-computed inputs)
                 batch_size = 128
                 Z_mesh = np.zeros((mesh_resolution, mesh_resolution))
+                t_loss_start = time.time()
                 try:
                     reconstructed_tensor = torch.tensor(reconstructed_embeddings, dtype=torch.float32)
-                    loss_values = compute_loss_batch(
+                    # Use optimized batch loss computation with pre-computed inputs
+                    loss_values = compute_loss_batch_optimized(
                         reconstructed_tensor,
                         original_shape,
                         model,
-                        tokenizer,
                         device,
-                        reference_text,
+                        input_ids,
+                        input_text_embeds,
+                        attention_mask,
+                        target_outputs,
                         loss_type,
                         batch_size=batch_size,
                     )
@@ -527,6 +685,12 @@ def plot_pca_4_components(
                 except Exception as e:
                     print(f"Warning: Loss computation failed for frame {point_idx}, pair ({i},{j}): {e}")
                     Z_mesh.fill(np.nan)
+                t_loss_pair = time.time() - t_loss_start
+                t_loss_total += t_loss_pair
+                if point_idx == 0 and idx == 0:
+                    print(
+                        f"[PROFILE] Loss computation for pair ({i},{j}): mesh_prep={t_mesh:.3f}s, loss={t_loss_pair:.3f}s (mesh_res={mesh_resolution}x{mesh_resolution}, n_points={mesh_resolution*mesh_resolution})"
+                    )
 
                 # Plot loss landscape
                 im = ax.pcolormesh(X_mesh, Y_mesh, Z_mesh, cmap="viridis", alpha=0.6, shading="auto")
@@ -559,8 +723,11 @@ def plot_pca_4_components(
                 fontsize=14,
             )
             plt.tight_layout()
+            t_plot = time.time() - t_plot_start
+            t_plot_total += t_plot
 
             # Convert figure to image
+            t_convert_start = time.time()
             fig.canvas.draw()
             # Get the RGBA buffer from the figure
             buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
@@ -569,12 +736,29 @@ def plot_pca_4_components(
             # Convert RGBA to RGB
             buf = buf[:, :, :3]
             frames.append(buf)
+            t_convert = time.time() - t_convert_start
 
             plt.close(fig)
 
+            t_frame = time.time() - t_frame_start
+            t_frame_total += t_frame
+            if point_idx == 0 or (point_idx + 1) % max(1, n_points // 5) == 0:
+                print(
+                    f"[PROFILE] Frame {point_idx+1}/{n_points}: total={t_frame:.3f}s (plot={t_plot:.3f}s, loss={t_loss_total:.3f}s, convert={t_convert:.3f}s)"
+                )
+
         # Save GIF
+        t_save_start = time.time()
         if frames:
             imageio.mimsave(gif_outfile, frames, duration=0.5, loop=0)
+            t_save = time.time() - t_save_start
+            t_gif_total = time.time() - t_gif_start
+            print(f"[PROFILE] GIF generation complete: total={t_gif_total:.3f}s")
+            print(f"[PROFILE]   - Setup: {t_setup:.3f}s")
+            print(f"[PROFILE]   - Frames: {t_frame_total:.3f}s (avg={t_frame_total/n_points:.3f}s/frame, {n_points} frames)")
+            print(f"[PROFILE]     - Plotting: {t_plot_total:.3f}s (avg={t_plot_total/n_points:.3f}s/frame)")
+            print(f"[PROFILE]     - Loss computation: {t_loss_total:.3f}s (avg={t_loss_total/(n_points*n_pairs):.3f}s/pair)")
+            print(f"[PROFILE]   - Save: {t_save:.3f}s")
             print(f"Saved landscape GIF: {gif_outfile}")
         else:
             print("Warning: No frames generated for GIF")
