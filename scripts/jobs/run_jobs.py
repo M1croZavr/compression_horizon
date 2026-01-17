@@ -1,10 +1,53 @@
 import argparse
 import hashlib
 import os
+import time
 from itertools import product
 from typing import List, Optional
 
 from mls.manager.job.utils import training_job_api_from_profile
+
+
+def get_in_progress_jobs(client, region, statuses=None):
+    """
+    Example:
+        from sentence_attention.integration.job import get_in_progress_jobs
+        from mls.manager.job.utils import training_job_api_from_profile
+
+        client, extra_options = training_job_api_from_profile("default")
+        in_progress_jobs = get_in_progress_jobs(client, extra_options["region"])
+
+    """
+
+    all_in_progress_jobs = []
+
+    if statuses is None:
+        statuses = ["Pending", "Running"]
+
+    for non_final_status in statuses:
+        while True:
+            non_final_jobs = client.get_list_jobs(
+                region=region,
+                allocation_name="alloc-officecds-multimodal-2-sr004",
+                status=non_final_status,
+                limit=1000,
+                offset=0,
+            )
+            if "jobs" in non_final_jobs:
+                break
+            elif "error_code" in non_final_jobs and non_final_jobs["error_code"] == [
+                32,
+                20,
+            ]:  # no active session, access_token expired
+                print("Error:", non_final_jobs, "try again")
+                time.sleep(5)
+                client, _ = training_job_api_from_profile("default")
+            else:
+                raise ValueError("Unknown error in get_in_progress_jobs:", non_final_jobs)
+
+        all_in_progress_jobs.extend(non_final_jobs["jobs"])
+
+    return all_in_progress_jobs
 
 
 def parse_hybrid_alpha_list(values: List[str]) -> List[Optional[float]]:
@@ -94,7 +137,7 @@ def build_args() -> argparse.Namespace:
     )
 
     # Training defaults that were previously hardcoded
-    parser.add_argument("--per_device_train_batch_size", type=int, default=16)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=4)
     parser.add_argument("--max_optimization_steps_per_sample", type=int, default=1000)
     parser.add_argument("--learning_rate", type=float, default=0.01)
     parser.add_argument("--warmup_steps", type=int, default=100)
@@ -168,6 +211,11 @@ if __name__ == "__main__":
     client, extra_options = training_job_api_from_profile(args.profile)
 
     author_name = args.author_name
+
+    # Get in-progress jobs once at the start
+    region = extra_options["region"]
+    in_progress_jobs = get_in_progress_jobs(client, region)
+    in_progress_job_descs = {job.get("job_desc", "") for job in in_progress_jobs}
 
     hybrid_alpha_values = parse_hybrid_alpha_list(args.hybrid_alphas)
     model_checkpoints = args.model_checkpoints if args.model_checkpoints is not None else [args.model_checkpoint]
@@ -252,6 +300,11 @@ if __name__ == "__main__":
             f"fix_position_ids={fix_position_ids} "
             f"#{author_name} #rnd #multimodal #notify_completed @mrsndmn"
         )
+
+        # Check if job with same description already exists in queue
+        if job_desc in in_progress_job_descs:
+            print(f"\033[33mSkipping: job already in queue with description:\033[0m {job_desc}")
+            continue
 
         payload = {
             "script": base_cmd,
