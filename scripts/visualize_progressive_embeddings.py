@@ -478,6 +478,7 @@ def plot_pca_4_components(
     stages: Optional[List[Dict[str, Any]]] = None,
     loss_type: str = "l2",
     max_radius: float = 2.0,
+    points_step: int = 1,
 ):
     """Plot all pairs of the 4 main PCA components in subplots.
 
@@ -492,6 +493,7 @@ def plot_pca_4_components(
         stages: List of stage records with embeddings and text (required if draw_landscape=True)
         loss_type: Type of loss to compute ('l2', 'l1', 'cosine', 'cross_entropy')
         max_radius: Maximum radius for neighborhood loss computation in PCA space
+        points_step: Compute landscape only for every Nth point (default: 1, compute for all points)
     """
     if X.shape[0] < 2 or X.shape[1] < 2:
         return
@@ -605,6 +607,9 @@ def plot_pca_4_components(
         t_frame_total = 0.0
         t_loss_total = 0.0
         t_plot_total = 0.0
+        cached_landscapes = None  # Cache landscapes for non-sampled points
+        mesh_resolution = 7
+
         for point_idx in tqdm(range(n_points), desc="Generating GIF frames"):
             t_frame_start = time.time()
             current_pca_coords = pca_data[point_idx]
@@ -617,10 +622,100 @@ def plot_pca_4_components(
                 axes = axes.flatten()
 
             t_plot_start = time.time()
-            for idx, (i, j) in enumerate(pairs):
+
+            # Check if we should compute landscape for this point
+            should_compute_landscape = (point_idx % points_step == 0) or (point_idx == n_points - 1)
+
+            if should_compute_landscape:
+                # Prepare all mesh points for all pairs at once (merged forward pass)
+                t_mesh_start = time.time()
+                all_mesh_points = []
+                all_mesh_info = []  # Store (pair_idx, i, j, X_mesh, Y_mesh, x_data, y_data) for each pair
+
+                for idx, (i, j) in enumerate(pairs):
+                    x_data = pca_data[:, i]
+                    y_data = pca_data[:, j]
+
+                    # Compute loss landscape in neighborhood around current point
+                    current_x = current_pca_coords[i]
+                    current_y = current_pca_coords[j]
+
+                    # Create mesh around current point
+                    x_range = np.linspace(current_x - max_radius, current_x + max_radius, mesh_resolution)
+                    y_range = np.linspace(current_y - max_radius, current_y + max_radius, mesh_resolution)
+                    X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
+
+                    # Prepare batch of PCA coordinates for loss computation
+                    mesh_points = []
+                    for yi in range(mesh_resolution):
+                        for xi in range(mesh_resolution):
+                            pca_coords = mean_pca_coords.copy()
+                            pca_coords[i] = X_mesh[yi, xi]
+                            pca_coords[j] = Y_mesh[yi, xi]
+                            mesh_points.append(pca_coords)
+
+                    all_mesh_points.extend(mesh_points)
+                    all_mesh_info.append((idx, i, j, X_mesh, Y_mesh, x_data, y_data))
+
+                # Reconstruct all embeddings from PCA coordinates at once
+                all_mesh_points_array = np.array(all_mesh_points)
+                all_reconstructed_embeddings = pca.inverse_transform(all_mesh_points_array)
+                t_mesh = time.time() - t_mesh_start
+
+                # Compute loss for all pairs in a single batched forward pass
+                batch_size = 512  # Increased batch size
+                t_loss_start = time.time()
+                all_loss_values = None
+                try:
+                    all_reconstructed_tensor = torch.tensor(all_reconstructed_embeddings, dtype=torch.float32)
+                    # Use optimized batch loss computation with pre-computed inputs
+                    all_loss_values = compute_loss_batch_optimized(
+                        all_reconstructed_tensor,
+                        original_shape,
+                        model,
+                        device,
+                        input_ids,
+                        input_text_embeds,
+                        attention_mask,
+                        target_outputs,
+                        loss_type,
+                        batch_size=batch_size,
+                    )
+                except Exception as e:
+                    print(f"Warning: Loss computation failed for frame {point_idx}: {e}")
+                    all_loss_values = np.full(len(all_mesh_points), np.nan)
+
+                t_loss_total_frame = time.time() - t_loss_start
+                t_loss_total += t_loss_total_frame
+
+                # Cache the computed landscapes and mesh info
+                cached_landscapes = (all_loss_values, all_mesh_info.copy())
+
+                if point_idx == 0 or point_idx % points_step == 0:
+                    print(
+                        f"[PROFILE] Merged loss computation for all {n_pairs} pairs (point {point_idx}): mesh_prep={t_mesh:.3f}s, loss={t_loss_total_frame:.3f}s (total_points={len(all_mesh_points)}, batch_size={batch_size})"
+                    )
+            else:
+                # Reuse cached landscapes from last computed point
+                all_loss_values, all_mesh_info = cached_landscapes
+                if all_loss_values is None:
+                    # Fallback: create empty landscapes if no cache available
+                    all_mesh_info = []
+                    for idx, (i, j) in enumerate(pairs):
+                        x_data = pca_data[:, i]
+                        y_data = pca_data[:, j]
+                        current_x = current_pca_coords[i]
+                        current_y = current_pca_coords[j]
+                        x_range = np.linspace(current_x - max_radius, current_x + max_radius, mesh_resolution)
+                        y_range = np.linspace(current_y - max_radius, current_y + max_radius, mesh_resolution)
+                        X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
+                        all_mesh_info.append((idx, i, j, X_mesh, Y_mesh, x_data, y_data))
+                    all_loss_values = np.full(len(all_mesh_info) * mesh_resolution * mesh_resolution, np.nan)
+
+            # Split results back to individual pairs and plot
+            loss_idx = 0
+            for idx, i, j, X_mesh, Y_mesh, x_data, y_data in all_mesh_info:
                 ax = axes[idx]
-                x_data = pca_data[:, i]
-                y_data = pca_data[:, j]
 
                 # Plot all points in gray
                 ax.scatter(x_data, y_data, s=60, c="gray", alpha=0.5)
@@ -637,60 +732,10 @@ def plot_pca_4_components(
                     zorder=10,
                 )
 
-                # Compute loss landscape in neighborhood around current point
-                current_x = current_pca_coords[i]
-                current_y = current_pca_coords[j]
-
-                # Create mesh around current point
-                mesh_resolution = 10
-                x_range = np.linspace(current_x - max_radius, current_x + max_radius, mesh_resolution)
-                y_range = np.linspace(current_y - max_radius, current_y + max_radius, mesh_resolution)
-                X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
-
-                # Prepare batch of PCA coordinates for loss computation
-                t_mesh_start = time.time()
-                mesh_points = []
-                for yi in range(mesh_resolution):
-                    for xi in range(mesh_resolution):
-                        pca_coords = mean_pca_coords.copy()
-                        pca_coords[i] = X_mesh[yi, xi]
-                        pca_coords[j] = Y_mesh[yi, xi]
-                        mesh_points.append(pca_coords)
-
-                # Reconstruct embeddings from PCA coordinates
-                mesh_points_array = np.array(mesh_points)
-                reconstructed_embeddings = pca.inverse_transform(mesh_points_array)
-                t_mesh = time.time() - t_mesh_start
-
-                # Compute loss in batches (using pre-computed inputs)
-                batch_size = 128
-                Z_mesh = np.zeros((mesh_resolution, mesh_resolution))
-                t_loss_start = time.time()
-                try:
-                    reconstructed_tensor = torch.tensor(reconstructed_embeddings, dtype=torch.float32)
-                    # Use optimized batch loss computation with pre-computed inputs
-                    loss_values = compute_loss_batch_optimized(
-                        reconstructed_tensor,
-                        original_shape,
-                        model,
-                        device,
-                        input_ids,
-                        input_text_embeds,
-                        attention_mask,
-                        target_outputs,
-                        loss_type,
-                        batch_size=batch_size,
-                    )
-                    Z_mesh = loss_values.reshape(mesh_resolution, mesh_resolution)
-                except Exception as e:
-                    print(f"Warning: Loss computation failed for frame {point_idx}, pair ({i},{j}): {e}")
-                    Z_mesh.fill(np.nan)
-                t_loss_pair = time.time() - t_loss_start
-                t_loss_total += t_loss_pair
-                if point_idx == 0 and idx == 0:
-                    print(
-                        f"[PROFILE] Loss computation for pair ({i},{j}): mesh_prep={t_mesh:.3f}s, loss={t_loss_pair:.3f}s (mesh_res={mesh_resolution}x{mesh_resolution}, n_points={mesh_resolution*mesh_resolution})"
-                    )
+                # Extract loss values for this pair
+                pair_loss_values = all_loss_values[loss_idx : loss_idx + mesh_resolution * mesh_resolution]
+                Z_mesh = pair_loss_values.reshape(mesh_resolution, mesh_resolution)
+                loss_idx += mesh_resolution * mesh_resolution
 
                 # Plot loss landscape
                 im = ax.pcolormesh(X_mesh, Y_mesh, Z_mesh, cmap="viridis", alpha=0.6, shading="auto")
@@ -1813,6 +1858,12 @@ def main():
         default=2.0,
         help="Maximum radius for neighborhood loss computation in PCA space",
     )
+    parser.add_argument(
+        "--draw-landscape-points-step",
+        type=int,
+        default=1,
+        help="Compute landscape only for every Nth point (default: 1, compute for all points)",
+    )
 
     args = parser.parse_args()
 
@@ -1926,6 +1977,7 @@ def main():
                 stages=stages if args.draw_landscape else None,
                 loss_type=loss_type if args.draw_landscape else "l2",
                 max_radius=args.max_radius if args.draw_landscape else 2.0,
+                points_step=args.draw_landscape_points_step if args.draw_landscape else 1,
             )
             plot_cumulative_explained_variance(
                 X,
