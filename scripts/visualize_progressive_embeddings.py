@@ -231,7 +231,10 @@ def compute_loss_batch_optimized(
                 batch_losses = batch_losses / total_layers
                 all_losses.append(batch_losses.cpu().numpy())
 
+            # Clear intermediate tensors to free memory
             del compression_outputs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     return np.concatenate(all_losses)
 
@@ -456,33 +459,39 @@ def plot_pca_4_components(
                 t_mesh = time.time() - t_mesh_start
 
                 # Compute loss for all pairs in a single batched forward pass
-                batch_size = 256  # Increased batch size
+                # Adjust batch size based on available memory and mesh size
+                # total_mesh_points = len(all_mesh_points)
+                # Use smaller batch size to avoid OOM - start conservative
+                # batch_size = min(128, max(16, total_mesh_points // 4))
+                batch_size = 256
                 t_loss_start = time.time()
                 all_loss_values = None
-                try:
-                    all_reconstructed_tensor = torch.tensor(all_reconstructed_embeddings, dtype=torch.float32)
-                    # Use optimized batch loss computation with pre-computed inputs
-                    all_loss_values = compute_loss_batch_optimized(
-                        all_reconstructed_tensor,
-                        original_shape,
-                        model,
-                        device,
-                        input_ids,
-                        input_text_embeds,
-                        attention_mask,
-                        target_outputs,
-                        loss_type,
-                        batch_size=batch_size,
-                    )
-                except Exception as e:
-                    print(f"Warning: Loss computation failed for frame {point_idx}: {e}")
-                    all_loss_values = np.full(len(all_mesh_points), np.nan)
+
+                # Clear cache before processing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+                all_reconstructed_tensor = torch.tensor(all_reconstructed_embeddings, dtype=torch.float32)
+                # Use optimized batch loss computation with pre-computed inputs
+                all_loss_values = compute_loss_batch_optimized(
+                    all_reconstructed_tensor,
+                    original_shape,
+                    model,
+                    device,
+                    input_ids,
+                    input_text_embeds,
+                    attention_mask,
+                    target_outputs,
+                    loss_type,
+                    batch_size=batch_size,
+                )
 
                 t_loss_total_frame = time.time() - t_loss_start
                 t_loss_total += t_loss_total_frame
 
-                # Cache the computed landscapes and mesh info
-                cached_landscapes = (all_loss_values, all_mesh_info.copy())
+                # Cache the computed landscapes and mesh info (convert to numpy to free GPU memory)
+                all_loss_values_np = all_loss_values.copy() if isinstance(all_loss_values, np.ndarray) else all_loss_values
+                cached_landscapes = (all_loss_values_np, all_mesh_info.copy())
 
                 if point_idx == 0 or point_idx % points_step == 0:
                     print(
