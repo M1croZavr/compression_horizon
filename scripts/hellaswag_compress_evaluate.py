@@ -44,6 +44,10 @@ def compress_prefixes_batch(
     num_compression_tokens: int = 1,
     max_steps: int = 1000,
     learning_rate: float = 1e-2,
+    loss_type: str = "cross_entropy",
+    hybrid_alpha: Optional[float] = None,
+    num_alignment_layers: int = 0,
+    inverted_alignment: bool = False,
     device: Optional[torch.device] = None,
 ) -> list[torch.Tensor]:
     """Compress multiple text prefixes into compression tokens (batched).
@@ -70,6 +74,9 @@ def compress_prefixes_batch(
     batch_size = len(texts)
     if batch_size == 0:
         return []
+
+    loss_type = (loss_type or "cross_entropy").lower()
+    use_alignment = hybrid_alpha is not None and loss_type != "cross_entropy"
 
     # Tokenize all texts with padding
     encoded = tokenizer(texts, truncation=True, padding=True, return_tensors="pt")
@@ -100,8 +107,9 @@ def compress_prefixes_batch(
         num_training_steps=max_steps,
     )
 
-    # Training loop
     model.train()
+
+    # Training loop
     for step in range(max_steps):
         optimizer.zero_grad()
 
@@ -158,11 +166,20 @@ def compress_prefixes_batch(
         batch_attention = torch.cat(batch_attention, dim=0)  # [batch_size, max_len]
         batch_labels = torch.cat(batch_labels, dim=0)  # [batch_size, max_len]
 
+        target_outputs = None
+        if use_alignment:
+            with torch.no_grad():
+                target_outputs = model(
+                    inputs_embeds=token_embeddings,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                )
+
         # Forward pass with compression tokens
         compression_outputs = model(
             inputs_embeds=batch_embeddings,
             attention_mask=batch_attention,
-            output_hidden_states=False,
+            output_hidden_states=use_alignment,
         )
 
         # Compute loss per sample
@@ -172,16 +189,35 @@ def compress_prefixes_batch(
             sample_logits = compression_outputs.logits[i : i + 1, : num_compression_tokens + seq_len]
             sample_input_ids = input_ids[i : i + 1, :seq_len]
             sample_attention_mask = attention_mask[i : i + 1, :seq_len]
-            sample_loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
-                logits=sample_logits,
-                input_ids=sample_input_ids,
-                attention_mask=sample_attention_mask,
-                num_prefix_tokens=num_compression_tokens,
-                loss_type="cross_entropy",
-                hybrid_alpha=None,
-                num_alignment_layers=0,
-                inverted_alignment=False,
-            )
+            if use_alignment:
+                assert target_outputs is not None
+                sample_compression_hidden_states = tuple(
+                    hs_layer[i : i + 1, : num_compression_tokens + seq_len] for hs_layer in compression_outputs.hidden_states
+                )
+                sample_target_hidden_states = tuple(hs_layer[i : i + 1, :seq_len] for hs_layer in target_outputs.hidden_states)
+                sample_loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
+                    logits=sample_logits,
+                    input_ids=sample_input_ids,
+                    attention_mask=sample_attention_mask,
+                    num_prefix_tokens=num_compression_tokens,
+                    target_hidden_states=sample_target_hidden_states,
+                    compression_hidden_states=sample_compression_hidden_states,
+                    num_alignment_layers=num_alignment_layers,
+                    inverted_alignment=inverted_alignment,
+                    loss_type=loss_type,
+                    hybrid_alpha=hybrid_alpha,
+                )
+            else:
+                sample_loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
+                    logits=sample_logits,
+                    input_ids=sample_input_ids,
+                    attention_mask=sample_attention_mask,
+                    num_prefix_tokens=num_compression_tokens,
+                    num_alignment_layers=num_alignment_layers,
+                    inverted_alignment=inverted_alignment,
+                    loss_type=loss_type,
+                    hybrid_alpha=hybrid_alpha,
+                )
             total_loss = total_loss + sample_loss
 
         loss = total_loss / batch_size
@@ -201,6 +237,10 @@ def compress_prefix(
     num_compression_tokens: int = 1,
     max_steps: int = 1000,
     learning_rate: float = 1e-2,
+    loss_type: str = "cross_entropy",
+    hybrid_alpha: Optional[float] = None,
+    num_alignment_layers: int = 0,
+    inverted_alignment: bool = False,
     device: Optional[torch.device] = None,
 ) -> torch.Tensor:
     """Compress a text prefix into compression tokens.
@@ -236,6 +276,9 @@ def compress_prefix(
     with torch.no_grad():
         token_embeddings = model.model.embed_tokens(input_ids)  # [1, seq_len, hidden]
 
+    loss_type = (loss_type or "cross_entropy").lower()
+    use_alignment = hybrid_alpha is not None and loss_type != "cross_entropy"
+
     # Get dtype from model embeddings (use bfloat16 as default for computation)
     embedding_dtype = token_embeddings.dtype
     # Use the same dtype as model embeddings for compression tokens
@@ -255,8 +298,9 @@ def compress_prefix(
         num_training_steps=max_steps,
     )
 
-    # Training loop
     model.train()
+
+    # Training loop
     for step in range(max_steps):
         optimizer.zero_grad()
 
@@ -272,21 +316,39 @@ def compress_prefix(
         compression_outputs = model(
             inputs_embeds=united_embeddings,
             attention_mask=united_attention_mask,
-            output_hidden_states=False,
+            output_hidden_states=use_alignment,
         )
 
-        labels = input_ids.clone()
-        labels[attention_mask == 0] = -100
-        loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
-            logits=compression_outputs.logits,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            num_prefix_tokens=num_compression_tokens,
-            loss_type="cross_entropy",
-            hybrid_alpha=None,
-            num_alignment_layers=0,
-            inverted_alignment=False,
-        )
+        if use_alignment:
+            with torch.no_grad():
+                target_outputs = model(
+                    inputs_embeds=token_embeddings,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                )
+            loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
+                logits=compression_outputs.logits,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                num_prefix_tokens=num_compression_tokens,
+                target_hidden_states=target_outputs.hidden_states,
+                compression_hidden_states=compression_outputs.hidden_states,
+                num_alignment_layers=num_alignment_layers,
+                inverted_alignment=inverted_alignment,
+                loss_type=loss_type,
+                hybrid_alpha=hybrid_alpha,
+            )
+        else:
+            loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
+                logits=compression_outputs.logits,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                num_prefix_tokens=num_compression_tokens,
+                num_alignment_layers=num_alignment_layers,
+                inverted_alignment=inverted_alignment,
+                loss_type=loss_type,
+                hybrid_alpha=hybrid_alpha,
+            )
 
         loss.backward()
         optimizer.step()
@@ -562,6 +624,30 @@ def main():
         default=4,
         help="Batch size for compression and evaluation",
     )
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default="cross_entropy",
+        choices=["cross_entropy", "l2", "l1", "cosine"],
+        help="Loss type for optimization. Use cross_entropy for CE-only; set hybrid_alpha to add activation alignment.",
+    )
+    parser.add_argument(
+        "--hybrid_alpha",
+        type=float,
+        default=None,
+        help="If set and loss_type != cross_entropy, adds hybrid_alpha * alignment_loss to CE loss.",
+    )
+    parser.add_argument(
+        "--num_alignment_layers",
+        type=int,
+        default=0,
+        help="Number of layers to align (0 = all layers). Used only when hybrid_alpha is set and loss_type != cross_entropy.",
+    )
+    parser.add_argument(
+        "--inverted_alignment",
+        action="store_true",
+        help="If set, aligns the last num_alignment_layers instead of the first.",
+    )
 
     args = parser.parse_args()
 
@@ -651,6 +737,10 @@ def main():
                 num_compression_tokens=args.num_compression_tokens,
                 max_steps=args.max_optimization_steps,
                 learning_rate=args.learning_rate,
+                loss_type=args.loss_type,
+                hybrid_alpha=args.hybrid_alpha,
+                num_alignment_layers=args.num_alignment_layers,
+                inverted_alignment=args.inverted_alignment,
                 device=device,
             )
         except Exception as e:

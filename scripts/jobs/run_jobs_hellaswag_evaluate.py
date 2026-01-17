@@ -102,6 +102,29 @@ if __name__ == "__main__":
         default=None,
         help="Random seed for reproducibility. If not specified, defaults to 42 and is not included in output dir.",
     )
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default=None,
+        help="Loss type for optimization: cross_entropy | l2 | l1 | cosine. If not specified, defaults to cross_entropy.",
+    )
+    parser.add_argument(
+        "--hybrid_alpha",
+        type=float,
+        default=None,
+        help="If set and loss_type != cross_entropy, adds hybrid_alpha * alignment_loss to CE loss.",
+    )
+    parser.add_argument(
+        "--num_alignment_layers",
+        type=int,
+        default=None,
+        help="Number of layers to align (0 = all layers). If not specified, defaults to 0.",
+    )
+    parser.add_argument(
+        "--inverted_alignment",
+        action="store_true",
+        help="If set, aligns the last num_alignment_layers instead of the first.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -150,6 +173,8 @@ if __name__ == "__main__":
         learning_rate = args.learning_rate if args.learning_rate is not None else 0.01
         batch_size = args.batch_size if args.batch_size is not None else 4
         dtype = args.dtype if args.dtype is not None else "bf16"
+        loss_type = args.loss_type if args.loss_type is not None else "cross_entropy"
+        num_alignment_layers = args.num_alignment_layers if args.num_alignment_layers is not None else 0
 
         cmd_args = [
             f"--model_checkpoint {model_checkpoint}",
@@ -159,7 +184,13 @@ if __name__ == "__main__":
             f"--learning_rate {learning_rate}",
             f"--batch_size {batch_size}",
             f"--dtype {dtype}",
+            f"--loss_type {loss_type}",
+            f"--num_alignment_layers {num_alignment_layers}",
         ]
+        if args.hybrid_alpha is not None:
+            cmd_args.append(f"--hybrid_alpha {args.hybrid_alpha}")
+        if args.inverted_alignment:
+            cmd_args.append("--inverted_alignment")
 
         # Add random_seed if specified (non-default)
         if args.random_seed is not None and args.random_seed != 42:
@@ -189,6 +220,18 @@ if __name__ == "__main__":
         # Add dtype to output dir if specified (non-default)
         if args.dtype is not None and args.dtype != "bf16":
             exp_suffix = f"{exp_suffix}_dtype_{args.dtype}"
+
+        if args.loss_type is not None and args.loss_type != "cross_entropy":
+            exp_suffix = f"{exp_suffix}_loss_{args.loss_type}"
+
+        if args.hybrid_alpha is not None:
+            exp_suffix = f"{exp_suffix}_hybrid_{args.hybrid_alpha}"
+
+        if args.num_alignment_layers is not None and args.num_alignment_layers != 0:
+            exp_suffix = f"{exp_suffix}_align_{args.num_alignment_layers}"
+
+        if args.inverted_alignment:
+            exp_suffix = f"{exp_suffix}_inv_align"
 
         out_dir_name = f"artifacts/hellaswag_evaluation/{exp_suffix}"
         if os.path.exists(out_dir_name):
