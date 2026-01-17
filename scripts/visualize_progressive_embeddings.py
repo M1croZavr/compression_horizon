@@ -4,10 +4,12 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
+import torch.nn.functional as F
 from datasets import Dataset
 from sklearn.decomposition import PCA
 from tqdm.auto import tqdm
@@ -227,6 +229,119 @@ def compute_reconstruction_loss(
         return alignment_loss / total_layers
 
 
+def compute_loss_batch(
+    compression_embeddings: torch.Tensor,
+    original_shape: Tuple[int, ...],
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    device: torch.device,
+    text: str,
+    loss_type: str,
+    batch_size: int = 16,
+) -> np.ndarray:
+    """Compute loss for a batch of reconstructed embeddings.
+
+    Args:
+        compression_embeddings: Batch of reconstructed embeddings [batch_size, flattened_size]
+        original_shape: Original shape of the embedding [num_compression_tokens, hidden_dim]
+        model: Model for forward pass
+        tokenizer: Tokenizer for text processing
+        device: Device for computation
+        text: Original text
+        loss_type: Type of loss ('l2', 'l1', 'cosine', 'cross_entropy')
+        batch_size: Batch size for processing
+
+    Returns:
+        Array of loss values [batch_size]
+    """
+    model.eval()
+    all_losses = []
+
+    # Tokenize text once
+    enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+    input_ids = enc["input_ids"].to(device)
+    attention_mask = enc["attention_mask"].to(device)
+
+    # Get input text embeddings
+    input_embeddings_layer = model.get_input_embeddings()
+    input_text_embeds = input_embeddings_layer(input_ids)
+
+    # Get target hidden states from model without compression tokens (once)
+    with torch.no_grad():
+        target_outputs = model(
+            inputs_embeds=input_text_embeds,
+            attention_mask=attention_mask,
+            output_hidden_states=(loss_type != "cross_entropy"),
+        )
+
+    # Process in batches
+    num_embeddings = compression_embeddings.shape[0]
+    for batch_start in range(0, num_embeddings, batch_size):
+        batch_end = min(batch_start + batch_size, num_embeddings)
+        batch_embeddings = compression_embeddings[batch_start:batch_end]
+
+        with torch.no_grad():
+            # Reshape batch embeddings to original shape
+            batch_size_actual = batch_embeddings.shape[0]
+            compression_embeddings_reshaped = batch_embeddings.reshape(batch_size_actual, *original_shape).to(device)
+
+            # Concatenate compression embeddings with input text embeddings
+            num_compression_tokens = compression_embeddings_reshaped.shape[1]
+            # Expand input_text_embeds for batch
+            input_text_embeds_batch = input_text_embeds.expand(batch_size_actual, -1, -1)
+            input_embeds = torch.cat([compression_embeddings_reshaped, input_text_embeds_batch], dim=1)
+
+            # Extend attention mask
+            comp_attention = torch.ones((batch_size_actual, num_compression_tokens), device=device, dtype=attention_mask.dtype)
+            extended_attention_mask = torch.cat([comp_attention, attention_mask.expand(batch_size_actual, -1)], dim=1)
+
+            # Forward pass with compression tokens
+            compression_outputs = model(
+                inputs_embeds=input_embeds,
+                attention_mask=extended_attention_mask,
+                output_hidden_states=True,
+            )
+
+            if loss_type == "cross_entropy":
+                # Cross entropy loss
+                labels = input_ids.clone().expand(batch_size_actual, -1)
+                labels[attention_mask.expand(batch_size_actual, -1) == 0] = -100
+                batch_losses = F.cross_entropy(
+                    compression_outputs.logits[:, num_compression_tokens - 1 : -1].flatten(0, 1),
+                    labels.flatten(),
+                    reduction="none",
+                )
+                # Reshape to get per-sample losses
+                batch_losses = batch_losses.view(batch_size_actual, -1).mean(dim=1)
+                all_losses.append(batch_losses.cpu().numpy())
+            else:
+                # For alignment losses, compare hidden states
+                total_layers = len(compression_outputs.hidden_states)
+                batch_losses = torch.zeros(batch_size_actual, device=device)
+
+                for layer_idx in range(total_layers):
+                    compression_hidden = compression_outputs.hidden_states[layer_idx][:, num_compression_tokens:]
+                    target_hidden = target_outputs.hidden_states[layer_idx].expand(batch_size_actual, -1, -1)
+
+                    if loss_type == "l2":
+                        layer_loss = (
+                            F.mse_loss(compression_hidden, target_hidden, reduction="none").sum(dim=-1).sqrt().mean(dim=1)
+                        )
+                    elif loss_type == "l1":
+                        layer_loss = F.l1_loss(compression_hidden, target_hidden, reduction="none").sum(dim=-1).mean(dim=1)
+                    elif loss_type == "cosine":
+                        cosine = F.cosine_similarity(compression_hidden, target_hidden, dim=-1)
+                        layer_loss = (1.0 - cosine).mean(dim=1)
+                    else:
+                        raise ValueError(f"Unsupported loss_type: {loss_type}")
+                    batch_losses += layer_loss
+
+                batch_losses = batch_losses / total_layers
+                all_losses.append(batch_losses.cpu().numpy())
+
+    return np.concatenate(all_losses)
+
+
 def plot_pca_4_components(
     X: np.ndarray,
     labels: List[str],
@@ -237,6 +352,7 @@ def plot_pca_4_components(
     device: Optional[torch.device] = None,
     stages: Optional[List[Dict[str, Any]]] = None,
     loss_type: str = "l2",
+    max_radius: float = 2.0,
 ):
     """Plot all pairs of the 4 main PCA components in subplots.
 
@@ -244,12 +360,13 @@ def plot_pca_4_components(
         X: Input data array [n_samples, n_features]
         labels: List of labels for each sample
         outfile: Output file path
-        draw_landscape: If True, draw loss landscape for each PCA component pair
+        draw_landscape: If True, draw loss landscape for each PCA component pair and generate GIF
         model: Model for loss computation (required if draw_landscape=True)
         tokenizer: Tokenizer for loss computation (required if draw_landscape=True)
         device: Device for computation (required if draw_landscape=True)
         stages: List of stage records with embeddings and text (required if draw_landscape=True)
         loss_type: Type of loss to compute ('l2', 'l1', 'cosine', 'cross_entropy')
+        max_radius: Maximum radius for neighborhood loss computation in PCA space
     """
     if X.shape[0] < 2 or X.shape[1] < 2:
         return
@@ -300,66 +417,6 @@ def plot_pca_4_components(
                 ax.text(x_data[k], y_data[k], lab, fontsize=10, ha="left", va="bottom")
                 labeled_positions.append([x_data[k], y_data[k]])
 
-        # Draw loss landscape if requested
-        if draw_landscape and model is not None and tokenizer is not None and device is not None and stages is not None:
-            # Get X and Y limits with some padding
-            x_min, x_max = x_data.min(), x_data.max()
-            y_min, y_max = y_data.min(), y_data.max()
-            x_padding = (x_max - x_min) * 0.1
-            y_padding = (y_max - y_min) * 0.1
-            # Use 30x30 mesh for reasonable computation time
-            mesh_resolution = 30
-            x_range = np.linspace(x_min - x_padding, x_max + x_padding, mesh_resolution)
-            y_range = np.linspace(y_min - y_padding, y_max + y_padding, mesh_resolution)
-            X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
-
-            # Get the mean of all other PCA components (set to 0 for components not in this pair)
-            mean_pca_coords = np.mean(pca_data, axis=0)
-
-            # Get reference embedding for loss computation (use the longest sequence stage)
-            reference_stage = max(stages, key=lambda s: int(s.get("stage_seq_len", 0)))
-            reference_emb = torch.tensor(reference_stage["embedding"], dtype=torch.float32)
-            if reference_emb.ndim == 1:
-                reference_emb = reference_emb.unsqueeze(0)
-            original_shape = reference_emb.shape
-            reference_text = reference_stage.get("text", "")
-            if not isinstance(reference_text, str) or reference_text.strip() == "":
-                # Skip landscape if no text available
-                pass
-            else:
-                # Compute loss for each point in the mesh
-                print(f"Computing loss landscape for PC{i+1} vs PC{j+1} ({mesh_resolution}x{mesh_resolution} grid)...")
-                Z_mesh = np.zeros_like(X_mesh)
-                for xi in tqdm(range(len(x_range)), desc=f"PC{i+1} vs PC{j+1}", leave=False):
-                    for yi in range(len(y_range)):
-                        # Create PCA coordinates for this point
-                        pca_coords = mean_pca_coords.copy()
-                        pca_coords[i] = X_mesh[yi, xi]
-                        pca_coords[j] = Y_mesh[yi, xi]
-
-                        # Reconstruct embedding from PCA coordinates
-                        reconstructed_flat = pca.inverse_transform(pca_coords.reshape(1, -1))[0]
-
-                        # Compute loss
-                        try:
-                            loss_val = compute_reconstruction_loss(
-                                reconstructed_flat,
-                                original_shape,
-                                model,
-                                tokenizer,
-                                device,
-                                reference_text,
-                                loss_type,
-                            )
-                            Z_mesh[yi, xi] = loss_val
-                        except Exception:
-                            # If computation fails, set to NaN
-                            Z_mesh[yi, xi] = np.nan
-
-                # Plot loss landscape using pcolormesh
-                im = ax.pcolormesh(X_mesh, Y_mesh, Z_mesh, cmap="viridis", alpha=0.6, shading="auto")
-                plt.colorbar(im, ax=ax, label=f"Loss ({loss_type})")
-
         ax.set_xlabel(f"PC{i+1} ({explained_var[i]:.3f})", fontsize=10)
         ax.set_ylabel(f"PC{j+1} ({explained_var[j]:.3f})", fontsize=10)
         ax.set_title(f"PC{i+1} vs PC{j+1}", fontsize=12)
@@ -375,6 +432,152 @@ def plot_pca_4_components(
     plt.savefig(outfile, dpi=300)
     plt.close()
     print(f"plot_pca_4_components: {outfile}")
+
+    # Generate GIF with landscape visualization if requested
+    if draw_landscape and model is not None and tokenizer is not None and device is not None and stages is not None:
+        gif_outfile = outfile.replace(".png", "_landscape.gif")
+        print(f"Generating landscape GIF: {gif_outfile}")
+
+        # Get reference embedding and text
+        reference_stage = max(stages, key=lambda s: int(s.get("stage_seq_len", 0)))
+        reference_emb = torch.tensor(reference_stage["embedding"], dtype=torch.float32)
+        if reference_emb.ndim == 1:
+            reference_emb = reference_emb.unsqueeze(0)
+        original_shape = reference_emb.shape
+        reference_text = reference_stage.get("text", "")
+        if not isinstance(reference_text, str) or reference_text.strip() == "":
+            print("Skipping GIF generation: no text available")
+            return
+
+        # Number of trajectory points
+        n_points = pca_data.shape[0]
+        mean_pca_coords = np.mean(pca_data, axis=0)
+
+        # Generate frames
+        frames = []
+        for point_idx in tqdm(range(n_points), desc="Generating GIF frames"):
+            current_pca_coords = pca_data[point_idx]
+
+            # Create figure with same layout as main plot
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
+            if n_pairs == 1:
+                axes = [axes]
+            else:
+                axes = axes.flatten()
+
+            for idx, (i, j) in enumerate(pairs):
+                ax = axes[idx]
+                x_data = pca_data[:, i]
+                y_data = pca_data[:, j]
+
+                # Plot all points in gray
+                ax.scatter(x_data, y_data, s=60, c="gray", alpha=0.5)
+
+                # Highlight current point
+                ax.scatter(
+                    x_data[point_idx],
+                    y_data[point_idx],
+                    s=120,
+                    c="red",
+                    marker="*",
+                    edgecolors="black",
+                    linewidths=1.5,
+                    zorder=10,
+                )
+
+                # Compute loss landscape in neighborhood around current point
+                current_x = current_pca_coords[i]
+                current_y = current_pca_coords[j]
+
+                # Create mesh around current point
+                mesh_resolution = 10
+                x_range = np.linspace(current_x - max_radius, current_x + max_radius, mesh_resolution)
+                y_range = np.linspace(current_y - max_radius, current_y + max_radius, mesh_resolution)
+                X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
+
+                # Prepare batch of PCA coordinates for loss computation
+                mesh_points = []
+                for yi in range(mesh_resolution):
+                    for xi in range(mesh_resolution):
+                        pca_coords = mean_pca_coords.copy()
+                        pca_coords[i] = X_mesh[yi, xi]
+                        pca_coords[j] = Y_mesh[yi, xi]
+                        mesh_points.append(pca_coords)
+
+                # Reconstruct embeddings from PCA coordinates
+                mesh_points_array = np.array(mesh_points)
+                reconstructed_embeddings = pca.inverse_transform(mesh_points_array)
+
+                # Compute loss in batches
+                batch_size = 128
+                Z_mesh = np.zeros((mesh_resolution, mesh_resolution))
+                try:
+                    reconstructed_tensor = torch.tensor(reconstructed_embeddings, dtype=torch.float32)
+                    loss_values = compute_loss_batch(
+                        reconstructed_tensor,
+                        original_shape,
+                        model,
+                        tokenizer,
+                        device,
+                        reference_text,
+                        loss_type,
+                        batch_size=batch_size,
+                    )
+                    Z_mesh = loss_values.reshape(mesh_resolution, mesh_resolution)
+                except Exception as e:
+                    print(f"Warning: Loss computation failed for frame {point_idx}, pair ({i},{j}): {e}")
+                    Z_mesh.fill(np.nan)
+
+                # Plot loss landscape
+                im = ax.pcolormesh(X_mesh, Y_mesh, Z_mesh, cmap="viridis", alpha=0.6, shading="auto")
+                plt.colorbar(im, ax=ax, label=f"Loss ({loss_type})")
+
+                # Add labels with collision detection (only for current point)
+                ax.text(
+                    x_data[point_idx],
+                    y_data[point_idx],
+                    labels[point_idx],
+                    fontsize=10,
+                    ha="left",
+                    va="bottom",
+                    color="red",
+                    weight="bold",
+                )
+
+                ax.set_xlabel(f"PC{i+1} ({explained_var[i]:.3f})", fontsize=10)
+                ax.set_ylabel(f"PC{j+1} ({explained_var[j]:.3f})", fontsize=10)
+                ax.set_title(f"PC{i+1} vs PC{j+1} - Point {point_idx+1}/{n_points}", fontsize=12)
+                ax.grid(True, alpha=0.3)
+                ax.axis("equal")
+
+            # Hide unused subplots
+            for idx in range(n_pairs, len(axes)):
+                axes[idx].axis("off")
+
+            plt.suptitle(
+                f"PCA Landscape: Point {point_idx+1}/{n_points} (cumulative variance: {explained_var.sum():.4f})",
+                fontsize=14,
+            )
+            plt.tight_layout()
+
+            # Convert figure to image
+            fig.canvas.draw()
+            # Get the RGBA buffer from the figure
+            buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+            w, h = fig.canvas.get_width_height()
+            buf = buf.reshape((h, w, 4))
+            # Convert RGBA to RGB
+            buf = buf[:, :, :3]
+            frames.append(buf)
+
+            plt.close(fig)
+
+        # Save GIF
+        if frames:
+            imageio.mimsave(gif_outfile, frames, duration=0.5, loop=0)
+            print(f"Saved landscape GIF: {gif_outfile}")
+        else:
+            print("Warning: No frames generated for GIF")
 
 
 def plot_cumulative_explained_variance(X: np.ndarray, title: str, outfile: str, max_components: Optional[int] = None):
@@ -1420,6 +1623,12 @@ def main():
         action="store_true",
         help="Draw loss landscape for PCA component pairs",
     )
+    parser.add_argument(
+        "--max-radius",
+        type=float,
+        default=2.0,
+        help="Maximum radius for neighborhood loss computation in PCA space",
+    )
 
     args = parser.parse_args()
 
@@ -1519,6 +1728,9 @@ def main():
                 loss_type_from_stage = stages[0].get("loss_type", "l2")
                 if isinstance(loss_type_from_stage, str):
                     loss_type = loss_type_from_stage.lower()
+
+            print("loss_type", loss_type)
+
             plot_pca_4_components(
                 X,
                 labels,
@@ -1529,6 +1741,7 @@ def main():
                 device=device if args.draw_landscape else None,
                 stages=stages if args.draw_landscape else None,
                 loss_type=loss_type if args.draw_landscape else "l2",
+                max_radius=args.max_radius if args.draw_landscape else 2.0,
             )
             plot_cumulative_explained_variance(
                 X,
