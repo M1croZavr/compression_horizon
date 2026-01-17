@@ -29,6 +29,9 @@ def filter_records(
 ) -> List[Dict[str, Any]]:
     """Filter dataset records by sample_id and/or stage_index."""
     rows: List[Dict[str, Any]] = []
+
+    ds = ds.remove_columns(["orig_embedding", "initialization_embedding"])
+
     for i in tqdm(range(len(ds)), desc="Filtering records"):
         r = ds[i]
         if sample_id is not None and int(r.get("sample_id", -1)) != int(sample_id):
