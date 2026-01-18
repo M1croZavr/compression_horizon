@@ -25,7 +25,8 @@ def calculate_perplexity(
     attention_mask: torch.Tensor,  # [1, sequence]
     *,
     n: int = 128,
-) -> float:
+    return_generated_text: str,
+) -> tuple[int | float | bool, str] | int | float | bool:
     """Entropy measures the level of uncertainty in the model's output.
 
     Lower entropy means the model is more certain about its predictions and therefore, the perplexity is lower.
@@ -91,6 +92,10 @@ def calculate_perplexity(
         ).mean()
     )
     perplexity = torch.exp(cross_entropy).item()
+
+    if return_generated_text:
+        generated_text = tokenizer.decode(generated_token_log_probs.argmax(dim=1), skip_special_tokens=True)
+        return perplexity, generated_text
     return perplexity
 
 
