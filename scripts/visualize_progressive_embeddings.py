@@ -512,6 +512,7 @@ def plot_pca_4_components(
                         f"[PROFILE] Merged loss computation for all {n_pairs} pairs (point {point_idx}): mesh_prep={t_mesh:.3f}s, loss={t_loss_total_frame:.3f}s (total_points={len(all_mesh_points)}, batch_size={batch_size})"
                     )
             else:
+                continue
                 # Reuse cached landscapes from last computed point
                 all_loss_values, all_mesh_info = cached_landscapes
                 if all_loss_values is None:
@@ -566,7 +567,7 @@ def plot_pca_4_components(
                 plt.colorbar(im, ax=ax, label=f"Loss ({loss_type})")
 
                 # Plot all points in gray
-                ax.scatter(x_data, y_data, s=60, c="white", alpha=0.5)
+                ax.scatter(x_data, y_data, s=30, c="grey", alpha=0.2)
 
                 # Highlight current point
                 ax.scatter(
@@ -631,8 +632,8 @@ def plot_pca_4_components(
                     f"[PROFILE] Frame {point_idx+1}/{n_points}: total={t_frame:.3f}s (plot={t_plot:.3f}s, loss={t_loss_total:.3f}s, convert={t_convert:.3f}s)"
                 )
 
-            # Save intermediate GIF every 100 frames
-            if (point_idx + 1) % 100 == 0 and len(frames) > 0:
+            # Save intermediate GIF every 10 frames
+            if (point_idx + 1) % 10 == 0 and len(frames) > 0:
                 intermediate_gif_outfile = gif_outfile.replace(".gif", f"_intermediate_{point_idx+1}.gif")
                 imageio.mimsave(intermediate_gif_outfile, frames, duration=1000, loop=0)
                 print(f"Saved intermediate GIF: {intermediate_gif_outfile} ({len(frames)} frames)")
@@ -640,7 +641,7 @@ def plot_pca_4_components(
         # Save GIF
         t_save_start = time.time()
         if frames:
-            imageio.mimsave(gif_outfile, frames, duration=1000, loop=0)
+            imageio.mimsave(gif_outfile, frames, duration=500, loop=0)
             t_save = time.time() - t_save_start
             t_gif_total = time.time() - t_gif_start
             print(f"[PROFILE] GIF generation complete: total={t_gif_total:.3f}s")
