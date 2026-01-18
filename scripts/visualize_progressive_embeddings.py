@@ -172,7 +172,7 @@ def compute_loss_batch_optimized(
 
     # Process in batches
     num_embeddings = compression_embeddings.shape[0]
-    for batch_start in range(0, num_embeddings, batch_size):
+    for batch_start in tqdm(range(0, num_embeddings, batch_size)):
         batch_end = min(batch_start + batch_size, num_embeddings)
         batch_embeddings = compression_embeddings[batch_start:batch_end]
 
@@ -192,6 +192,7 @@ def compute_loss_batch_optimized(
             extended_attention_mask = torch.cat([comp_attention, attention_mask.expand(batch_size_actual, -1)], dim=1)
 
             # Forward pass with compression tokens
+            print("input_embeds", input_embeds.shape)
             compression_outputs = model(
                 inputs_embeds=input_embeds,
                 attention_mask=extended_attention_mask,
@@ -210,7 +211,7 @@ def compute_loss_batch_optimized(
                 )
                 # Reshape to get per-sample losses
                 batch_losses = batch_losses.view(batch_size_actual, -1).mean(dim=1)
-                all_losses.append(batch_losses.cpu().numpy())
+                all_losses.append(batch_losses.float().cpu().numpy())
             else:
                 # For alignment losses, compare hidden states
                 total_layers = len(compression_outputs.hidden_states)
@@ -238,8 +239,8 @@ def compute_loss_batch_optimized(
 
             # Clear intermediate tensors to free memory
             del compression_outputs
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # if torch.cuda.is_available():
+            #     torch.cuda.empty_cache()
 
     return np.concatenate(all_losses)
 
@@ -475,15 +476,15 @@ def plot_pca_4_components(
                 # total_mesh_points = len(all_mesh_points)
                 # Use smaller batch size to avoid OOM - start conservative
                 # batch_size = min(128, max(16, total_mesh_points // 4))
-                batch_size = 256
+                batch_size = 32
                 t_loss_start = time.time()
                 all_loss_values = None
 
                 # Clear cache before processing
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                # if torch.cuda.is_available():
+                #     torch.cuda.empty_cache()
 
-                all_reconstructed_tensor = torch.tensor(all_reconstructed_embeddings, dtype=torch.float32)
+                all_reconstructed_tensor = torch.tensor(all_reconstructed_embeddings, dtype=torch.bfloat16)
                 # Use optimized batch loss computation with pre-computed inputs
                 print("all_reconstructed_tensor", all_reconstructed_tensor.shape, "mesh_resolution", mesh_resolution)
                 all_loss_values = compute_loss_batch_optimized(
@@ -629,6 +630,12 @@ def plot_pca_4_components(
                 print(
                     f"[PROFILE] Frame {point_idx+1}/{n_points}: total={t_frame:.3f}s (plot={t_plot:.3f}s, loss={t_loss_total:.3f}s, convert={t_convert:.3f}s)"
                 )
+
+            # Save intermediate GIF every 100 frames
+            if (point_idx + 1) % 100 == 0 and len(frames) > 0:
+                intermediate_gif_outfile = gif_outfile.replace(".gif", f"_intermediate_{point_idx+1}.gif")
+                imageio.mimsave(intermediate_gif_outfile, frames, duration=1000, loop=0)
+                print(f"Saved intermediate GIF: {intermediate_gif_outfile} ({len(frames)} frames)")
 
         # Save GIF
         t_save_start = time.time()
@@ -1768,15 +1775,13 @@ def main():
     model = None
     tok = None
     if model_for_ppl is not None:
-        try:
-            model = AutoModelForCausalLM.from_pretrained(model_for_ppl).to(device)
-            model.eval()
-            tok = AutoTokenizer.from_pretrained(model_for_ppl)
-            if tok.pad_token is None and tok.eos_token is not None:
-                tok.pad_token = tok.eos_token
-        except Exception:
-            model = None
-            tok = None
+        model = AutoModelForCausalLM.from_pretrained(
+            model_for_ppl, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
+        ).to(device)
+        model.eval()
+        tok = AutoTokenizer.from_pretrained(model_for_ppl)
+        if tok.pad_token is None and tok.eos_token is not None:
+            tok.pad_token = tok.eos_token
 
     # Holders for cross-sample correlation analyses
     dist_l1_all: List[float] = []
@@ -1799,20 +1804,22 @@ def main():
         for sid, stages in tqdm(by_sid.items(), desc="Processing samples"):
             labels = [f"L{int(s.get('stage_seq_len', -1))}" for s in stages]
             X = np.stack([flatten_embedding(s) for s in stages], axis=0)
-            l2, cos_d = compute_pairwise_similarities(X)
-            plot_heatmap(
-                l2,
-                labels,
-                title=f"Sample {sid}: L2 by stage",
-                outfile=os.path.join(out_dir, f"sid{sid}_l2.png"),
-            )
-            plot_heatmap(
-                cos_d,
-                labels,
-                title=f"Sample {sid}: cosine distance by stage",
-                outfile=os.path.join(out_dir, f"sid{sid}_cosine.png"),
-            )
-            plot_pca(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca.png"))
+            if not args.draw_landscape:
+                l2, cos_d = compute_pairwise_similarities(X)
+                plot_heatmap(
+                    l2,
+                    labels,
+                    title=f"Sample {sid}: L2 by stage",
+                    outfile=os.path.join(out_dir, f"sid{sid}_l2.png"),
+                )
+                plot_heatmap(
+                    cos_d,
+                    labels,
+                    title=f"Sample {sid}: cosine distance by stage",
+                    outfile=os.path.join(out_dir, f"sid{sid}_cosine.png"),
+                )
+                plot_pca(X, labels, outfile=os.path.join(out_dir, f"sid{sid}_pca.png"))
+
             # Get loss_type from stages if available, default to 'l2'
             loss_type = "l2"
             if stages and len(stages) > 0:

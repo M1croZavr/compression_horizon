@@ -844,6 +844,7 @@ class MyTrainer:
                 prev_convergence = convergence_per_sample == 1.0
                 # prev_convergence_per_sample = convergence_per_sample
 
+                print("convergence_per_sample", convergence_per_sample, convergence_per_sample == 1.0)
                 if (convergence_per_sample == 1.0).all():
                     print(f"Early stopping: compression converged in {step_i} steps")
                     break
@@ -1081,13 +1082,14 @@ class MyTrainer:
                         ground_truth_text,
                     )
 
+                    print("convergence_per_sample", convergence_per_sample, convergence_per_sample == 1.0)
+                    if (convergence_per_sample == 1.0).all():
+                        print(f"Early stopping: compression converged in {step_i} steps")
+                        break
+
                 total_per_sample_convergence[step_i, :] = convergence_per_sample < 1.0
                 total_per_sample_convergence_099[step_i, :] = convergence_per_sample < 0.99
                 total_per_sample_convergence_095[step_i, :] = convergence_per_sample < 0.95
-
-                if (convergence_per_sample == 1.0).all():
-                    print(f"Early stopping: compression converged in {step_i} steps")
-                    break
 
                 # Update learning rate
                 optimizer.zero_grad(set_to_none=True)

@@ -182,7 +182,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument("--instance_type", default="a100.1gpu")
     parser.add_argument(
         "--base_image",
-        default="cr.ai.cloud.ru/aicloud-base-images/cuda12.1-torch2-py311:0.0.36",
+        default="cr.ai.cloud.ru/aicloud-base-images/py3.12-torch2.7.0:0.0.41",
     )
     parser.add_argument("--n_workers", type=int, default=1)
     parser.add_argument("--processes_per_worker", type=int, default=1)

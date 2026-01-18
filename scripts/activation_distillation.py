@@ -205,6 +205,7 @@ if __name__ == "__main__":
     print(f"Random seed set to: {random_seed}")
 
     torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
+    print("torch_dtype", torch_dtype)
     model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
     tokenizer.pad_token = tokenizer.eos_token

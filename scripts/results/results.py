@@ -160,6 +160,7 @@ abbreviation = {
         "Qwen/Qwen3-4B": "Q3-4B",
         "unsloth/Llama-3.2-3B": "L3.2-3B",
         "unsloth/Llama-3.2-1B": "L3.2-1B",
+        "unsloth/Meta-Llama-3.1-8B": "L3.1-8B",
         "allenai/OLMo-1B-hf": "OLM-1B",
         "allenai/Olmo-3-1025-7B": "OLM3-7B",
     },

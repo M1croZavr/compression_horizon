@@ -242,7 +242,7 @@ if __name__ == "__main__":
                 "region": extra_options["region"],
                 "type": "binary_exp",
                 "shm_size_class": "medium",
-                "base_image": "cr.ai.cloud.ru/aicloud-base-images/cuda12.1-torch2-py311:0.0.36",
+                "base_image": "cr.ai.cloud.ru/aicloud-base-images/py3.12-torch2.7.0:0.0.41",
                 "n_workers": 1,
                 "processes_per_worker": 1,
             }
