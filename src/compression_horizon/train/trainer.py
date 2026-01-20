@@ -1692,7 +1692,7 @@ class MyTrainer:
                 # Slice to current effective sequence length
                 input_ids = full_input_ids[:, :seq_len]
                 inputs_embeds = full_model_token_embeddings[:, :seq_len, :]
-                target_hidden = (h[:, :seq_len] for h in target_hidden_full)
+                target_hidden = list(h[:, :seq_len] for h in target_hidden_full)
                 attention_mask = full_attention_mask[:, :seq_len]
 
                 pbar = tqdm(
@@ -1921,9 +1921,7 @@ class MyTrainer:
                         )
                         sample_logits_mem = sample_outputs_mem.logits  # [1, num_compression_tokens + seq_len, vocab_size]
 
-                        sample_aligned_logits_mem = sample_logits_mem[
-                            :, num_compression_tokens - 1 : -1, :
-                        ]  # [1, seq_len, vocab_size]
+                        sample_aligned_logits_mem = sample_logits_mem[:, num_compression_tokens:, :]  # [1, seq_len, vocab_size]
 
                         sample_shift_logits_mem = sample_aligned_logits_mem[:, :-1, :].contiguous()
                         sample_shift_labels_mem = sample_input_ids[:, 1:].contiguous()
@@ -1947,8 +1945,6 @@ class MyTrainer:
                         # Per-sample information gain
                         sample_info_gain = sample_H_LM_bits - sample_H_LM_mem_bits
                         per_sample_info_gain.append(sample_info_gain)
-
-                        breakpoint()
 
                     # Save embeddings to disk in bfloat16 format before converting to fp32
                     embeddings_dir = None

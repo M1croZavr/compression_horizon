@@ -264,7 +264,7 @@ def compute_information_gain(
             ce_lm = F.cross_entropy(
                 shift_logits_lm_flat[valid_mask],
                 shift_labels_lm_flat[valid_mask],
-                reduction="mean",
+                reduction="sum",
             )
             # Convert from nats to bits: divide by ln(2)
             H_LM = ce_lm.item() / math.log(2)
@@ -294,7 +294,7 @@ def compute_information_gain(
             logits_mem = outputs_mem.logits  # [1, num_compression_tokens + seq_len, vocab_size]
 
             # Align logits: slice from num_compression_tokens-1 to -1, then shift for next-token prediction
-            aligned_logits_mem = logits_mem[:, num_compression_tokens - 1 : -1, :]  # [1, seq_len, vocab_size]
+            aligned_logits_mem = logits_mem[:, num_compression_tokens:, :]  # [1, seq_len, vocab_size]
 
             # Compute cross-entropy: shift for next-token prediction
             shift_logits_mem = aligned_logits_mem[:, :-1, :].contiguous()
@@ -314,7 +314,7 @@ def compute_information_gain(
             ce_mem = F.cross_entropy(
                 shift_logits_mem_flat[valid_mask],
                 shift_labels_mem_flat[valid_mask],
-                reduction="mean",
+                reduction="sum",
             )
             # Convert from nats to bits: divide by ln(2)
             H_LM_mem = ce_mem.item() / math.log(2)
