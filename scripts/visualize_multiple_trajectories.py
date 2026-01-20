@@ -5,10 +5,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 from datasets import Dataset
 from sklearn.decomposition import PCA
 from tabulate import tabulate
 from tqdm.auto import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def load_progressive_dataset(dataset_path: str) -> Dataset:
@@ -156,6 +158,170 @@ def compute_num_random_projections_explained_99_var(
     return float(num_projections)
 
 
+def compute_information_gain(
+    rows: List[Dict[str, Any]], model_checkpoint: Optional[str] = None, device: Optional[torch.device] = None
+) -> List[float]:
+    """Compute information gain (CE-reduction) for all samples in the dataset.
+
+    Information Gain = H_LM - H_LM+[mem]
+    where H_LM is cross-entropy without memory vector and H_LM+[mem] is with memory vector.
+
+    Args:
+        rows: List of dataset rows, each containing 'text', 'embedding', 'num_compression_tokens', etc.
+        model_checkpoint: Model checkpoint path. If None, tries to extract from first row.
+        device: Device to run computation on. If None, uses CUDA if available.
+
+    Returns:
+        List of information gain values (one per sample, using final stage embedding)
+    """
+    if len(rows) == 0:
+        return []
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Get model checkpoint from first row if not provided
+    if model_checkpoint is None:
+        model_checkpoint = rows[0].get("model_checkpoint")
+        if not model_checkpoint:
+            print("Warning: model_checkpoint not found in dataset, skipping information gain computation")
+            return []
+
+    # Load model and tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_checkpoint, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
+    ).to(device)
+    model.eval()
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Group rows by sample_id and get final stage for each sample
+    by_sid: Dict[int, List[Dict[str, Any]]] = {}
+    for row in rows:
+        sid = int(row.get("sample_id", -1))
+        if sid not in by_sid:
+            by_sid[sid] = []
+        by_sid[sid].append(row)
+
+    # For each sample, get the final stage (highest stage_index or highest stage_seq_len)
+    information_gains = []
+
+    for sid, stages in by_sid.items():
+        if len(stages) == 0:
+            continue
+
+        # Get final stage: prefer highest stage_index, fallback to highest stage_seq_len, then last
+        def get_sort_key(s):
+            stage_idx = s.get("stage_index")
+            stage_seq_len = s.get("stage_seq_len")
+            if stage_idx is not None:
+                return (int(stage_idx), int(stage_seq_len) if stage_seq_len is not None else -1)
+            elif stage_seq_len is not None:
+                return (-1, int(stage_seq_len))
+            else:
+                return (-1, -1)
+
+        final_stage = max(stages, key=get_sort_key)
+
+        text = final_stage.get("text", "")
+        if not isinstance(text, str) or text.strip() == "":
+            continue
+
+        embedding = final_stage.get("embedding")
+        if embedding is None:
+            continue
+
+        num_compression_tokens = int(final_stage.get("num_compression_tokens", 1))
+
+        # Tokenize text
+        enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+        input_ids = enc["input_ids"].to(device)
+        attention_mask = enc["attention_mask"].to(device)
+
+        # Compute H_LM: cross-entropy without memory vector
+        with torch.no_grad():
+            outputs_lm = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits_lm = outputs_lm.logits  # [1, seq_len, vocab_size]
+
+            # Compute cross-entropy: shift logits and labels for next-token prediction
+            shift_logits_lm = logits_lm[:, :-1, :].contiguous()
+            shift_labels_lm = input_ids[:, 1:].contiguous()
+            shift_mask_lm = attention_mask[:, 1:].contiguous()
+
+            # Flatten for cross-entropy
+            shift_logits_lm_flat = shift_logits_lm.view(-1, shift_logits_lm.size(-1))
+            shift_labels_lm_flat = shift_labels_lm.view(-1)
+            shift_mask_lm_flat = shift_mask_lm.view(-1)
+
+            # Mask out padding
+            valid_mask = shift_mask_lm_flat.bool()
+            if valid_mask.sum() == 0:
+                continue
+
+            ce_lm = F.cross_entropy(
+                shift_logits_lm_flat[valid_mask],
+                shift_labels_lm_flat[valid_mask],
+                reduction="mean",
+            )
+            H_LM = ce_lm.item()
+
+        # Compute H_LM+[mem]: cross-entropy with memory vector
+        embedding_tensor = torch.tensor(embedding, dtype=torch.float32, device=device)
+        if embedding_tensor.ndim == 1:
+            # Reshape if needed: assume [num_compression_tokens * hidden_size] -> [num_compression_tokens, hidden_size]
+            hidden_size = model.config.hidden_size
+            if embedding_tensor.shape[0] == num_compression_tokens * hidden_size:
+                embedding_tensor = embedding_tensor.reshape(num_compression_tokens, hidden_size)
+            else:
+                embedding_tensor = embedding_tensor.unsqueeze(0)
+        if embedding_tensor.ndim == 2:
+            embedding_tensor = embedding_tensor.unsqueeze(0)  # [1, num_compression_tokens, hidden_size]
+
+        # Get token embeddings
+        token_embeddings = model.model.embed_tokens(input_ids)  # [1, seq_len, hidden_size]
+
+        # Concatenate compression tokens with token embeddings
+        compression_attention_mask = torch.ones((1, num_compression_tokens), device=device, dtype=attention_mask.dtype)
+        united_token_embeddings = torch.cat([embedding_tensor, token_embeddings], dim=1)
+        united_attention_mask = torch.cat([compression_attention_mask, attention_mask], dim=1)
+
+        with torch.no_grad():
+            outputs_mem = model(inputs_embeds=united_token_embeddings.to(torch.bfloat16), attention_mask=united_attention_mask)
+            logits_mem = outputs_mem.logits  # [1, num_compression_tokens + seq_len, vocab_size]
+
+            # Align logits: slice from num_compression_tokens-1 to -1, then shift for next-token prediction
+            aligned_logits_mem = logits_mem[:, num_compression_tokens - 1 : -1, :]  # [1, seq_len, vocab_size]
+
+            # Compute cross-entropy: shift for next-token prediction
+            shift_logits_mem = aligned_logits_mem[:, :-1, :].contiguous()
+            shift_labels_mem = input_ids[:, 1:].contiguous()
+            shift_mask_mem = attention_mask[:, 1:].contiguous()
+
+            # Flatten for cross-entropy
+            shift_logits_mem_flat = shift_logits_mem.view(-1, shift_logits_mem.size(-1))
+            shift_labels_mem_flat = shift_labels_mem.view(-1)
+            shift_mask_mem_flat = shift_mask_mem.view(-1)
+
+            # Mask out padding
+            valid_mask = shift_mask_mem_flat.bool()
+            if valid_mask.sum() == 0:
+                continue
+
+            ce_mem = F.cross_entropy(
+                shift_logits_mem_flat[valid_mask],
+                shift_labels_mem_flat[valid_mask],
+                reduction="mean",
+            )
+            H_LM_mem = ce_mem.item()
+
+        # Information gain = H_LM - H_LM+[mem]
+        info_gain = H_LM - H_LM_mem
+        information_gains.append(info_gain)
+
+    return information_gains
+
+
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
@@ -191,6 +357,13 @@ def extract_trajectory(
     all_num_random_projections_for99_var = []
 
     all_embeds = []
+
+    # Compute information gain for all samples
+    model_checkpoint = None
+    if len(all_rows) > 0:
+        model_checkpoint = all_rows[0].get("model_checkpoint")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    information_gains = compute_information_gain(all_rows, model_checkpoint=model_checkpoint, device=device)
 
     for sid, stages in all_by_sid.items():
         # Extract embeddings for this sample
@@ -250,6 +423,7 @@ def extract_trajectory(
             if len(all_num_random_projections_for99_var) > 0
             else "nan"
         ),
+        "information_gain": format_mean_std(information_gains, precision=4) if len(information_gains) > 0 else "nan",
     }
 
     # Now extract trajectory for visualization (use specified sample_id or first available)
@@ -521,10 +695,11 @@ def print_statistics_table(
                 stats.get("num_pca_for99_var", "nan"),
                 stats.get("num_pca_for99_var_all_embeds", "nan"),
                 stats.get("num_random_projections_for99_var", "nan"),
+                stats.get("information_gain", "nan"),
             ]
         )
 
-    headers = ["Experiment", "# Compr. Tok", "Traj. Len", "PCA 99%", "PCA ALL 99%", "Rand. Proj. 99%"]
+    headers = ["Experiment", "# Compr. Tok", "Traj. Len", "PCA 99%", "PCA ALL 99%", "Rand. Proj. 99%", "Info Gain"]
     table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
 
     print("\n" + "=" * 80)
