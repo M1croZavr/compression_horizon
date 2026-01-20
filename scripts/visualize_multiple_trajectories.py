@@ -175,6 +175,10 @@ def compute_information_gain(
     Returns:
         List of information gain values (one per sample, using final stage embedding)
     """
+
+    if os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_IG") != "1":
+        return []
+
     if len(rows) == 0:
         return []
 

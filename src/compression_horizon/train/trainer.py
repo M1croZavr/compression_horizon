@@ -1560,11 +1560,11 @@ class MyTrainer:
                 "num_warmup_steps": self.args.warmup_steps,
                 "num_training_steps": self.args.max_optimization_steps_per_sample,
             }
-            if self.args.lr_scheduler_kwargs is not None:
-                scheduler_kwargs.update(self.args.lr_scheduler_kwargs)
+
             low_dim_scheduler = get_scheduler(
                 name=self.args.lr_scheduler_type,
                 **scheduler_kwargs,
+                scheduler_specific_kwargs=self.args.lr_scheduler_kwargs,
             )
         else:
             # Freeze the projection parameters
@@ -1959,7 +1959,7 @@ class MyTrainer:
                         sample_id_val = int(sample_id_counter + j)
 
                         # Save embeddings to disk in bfloat16 before converting to fp32
-                        if embeddings_dir is not None:
+                        if embeddings_dir is not None and stage_index % 50 == 0:
                             # Get embeddings from GPU tensors and convert to bfloat16 (before moving to CPU and converting to fp32)
                             comp_tokens_bfloat = comp_tokens_gpu[j].to(torch.bfloat16).detach().cpu()
                             orig_comp_tokens_bfloat = orig_comp_tokens_gpu[j].to(torch.bfloat16).detach().cpu()
@@ -1969,14 +1969,18 @@ class MyTrainer:
                             embedding_filename = f"embedding_sample_{sample_id_val}_stage_{stage_index}.pt"
                             orig_embedding_filename = f"orig_embedding_sample_{sample_id_val}_stage_{stage_index}.pt"
                             init_embedding_filename = f"initialization_embedding_sample_{sample_id_val}_stage_{stage_index}.pt"
+                            low_dim_proj_filename = f"low_dim_proj_sample_{sample_id_val}_stage_{stage_index}.pt"
 
                             embedding_path = os.path.join(embeddings_dir, embedding_filename)
                             orig_embedding_path = os.path.join(embeddings_dir, orig_embedding_filename)
                             init_embedding_path = os.path.join(embeddings_dir, init_embedding_filename)
+                            low_dim_proj_path = os.path.join(embeddings_dir, low_dim_proj_filename)
 
                             torch.save(comp_tokens_bfloat, embedding_path)
                             torch.save(orig_comp_tokens_bfloat, orig_embedding_path)
                             torch.save(initialization_embedding_bfloat, init_embedding_path)
+                            if self.args.low_dim_projection:
+                                torch.save(low_dim_prjoection.state_dict(), low_dim_proj_path)
 
                         # Convert to fp32 for dataset storage
                         embedding = comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
