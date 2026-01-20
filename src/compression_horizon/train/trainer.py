@@ -1,3 +1,4 @@
+import math
 import os
 from typing import Optional
 
@@ -72,15 +73,15 @@ class MyTrainer:
             # print('position_ids', position_ids)
             extra_kwargs["position_ids"] = position_ids
 
+        loss_type = self.args.loss_type.lower()
         compression_outputs = model(
             inputs_embeds=united_token_embeddings,
             attention_mask=united_attention_mask,
-            output_hidden_states=True,
+            output_hidden_states=(loss_type != "cross_entropy"),
             **extra_kwargs,
         )
 
         # Activation alignment loss
-        loss_type = self.args.loss_type.lower()
         hybrid_alpha = self.args.hybrid_alpha
         loss, alignment_loss = compute_hybrid_cross_entropy_and_alignment_loss(
             logits=compression_outputs.logits,
@@ -119,7 +120,7 @@ class MyTrainer:
             else:
                 generated_text = None
                 ground_truth_text = None
-        model.train()
+        model.eval()
 
         return (
             loss,
@@ -639,7 +640,7 @@ class MyTrainer:
 
         dataloader = self._create_dataloader()
         for batch in tqdm(dataloader):
-            model.train()
+            model.eval()
             input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
             # print("input_ids", input_ids.shape)
             batch_size = input_ids.shape[0]
@@ -946,7 +947,7 @@ class MyTrainer:
         dataloader = self._create_dataloader()
         final_projection = None
         for batch in tqdm(dataloader):
-            model.train()
+            model.eval()
             input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
             # print("input_ids", input_ids.shape)
             batch_size = input_ids.shape[0]
@@ -1288,7 +1289,7 @@ class MyTrainer:
                 break
 
             for batch in dataloader:
-                model.train()
+                model.eval()
                 input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
                 batch_size = input_ids.shape[0]
 
@@ -1385,7 +1386,7 @@ class MyTrainer:
                             )
                             ground_truth_text = self.processing_class.batch_decode(input_ids, skip_special_tokens=True)
 
-                    model.train()
+                    model.eval()
 
                     # Log metrics
                     self._log_step(
@@ -1485,7 +1486,7 @@ class MyTrainer:
 
             print("all_convergences mean", torch.mean(torch.tensor(all_convergences)))
 
-            model.train()
+            model.eval()
 
         # Close TensorBoard writer
         if self.writer is not None:
@@ -1817,12 +1818,22 @@ class MyTrainer:
                             0
                         )
                         pca_coefficients_to_save = pca_coefficients.clone().detach().to(torch.float32).cpu().numpy().tolist()
-                        comp_tokens_cpu = (
-                            reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size).detach().cpu()
+                        comp_tokens_gpu = reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size)
+                        comp_tokens_cpu = comp_tokens_gpu.detach().cpu()
+                        # For PCA, reconstruct orig from coefficients as well (before optimization would be different, but we use current)
+                        orig_comp_tokens_gpu = (
+                            comp_tokens_gpu  # Use same for now, or could reconstruct from initial coefficients
                         )
+                        orig_comp_tokens_cpu = orig_comp_tokens_gpu.detach().cpu()
                     else:
-                        comp_tokens_cpu = current_compression_tokens.detach().cpu()
-                        orig_comp_tokens_cpu = compression_tokens.detach().cpu()
+                        # Reconstruct current compression tokens (after low_dim_projection if applicable)
+                        if self.args.low_dim_projection:
+                            comp_tokens_gpu = low_dim_prjoection(compression_tokens)
+                        else:
+                            comp_tokens_gpu = compression_tokens
+                        comp_tokens_cpu = comp_tokens_gpu.detach().cpu()
+                        orig_comp_tokens_gpu = compression_tokens  # Original before low_dim_projection
+                        orig_comp_tokens_cpu = orig_comp_tokens_gpu.detach().cpu()
 
                     low_dim_prjoection_w_cpu = None
                     low_dim_prjoection_b_cpu = None
@@ -1830,10 +1841,129 @@ class MyTrainer:
                         low_dim_prjoection_w_cpu = low_dim_prjoection.weight.data.cpu()
                         low_dim_prjoection_b_cpu = low_dim_prjoection.bias.data.cpu()
 
+                    # Compute per-sample information gain (CE-reduction in bits) with sum reduction
+                    # Reconstruct final compression tokens for information gain computation
+                    if init_method == "pretrained_pca":
+                        final_compression_tokens_for_ig = (
+                            torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(0)
+                        ).reshape(batch_size, num_compression_tokens, hidden_size)
+                    else:
+                        final_compression_tokens_for_ig = compression_tokens
+                    if self.args.low_dim_projection:
+                        final_compression_tokens_for_ig = low_dim_prjoection(final_compression_tokens_for_ig)
+
+                    per_sample_info_gain = []
+                    for j in range(batch_size):
+                        # Extract per-sample data
+                        sample_input_ids = input_ids[j : j + 1]  # [1, seq_len]
+                        sample_attention_mask = attention_mask[j : j + 1]  # [1, seq_len]
+                        sample_compression_tokens = final_compression_tokens_for_ig[j : j + 1]
+
+                        # H_LM for this sample
+                        sample_outputs_lm = model(input_ids=sample_input_ids, attention_mask=sample_attention_mask)
+                        sample_logits_lm = sample_outputs_lm.logits  # [1, seq_len, vocab_size]
+
+                        sample_shift_logits_lm = sample_logits_lm[:, :-1, :].contiguous()
+                        sample_shift_labels_lm = sample_input_ids[:, 1:].contiguous()
+                        sample_shift_mask_lm = sample_attention_mask[:, 1:].contiguous()
+
+                        sample_shift_logits_lm_flat = sample_shift_logits_lm.view(-1, sample_shift_logits_lm.size(-1))
+                        sample_shift_labels_lm_flat = sample_shift_labels_lm.view(-1)
+                        sample_shift_mask_lm_flat = sample_shift_mask_lm.view(-1)
+
+                        sample_valid_mask_lm = sample_shift_mask_lm_flat.bool()
+                        if sample_valid_mask_lm.sum() > 0:
+                            sample_ce_lm_sum = F.cross_entropy(
+                                sample_shift_logits_lm_flat[sample_valid_mask_lm],
+                                sample_shift_labels_lm_flat[sample_valid_mask_lm],
+                                reduction="sum",
+                            )
+                            sample_H_LM_bits = sample_ce_lm_sum.item() / math.log(2)
+                        else:
+                            sample_H_LM_bits = 0.0
+
+                        # H_LM+[mem] for this sample
+                        sample_inputs_embeds = inputs_embeds[j : j + 1]
+                        sample_model_tokens_with_compression = torch.cat(
+                            [
+                                sample_compression_tokens.to(sample_inputs_embeds.device).to(sample_inputs_embeds.dtype),
+                                sample_inputs_embeds,
+                            ],
+                            dim=1,
+                        )
+                        sample_compression_attention_mask = compression_tokens_attention_mask[j : j + 1]
+                        sample_attention_mask_with_compression = torch.cat(
+                            [sample_compression_attention_mask, sample_attention_mask], dim=1
+                        )
+
+                        sample_outputs_mem = model(
+                            inputs_embeds=sample_model_tokens_with_compression,
+                            attention_mask=sample_attention_mask_with_compression,
+                        )
+                        sample_logits_mem = sample_outputs_mem.logits  # [1, num_compression_tokens + seq_len, vocab_size]
+
+                        sample_aligned_logits_mem = sample_logits_mem[
+                            :, num_compression_tokens - 1 : -1, :
+                        ]  # [1, seq_len, vocab_size]
+
+                        sample_shift_logits_mem = sample_aligned_logits_mem[:, :-1, :].contiguous()
+                        sample_shift_labels_mem = sample_input_ids[:, 1:].contiguous()
+                        sample_shift_mask_mem = sample_attention_mask[:, 1:].contiguous()
+
+                        sample_shift_logits_mem_flat = sample_shift_logits_mem.view(-1, sample_shift_logits_mem.size(-1))
+                        sample_shift_labels_mem_flat = sample_shift_labels_mem.view(-1)
+                        sample_shift_mask_mem_flat = sample_shift_mask_mem.view(-1)
+
+                        sample_valid_mask_mem = sample_shift_mask_mem_flat.bool()
+                        if sample_valid_mask_mem.sum() > 0:
+                            sample_ce_mem_sum = F.cross_entropy(
+                                sample_shift_logits_mem_flat[sample_valid_mask_mem],
+                                sample_shift_labels_mem_flat[sample_valid_mask_mem],
+                                reduction="sum",
+                            )
+                            sample_H_LM_mem_bits = sample_ce_mem_sum.item() / math.log(2)
+                        else:
+                            sample_H_LM_mem_bits = 0.0
+
+                        # Per-sample information gain
+                        sample_info_gain = sample_H_LM_bits - sample_H_LM_mem_bits
+                        per_sample_info_gain.append(sample_info_gain)
+
+                        breakpoint()
+
+                    # Save embeddings to disk in bfloat16 format before converting to fp32
+                    embeddings_dir = None
+                    if self.args.output_dir:
+                        embeddings_dir = os.path.join(self.args.output_dir, "embeddings")
+                        os.makedirs(embeddings_dir, exist_ok=True)
+
                     for j in range(batch_size):
                         attn = attention_mask[j].bool()
                         ids = input_ids[j][attn]
                         text = tokenizer.decode(ids.tolist(), skip_special_tokens=True) if tokenizer is not None else ""
+                        sample_id_val = int(sample_id_counter + j)
+
+                        # Save embeddings to disk in bfloat16 before converting to fp32
+                        if embeddings_dir is not None:
+                            # Get embeddings from GPU tensors and convert to bfloat16 (before moving to CPU and converting to fp32)
+                            comp_tokens_bfloat = comp_tokens_gpu[j].to(torch.bfloat16).detach().cpu()
+                            orig_comp_tokens_bfloat = orig_comp_tokens_gpu[j].to(torch.bfloat16).detach().cpu()
+                            initialization_embedding_bfloat = initialization_embeddings[j].to(torch.bfloat16)
+
+                            # Create unique file names: embedding_sample_{sample_id}_stage_{stage_index}.pt
+                            embedding_filename = f"embedding_sample_{sample_id_val}_stage_{stage_index}.pt"
+                            orig_embedding_filename = f"orig_embedding_sample_{sample_id_val}_stage_{stage_index}.pt"
+                            init_embedding_filename = f"initialization_embedding_sample_{sample_id_val}_stage_{stage_index}.pt"
+
+                            embedding_path = os.path.join(embeddings_dir, embedding_filename)
+                            orig_embedding_path = os.path.join(embeddings_dir, orig_embedding_filename)
+                            init_embedding_path = os.path.join(embeddings_dir, init_embedding_filename)
+
+                            torch.save(comp_tokens_bfloat, embedding_path)
+                            torch.save(orig_comp_tokens_bfloat, orig_embedding_path)
+                            torch.save(initialization_embedding_bfloat, init_embedding_path)
+
+                        # Convert to fp32 for dataset storage
                         embedding = comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
                         orig_embedding = orig_comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
 
@@ -1872,6 +2002,9 @@ class MyTrainer:
                                 ),
                                 "convergence_threshold": float(threshold),
                                 "steps_taken": int(steps_taken),
+                                "information_gain_bits": float(
+                                    per_sample_info_gain[j]
+                                ),  # Per-sample info gain in bits (sum reduction)
                             }
                         )
 

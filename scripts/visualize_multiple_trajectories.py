@@ -326,6 +326,57 @@ def compute_information_gain(
     return information_gains
 
 
+def extract_information_gain_from_dataset(rows: List[Dict[str, Any]]) -> List[float]:
+    """Extract information gain values from dataset rows.
+
+    Args:
+        rows: List of dataset rows, each potentially containing 'information_gain_bits'
+
+    Returns:
+        List of information gain values (one per sample, using final stage embedding)
+    """
+    if len(rows) == 0:
+        return []
+
+    # Group rows by sample_id and get final stage for each sample
+    by_sid: Dict[int, List[Dict[str, Any]]] = {}
+    for row in rows:
+        sid = int(row.get("sample_id", -1))
+        if sid not in by_sid:
+            by_sid[sid] = []
+        by_sid[sid].append(row)
+
+    # For each sample, get the final stage (highest stage_index or highest stage_seq_len)
+    information_gains = []
+
+    for sid, stages in by_sid.items():
+        if len(stages) == 0:
+            continue
+
+        # Get final stage: prefer highest stage_index, fallback to highest stage_seq_len, then last
+        def get_sort_key(s):
+            stage_idx = s.get("stage_index")
+            stage_seq_len = s.get("stage_seq_len")
+            if stage_idx is not None:
+                return (int(stage_idx), int(stage_seq_len) if stage_seq_len is not None else -1)
+            elif stage_seq_len is not None:
+                return (-1, int(stage_seq_len))
+            else:
+                return (-1, -1)
+
+        final_stage = max(stages, key=get_sort_key)
+
+        # Extract information_gain_bits from the dataset
+        info_gain = final_stage.get("information_gain_bits")
+        if info_gain is not None:
+            try:
+                information_gains.append(float(info_gain))
+            except (ValueError, TypeError):
+                continue
+
+    return information_gains
+
+
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
@@ -362,12 +413,15 @@ def extract_trajectory(
 
     all_embeds = []
 
-    # Compute information gain for all samples
+    # Compute information gain for all samples (by loading model and computing)
     model_checkpoint = None
     if len(all_rows) > 0:
         model_checkpoint = all_rows[0].get("model_checkpoint")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     information_gains = compute_information_gain(all_rows, model_checkpoint=model_checkpoint, device=device)
+
+    # Extract information gain from dataset (if available)
+    information_gains_from_dataset = extract_information_gain_from_dataset(all_rows)
 
     for sid, stages in all_by_sid.items():
         # Extract embeddings for this sample
@@ -428,6 +482,9 @@ def extract_trajectory(
             else "nan"
         ),
         "information_gain": format_mean_std(information_gains, precision=4) if len(information_gains) > 0 else "nan",
+        "information_gain_from_dataset": (
+            format_mean_std(information_gains_from_dataset, precision=4) if len(information_gains_from_dataset) > 0 else "nan"
+        ),
     }
 
     # Now extract trajectory for visualization (use specified sample_id or first available)
@@ -700,10 +757,20 @@ def print_statistics_table(
                 stats.get("num_pca_for99_var_all_embeds", "nan"),
                 stats.get("num_random_projections_for99_var", "nan"),
                 stats.get("information_gain", "nan"),
+                stats.get("information_gain_from_dataset", "nan"),
             ]
         )
 
-    headers = ["Experiment", "# Compr. Tok", "Traj. Len", "PCA 99%", "PCA ALL 99%", "Rand. Proj. 99%", "Info Gain"]
+    headers = [
+        "Experiment",
+        "# Compr. Tok",
+        "Traj. Len",
+        "PCA 99%",
+        "PCA ALL 99%",
+        "Rand. Proj. 99%",
+        "Info Gain",
+        "Info Gain (Dataset)",
+    ]
     table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
 
     print("\n" + "=" * 80)
