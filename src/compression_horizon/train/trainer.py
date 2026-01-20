@@ -56,14 +56,13 @@ class MyTrainer:
         united_token_embeddings,
         united_attention_mask,
         num_compression_tokens,
+        target_hidden=None,
     ):
-        with torch.no_grad():
-            # Hidden state: [batch, sequence, hidden]
-            outputs = model(
-                inputs_embeds=token_embeddings,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-            )
+        loss_type = self.args.loss_type.lower()
+
+        if loss_type != "cross_entropy":
+            assert target_hidden is not None
+
         # Hidden state: [batch, mem + sequence, hidden]
         extra_kwargs = {}
         if self.args.fix_position_ids:
@@ -73,7 +72,6 @@ class MyTrainer:
             # print('position_ids', position_ids)
             extra_kwargs["position_ids"] = position_ids
 
-        loss_type = self.args.loss_type.lower()
         compression_outputs = model(
             inputs_embeds=united_token_embeddings,
             attention_mask=united_attention_mask,
@@ -88,7 +86,7 @@ class MyTrainer:
             input_ids=input_ids,
             attention_mask=attention_mask,
             num_prefix_tokens=num_compression_tokens,
-            target_hidden_states=outputs.hidden_states,
+            target_hidden_states=target_hidden,
             compression_hidden_states=compression_outputs.hidden_states,
             num_alignment_layers=self.args.num_alignment_layers,
             inverted_alignment=self.args.inverted_alignment,
@@ -606,6 +604,17 @@ class MyTrainer:
             return save_path
         return None
 
+    def compute_target_hidden(self, model, token_embeddings, attention_mask):
+        with torch.no_grad():
+            # Hidden state: [batch, sequence, hidden]
+            outputs = model(
+                inputs_embeds=token_embeddings,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+            )
+            target_hidden = outputs.hidden_states
+        return target_hidden
+
     def train(self):
         set_launch_seed(self.args.random_seed)
         device = get_device()
@@ -648,6 +657,8 @@ class MyTrainer:
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
             with torch.no_grad():
                 token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+
+            target_hidden = self.compute_target_hidden(model, token_embeddings, attention_mask)
 
             # Handle pretrained_pca initialization: optimize only coefficients
             if init_method == "pretrained_pca":
@@ -778,6 +789,7 @@ class MyTrainer:
                     united_token_embeddings,
                     united_attention_mask,
                     num_compression_tokens,
+                    target_hidden=target_hidden,
                 )
                 # Calculate gradients and update compression embeddings
                 loss.backward()
@@ -956,6 +968,8 @@ class MyTrainer:
             with torch.no_grad():
                 token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
 
+            target_hidden = self.compute_target_hidden(model, token_embeddings, attention_mask)
+
             # Standard initialization: optimize full compression tokens
             compression_token_embeddings = self._init_compression_tokens(
                 batch_size,
@@ -1051,6 +1065,7 @@ class MyTrainer:
                     united_token_embeddings,
                     united_attention_mask,
                     num_compression_tokens,
+                    target_hidden=target_hidden,
                 )
                 # Calculate gradients and update compression embeddings
                 loss.backward()
@@ -1595,6 +1610,8 @@ class MyTrainer:
                 full_model_token_embeddings = model.model.embed_tokens(full_input_ids)
             full_attention_mask = batch.attention_mask.squeeze(1)
 
+            target_hidden_full = self.compute_target_hidden(model, full_model_token_embeddings, full_attention_mask)
+
             hidden_size = full_model_token_embeddings.shape[-1]
             if self.args.low_dim_projection:
                 hidden_size = self.args.low_dim_size
@@ -1675,6 +1692,7 @@ class MyTrainer:
                 # Slice to current effective sequence length
                 input_ids = full_input_ids[:, :seq_len]
                 inputs_embeds = full_model_token_embeddings[:, :seq_len, :]
+                target_hidden = (h[:, :seq_len] for h in target_hidden_full)
                 attention_mask = full_attention_mask[:, :seq_len]
 
                 pbar = tqdm(
@@ -1720,6 +1738,7 @@ class MyTrainer:
                             model_tokens_with_compression_tokens,
                             attention_mask_with_compression_tokens,
                             num_compression_tokens,
+                            target_hidden=target_hidden,
                         )
                         loss.backward()
                         steps_taken += 1
