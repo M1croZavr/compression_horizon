@@ -191,7 +191,8 @@ def compute_information_gain(
     # Load model and tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
     model = AutoModelForCausalLM.from_pretrained(
-        model_checkpoint, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
+        model_checkpoint,
+        torch_dtype=torch.bfloat16,
     ).to(device)
     model.eval()
     if tokenizer.pad_token is None:
@@ -269,7 +270,7 @@ def compute_information_gain(
             H_LM = ce_lm.item() / math.log(2)
 
         # Compute H_LM+[mem]: cross-entropy with memory vector
-        embedding_tensor = torch.tensor(embedding, dtype=torch.float32, device=device)
+        embedding_tensor = torch.tensor(embedding, dtype=torch.bfloat16, device=device)
         if embedding_tensor.ndim == 1:
             # Reshape if needed: assume [num_compression_tokens * hidden_size] -> [num_compression_tokens, hidden_size]
             hidden_size = model.config.hidden_size
