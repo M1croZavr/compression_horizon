@@ -381,6 +381,124 @@ def extract_information_gain_from_dataset(rows: List[Dict[str, Any]]) -> List[fl
     return information_gains
 
 
+def compute_embedding_statistics(
+    rows: List[Dict[str, Any]], model_checkpoint: Optional[str] = None, device: Optional[torch.device] = None
+) -> str:
+    """Compute norm statistics (mean ± std of L2 norms) for compression embeddings vs regular vocab tokens.
+
+    Args:
+        rows: List of dataset rows, each containing 'embedding', 'num_compression_tokens', etc.
+        model_checkpoint: Model checkpoint path. If None, tries to extract from first row.
+        device: Device to run computation on. If None, uses CUDA if available.
+
+    Returns:
+        Formatted string with "comp_norm_avg±comp_norm_std / vocab_norm_avg±vocab_norm_std" or "nan" if not computable
+    """
+    if os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_EMB_STATS") != "1":
+        return "nan"
+
+    if len(rows) == 0:
+        return "nan"
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Get model checkpoint from first row if not provided
+    if model_checkpoint is None:
+        model_checkpoint = rows[0].get("model_checkpoint")
+        if not model_checkpoint:
+            return "nan"
+
+    # Load model and tokenizer
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_checkpoint,
+            torch_dtype=torch.bfloat16,
+        ).to(device)
+        model.eval()
+    except Exception as e:
+        print(f"Warning: Failed to load model for embedding statistics: {e}")
+        return "nan"
+
+    # Get all vocab token embeddings
+    vocab_size = len(tokenizer)
+    vocab_token_ids = torch.arange(vocab_size, device=device)
+    with torch.no_grad():
+        vocab_embeddings = model.model.embed_tokens(vocab_token_ids)  # [vocab_size, hidden_size]
+        vocab_embeddings_np = vocab_embeddings.float().cpu().numpy()
+
+    # Group rows by sample_id and get final stage for each sample
+    by_sid: Dict[int, List[Dict[str, Any]]] = {}
+    for row in rows:
+        sid = int(row.get("sample_id", -1))
+        if sid not in by_sid:
+            by_sid[sid] = []
+        by_sid[sid].append(row)
+
+    # Collect all compression token embeddings from final stages
+    compression_token_embeddings = []
+
+    for sid, stages in by_sid.items():
+        if len(stages) == 0:
+            continue
+
+        # Get final stage: prefer highest stage_index, fallback to highest stage_seq_len, then last
+        def get_sort_key(s):
+            stage_idx = s.get("stage_index")
+            stage_seq_len = s.get("stage_seq_len")
+            if stage_idx is not None:
+                return (int(stage_idx), int(stage_seq_len) if stage_seq_len is not None else -1)
+            elif stage_seq_len is not None:
+                return (-1, int(stage_seq_len))
+            else:
+                return (-1, -1)
+
+        final_stage = max(stages, key=get_sort_key)
+
+        embedding = final_stage.get("embedding")
+        if embedding is None:
+            continue
+
+        num_compression_tokens = int(final_stage.get("num_compression_tokens", 1))
+        embedding_tensor = torch.tensor(embedding, dtype=torch.float32)
+        hidden_size = model.config.hidden_size
+
+        # Reshape embedding if needed
+        if embedding_tensor.ndim == 1:
+            if embedding_tensor.shape[0] == num_compression_tokens * hidden_size:
+                embedding_tensor = embedding_tensor.reshape(num_compression_tokens, hidden_size)
+            else:
+                embedding_tensor = embedding_tensor.unsqueeze(0)
+        elif embedding_tensor.ndim == 2:
+            # Already in [num_compression_tokens, hidden_size] format
+            pass
+        else:
+            continue
+
+        # Add each compression token embedding separately (not flattened)
+        compression_token_embeddings.append(embedding_tensor.numpy())
+
+    if len(compression_token_embeddings) == 0:
+        return "nan"
+
+    # Stack compression token embeddings: [total_tokens, hidden_size]
+    compression_token_embeddings_np = np.vstack(compression_token_embeddings)  # [total_compression_tokens, hidden_size]
+
+    # Compute L2 norms for compression token embeddings (one norm per token)
+    compression_norms = np.linalg.norm(compression_token_embeddings_np, axis=1)  # [total_compression_tokens]
+    comp_norm_avg = np.mean(compression_norms)
+    comp_norm_std = np.std(compression_norms)
+
+    # Compute L2 norms for vocab embeddings (one norm per token)
+    vocab_norms = np.linalg.norm(vocab_embeddings_np, axis=1)  # [vocab_size]
+    vocab_norm_avg = np.mean(vocab_norms)
+    vocab_norm_std = np.std(vocab_norms)
+
+    # Format as "comp_norm_avg±comp_norm_std / vocab_norm_avg±vocab_norm_std"
+    return f"{comp_norm_avg:.4f}±{comp_norm_std:.4f} / {vocab_norm_avg:.4f}±{vocab_norm_std:.4f}"
+
+
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
@@ -426,6 +544,9 @@ def extract_trajectory(
 
     # Extract information gain from dataset (if available)
     information_gains_from_dataset = extract_information_gain_from_dataset(all_rows)
+
+    # Compute embedding statistics (compression vs vocab)
+    embedding_statistics = compute_embedding_statistics(all_rows, model_checkpoint=model_checkpoint, device=device)
 
     for sid, stages in all_by_sid.items():
         # Extract embeddings for this sample
@@ -489,6 +610,7 @@ def extract_trajectory(
         "information_gain_from_dataset": (
             format_mean_std(information_gains_from_dataset, precision=4) if len(information_gains_from_dataset) > 0 else "nan"
         ),
+        "embedding_statistics": embedding_statistics,
     }
 
     # Now extract trajectory for visualization (use specified sample_id or first available)
@@ -762,6 +884,7 @@ def print_statistics_table(
                 stats.get("num_random_projections_for99_var", "nan"),
                 stats.get("information_gain", "nan"),
                 stats.get("information_gain_from_dataset", "nan"),
+                stats.get("embedding_statistics", "nan"),
             ]
         )
 
@@ -774,6 +897,7 @@ def print_statistics_table(
         "Rand. Proj. 99%",
         "Info Gain",
         "Info Gain (Dataset)",
+        "Emb. Stats (Comp/Vocab)",
     ]
     table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
 

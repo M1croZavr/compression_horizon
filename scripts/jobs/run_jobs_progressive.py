@@ -215,6 +215,8 @@ if __name__ == "__main__":
         "Qwen/Qwen3-8B",
         "allenai/OLMo-1B-hf",
         "allenai/Olmo-3-1025-7B",
+        "google/gemma-3-4b-pt",
+        "google/gemma-3-1b-pt",
     ]
     # checkpoints = []
 

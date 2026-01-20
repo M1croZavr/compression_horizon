@@ -169,7 +169,7 @@ class MyTrainer:
                     with torch.no_grad():
                         emb_weight = None
                         try:
-                            emb_weight = model.model.embed_tokens.weight
+                            emb_weight = model.get_input_embeddings().weight
                         except Exception:
                             sd = model.state_dict()
                             if "transformer.wte.weight" in sd:
@@ -326,7 +326,7 @@ class MyTrainer:
             with torch.no_grad():
                 emb_weight = None
                 try:
-                    emb_weight = model.model.embed_tokens.weight
+                    emb_weight = model.get_input_embeddings().weight
                 except Exception:
                     sd = model.state_dict()
                     if "transformer.wte.weight" in sd:
@@ -656,7 +656,7 @@ class MyTrainer:
 
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
             with torch.no_grad():
-                token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+                token_embeddings = model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
 
             target_hidden = self.compute_target_hidden(model, token_embeddings, attention_mask)
 
@@ -966,7 +966,7 @@ class MyTrainer:
 
             attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
             with torch.no_grad():
-                token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+                token_embeddings = model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
 
             target_hidden = self.compute_target_hidden(model, token_embeddings, attention_mask)
 
@@ -1225,7 +1225,7 @@ class MyTrainer:
                     eval_seq_length = input_ids.shape[1]
 
                 compression_token_embeddings = compression_token_embeddings_single_eval.repeat([batch_size, 1, 1])
-                token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+                token_embeddings = model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
 
                 compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
                     batch_size, num_compression_tokens
@@ -1312,7 +1312,7 @@ class MyTrainer:
 
                 attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
                 with torch.no_grad():
-                    token_embeddings = model.model.embed_tokens(input_ids)  # [batch, sequence, hidden]
+                    token_embeddings = model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
 
                 # Trainable compression tokens per sample
                 compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
@@ -1453,7 +1453,7 @@ class MyTrainer:
                 attention_mask = batch.attention_mask.squeeze(1)
                 compression_token_embeddings = compression_token_embeddings_single.repeat([batch_size, 1, 1])
                 with torch.no_grad():
-                    token_embeddings = model.model.embed_tokens(input_ids)
+                    token_embeddings = model.get_input_embeddings()(input_ids)
                 compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
                     batch_size, num_compression_tokens
                 )
@@ -1600,14 +1600,14 @@ class MyTrainer:
         low_dim_optim = None
         if self.args.low_dim_projection and self.args.low_dim_projection_global:
             low_dim_prjoection, low_dim_optim, low_dim_scheduler = self._prepare_low_dim_proj(
-                embedding_dim=model.model.embed_tokens.embedding_dim
+                embedding_dim=model.get_input_embeddings().embedding_dim
             )
 
         for batch in tqdm(dataloader):
             batch_size = batch["input_ids"].shape[0]
             full_input_ids = batch.input_ids.squeeze(1)
             with torch.no_grad():
-                full_model_token_embeddings = model.model.embed_tokens(full_input_ids)
+                full_model_token_embeddings = model.get_input_embeddings()(full_input_ids)
             full_attention_mask = batch.attention_mask.squeeze(1)
 
             target_hidden_full = self.compute_target_hidden(model, full_model_token_embeddings, full_attention_mask)
@@ -1620,7 +1620,7 @@ class MyTrainer:
 
             if self.args.low_dim_projection and not self.args.low_dim_projection_global:
                 low_dim_prjoection, low_dim_optim, low_dim_scheduler = self._prepare_low_dim_proj(
-                    embedding_dim=model.model.embed_tokens.embedding_dim
+                    embedding_dim=model.get_input_embeddings().embedding_dim
                 )
                 print("low_dim_prjoection", low_dim_prjoection, "low_dim_optim", low_dim_optim)
 
@@ -1854,11 +1854,11 @@ class MyTrainer:
                         orig_comp_tokens_gpu = compression_tokens  # Original before low_dim_projection
                         orig_comp_tokens_cpu = orig_comp_tokens_gpu.detach().cpu()
 
-                    low_dim_prjoection_w_cpu = None
-                    low_dim_prjoection_b_cpu = None
-                    if self.args.low_dim_projection:
-                        low_dim_prjoection_w_cpu = low_dim_prjoection.weight.data.cpu()
-                        low_dim_prjoection_b_cpu = low_dim_prjoection.bias.data.cpu()
+                    # low_dim_prjoection_w_cpu = None
+                    # low_dim_prjoection_b_cpu = None
+                    # if self.args.low_dim_projection:
+                    #     low_dim_prjoection_w_cpu = low_dim_prjoection.weight.data.cpu()
+                    #     low_dim_prjoection_b_cpu = low_dim_prjoection.bias.data.cpu()
 
                     # Compute per-sample information gain (CE-reduction in bits) with sum reduction
                     # Reconstruct final compression tokens for information gain computation
@@ -1987,10 +1987,10 @@ class MyTrainer:
                         orig_embedding = orig_comp_tokens_cpu[j].to(torch.float32).numpy().tolist()
 
                         initialization_embedding = initialization_embeddings[j].to(torch.float32).numpy().tolist()
-                        if low_dim_prjoection_w_cpu is not None:
-                            low_dim_prjoection_w_cpu = low_dim_prjoection_w_cpu.to(torch.float32).numpy().tolist()
-                        if low_dim_prjoection_b_cpu is not None:
-                            low_dim_prjoection_b_cpu = low_dim_prjoection_b_cpu.to(torch.float32).numpy().tolist()
+                        # if low_dim_prjoection_w_cpu is not None:
+                        #     low_dim_prjoection_w_cpu = low_dim_prjoection_w_cpu.to(torch.float32).numpy().tolist()
+                        # if low_dim_prjoection_b_cpu is not None:
+                        #     low_dim_prjoection_b_cpu = low_dim_prjoection_b_cpu.to(torch.float32).numpy().tolist()
 
                         collected_rows.append(
                             {
@@ -1999,8 +1999,8 @@ class MyTrainer:
                                 "stage_seq_len": int(seq_len),
                                 "text": text,
                                 "embedding": embedding,
-                                "low_dim_prjoection_w": low_dim_prjoection_w_cpu,
-                                "low_dim_prjoection_b": low_dim_prjoection_b_cpu,
+                                # "low_dim_prjoection_w": low_dim_prjoection_w_cpu,
+                                # "low_dim_prjoection_b": low_dim_prjoection_b_cpu,
                                 "orig_embedding": orig_embedding,
                                 "pca_coefficients_to_save": pca_coefficients_to_save,
                                 "initialization_embedding": initialization_embedding,  # [mem, hidden] - state before optimization
