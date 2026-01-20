@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -264,7 +265,8 @@ def compute_information_gain(
                 shift_labels_lm_flat[valid_mask],
                 reduction="mean",
             )
-            H_LM = ce_lm.item()
+            # Convert from nats to bits: divide by ln(2)
+            H_LM = ce_lm.item() / math.log(2)
 
         # Compute H_LM+[mem]: cross-entropy with memory vector
         embedding_tensor = torch.tensor(embedding, dtype=torch.float32, device=device)
@@ -313,7 +315,8 @@ def compute_information_gain(
                 shift_labels_mem_flat[valid_mask],
                 reduction="mean",
             )
-            H_LM_mem = ce_mem.item()
+            # Convert from nats to bits: divide by ln(2)
+            H_LM_mem = ce_mem.item() / math.log(2)
 
         # Information gain = H_LM - H_LM+[mem]
         info_gain = H_LM - H_LM_mem
