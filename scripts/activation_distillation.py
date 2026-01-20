@@ -143,19 +143,31 @@ if __name__ == "__main__":
 
     # Determine output directory:
     # - If user provided --output_dir, respect it.
-    # - Otherwise, construct: artifacts/{experiments|experiments_progressive}/
+    # - Otherwise, construct: artifacts/{experiments|experiments_progressive|experiments_prefix_tuning}/
     #   ch_{essential_params}_{hash8}, where hash8 is derived from training args.
-    default_base = "artifacts/experiments_progressive" if training_args.progressive_train else "artifacts/experiments"
+    if training_args.progressive_train:
+        default_base = "artifacts/experiments_progressive"
+    elif getattr(training_args, "train_prefix_tuning", False):
+        default_base = "artifacts/experiments_prefix_tuning"
+    else:
+        default_base = "artifacts/experiments"
     os.makedirs(default_base, exist_ok=True)
 
     # Build short, human-readable prefix
     loss_type = getattr(training_args, "loss_type", "l2")
     hybrid_alpha = getattr(training_args, "hybrid_alpha", None)
-    prefix = (
-        f"ch_{loss_type}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
-        if training_args.progressive_train
-        else f"ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
-    )
+    if training_args.progressive_train:
+        prefix = f"ch_{loss_type}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
+    elif getattr(training_args, "train_prefix_tuning", False):
+        prefix = (
+            f"ch_prefix_tuning_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{training_args.embedding_init_method}"
+            f"_seq_len_{training_args.max_sequence_length}"
+        )
+    else:
+        prefix = (
+            f"ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{training_args.embedding_init_method}"
+            f"_seq_len_{training_args.max_sequence_length}"
+        )
 
     # Compute stable hash from training arguments (excluding volatile dirs)
     args_dict = training_args.to_dict()
@@ -274,6 +286,8 @@ if __name__ == "__main__":
         training_artifacts = trainer.train_noop()
     elif training_args.low_dim_train:
         training_artifacts = trainer.train_low_dim()
+    elif getattr(training_args, "train_prefix_tuning", False):
+        training_artifacts = trainer.train_prefix_tuning()
     else:
         training_artifacts = trainer.train()
     print(f"Saved compressed prefixes to: {training_artifacts}")

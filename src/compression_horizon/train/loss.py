@@ -56,6 +56,25 @@ def next_token_cross_entropy_loss_with_prefix(
     )
 
 
+def next_token_cross_entropy_loss(
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    *,
+    reduction: str = "mean",
+) -> torch.Tensor:
+    """Standard next-token CE loss (no prefix tokens in logits)."""
+    labels = input_ids.clone()
+    labels[attention_mask == 0] = -100
+    shifted_logits = logits[:, :-1]
+    shifted_labels = labels[:, 1:]
+    return F.cross_entropy(
+        shifted_logits.flatten(0, 1),
+        shifted_labels.flatten(),
+        reduction=reduction,
+    )
+
+
 def activation_alignment_loss_with_prefix(
     *,
     compression_hidden_states: tuple[torch.Tensor, ...],
@@ -147,6 +166,48 @@ def compute_hybrid_cross_entropy_and_alignment_loss(
     return ce_loss + float(hybrid_alpha) * align_loss, align_loss
 
 
+def compute_hybrid_cross_entropy_and_alignment_loss_no_prefix(
+    *,
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    target_hidden_states: tuple[torch.Tensor, ...] | None = None,
+    compression_hidden_states: tuple[torch.Tensor, ...] | None = None,
+    num_alignment_layers: int,
+    inverted_alignment: bool,
+    loss_type: str,
+    hybrid_alpha: float | None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Compute CE loss and optional activation alignment loss (no prefix tokens in logits)."""
+    ce_loss = next_token_cross_entropy_loss(
+        logits,
+        input_ids,
+        attention_mask,
+        reduction="mean",
+    )
+
+    lt = (loss_type or "").lower()
+    if hybrid_alpha is None or lt == "cross_entropy":
+        return ce_loss, None
+
+    if target_hidden_states is None or compression_hidden_states is None:
+        raise ValueError("target_hidden_states and compression_hidden_states are required when hybrid_alpha is set")
+
+    alignment_layer_indices = get_alignment_layer_indices(
+        total_layers=len(target_hidden_states),
+        num_alignment_layers=num_alignment_layers,
+        inverted_alignment=inverted_alignment,
+    )
+    align_loss = activation_alignment_loss_with_prefix(
+        compression_hidden_states=compression_hidden_states,
+        target_hidden_states=target_hidden_states,
+        num_prefix_tokens=0,
+        alignment_layer_indices=alignment_layer_indices,
+        loss_type=lt,
+    )
+    return ce_loss + float(hybrid_alpha) * align_loss, align_loss
+
+
 @torch.no_grad()
 def token_argmax_match_rate_with_prefix(
     logits: torch.Tensor,
@@ -165,4 +226,22 @@ def token_argmax_match_rate_with_prefix(
     preds = logits[:, num_prefix_tokens - 1 : -1].argmax(dim=-1)
     matches = (preds == input_ids).sum(dim=-1)
     denom = attention_mask.sum(dim=-1)
+    return matches / denom
+
+
+@torch.no_grad()
+def token_argmax_match_rate(
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Compute per-sample token-level argmax match rate (no prefix tokens in logits).
+
+    Uses next-token alignment: logits[t] predicts input_ids[t+1].
+    """
+    preds = logits[:, :-1].argmax(dim=-1)
+    labels = input_ids[:, 1:]
+    mask = attention_mask[:, 1:]
+    matches = ((preds == labels) & (mask == 1)).sum(dim=-1)
+    denom = mask.sum(dim=-1).clamp_min(1)
     return matches / denom

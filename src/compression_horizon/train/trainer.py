@@ -17,6 +17,8 @@ from transformers import get_scheduler
 from compression_horizon.inference.generation import generate_from_compression
 from compression_horizon.train.loss import (
     compute_hybrid_cross_entropy_and_alignment_loss,
+    compute_hybrid_cross_entropy_and_alignment_loss_no_prefix,
+    token_argmax_match_rate,
     token_argmax_match_rate_with_prefix,
 )
 from compression_horizon.utils.launch import (
@@ -60,8 +62,8 @@ class MyTrainer:
     ):
         loss_type = self.args.loss_type.lower()
 
-        if loss_type != "cross_entropy":
-            assert target_hidden is not None
+        if loss_type != "cross_entropy" and target_hidden is None:
+            target_hidden = self.compute_target_hidden(model, token_embeddings, attention_mask)
 
         # Hidden state: [batch, mem + sequence, hidden]
         extra_kwargs = {}
@@ -604,6 +606,83 @@ class MyTrainer:
             return save_path
         return None
 
+    def _save_prefix_tuning_artifacts(self, prefix_embeddings: torch.Tensor | None, rows, subdir_name: str):
+        output_dir = self.args.output_dir
+        if output_dir and len(rows) > 0:
+            os.makedirs(output_dir, exist_ok=True)
+            if prefix_embeddings is not None:
+                save_path = os.path.join(output_dir, "prefix_tuning_embeddings.pt")
+                torch.save(prefix_embeddings, save_path)
+            save_path = os.path.join(output_dir, subdir_name)
+            ds = Dataset.from_list(rows)
+            ds.save_to_disk(save_path)
+            return save_path
+        return None
+
+    @staticmethod
+    def _find_prefix_embedding_parameter(
+        peft_model: nn.Module, num_virtual_tokens: int
+    ) -> tuple[str, torch.nn.Parameter] | None:
+        """Best-effort: locate PEFT prefix/prompt embedding parameter for logging/saving."""
+        candidates: list[tuple[str, torch.nn.Parameter]] = []
+        for name, param in peft_model.named_parameters():
+            if not isinstance(param, torch.nn.Parameter):
+                continue
+            if not param.requires_grad:
+                continue
+            if param.ndim != 2:
+                continue
+            if param.shape[0] != num_virtual_tokens:
+                continue
+            lname = name.lower()
+            priority = 0
+            if "prompt" in lname or "prefix" in lname:
+                priority += 2
+            if "embed" in lname:
+                priority += 1
+            candidates.append((f"{priority:02d}:{name}", param))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best_name = candidates[0][0].split(":", 1)[1]
+        return best_name, candidates[0][1]
+
+    def _log_step_prefix_tuning(
+        self,
+        loss: torch.Tensor,
+        alignment_loss: torch.Tensor | None,
+        convergence_per_sample: torch.Tensor,
+        prefix_embedding_param: torch.nn.Parameter | None,
+        lr_scheduler,
+    ):
+        if self.writer is None:
+            return
+        self.writer.add_scalar("train/loss", loss.item(), self.global_step)
+        if alignment_loss is not None:
+            self.writer.add_scalar("train/alignment_loss", alignment_loss.item(), self.global_step)
+        self.writer.add_scalar("train/convergence", convergence_per_sample.mean().item(), self.global_step)
+        if prefix_embedding_param is not None:
+            with torch.no_grad():
+                self.writer.add_scalar(
+                    "prefix_tuning/emb_mean",
+                    prefix_embedding_param.detach().mean().item(),
+                    self.global_step,
+                )
+                self.writer.add_scalar(
+                    "prefix_tuning/emb_std",
+                    prefix_embedding_param.detach().std().item(),
+                    self.global_step,
+                )
+            grad_norm = prefix_embedding_param.grad.norm(2).item() if prefix_embedding_param.grad is not None else 0.0
+            self.writer.add_scalar("prefix_tuning/grad_norm", grad_norm, self.global_step)
+        if lr_scheduler is not None:
+            lr_val = lr_scheduler.get_last_lr()[0]
+            self.writer.add_scalar("train/lr", lr_val, self.global_step)
+        flush_steps = getattr(self.args, "logging_flush_steps", 100)
+        if flush_steps and self.global_step % flush_steps == 0:
+            self.writer.flush()
+        self.global_step += 1
+
     def compute_target_hidden(self, model, token_embeddings, attention_mask):
         with torch.no_grad():
             # Hidden state: [batch, sequence, hidden]
@@ -935,6 +1014,189 @@ class MyTrainer:
 
         # Persist artifacts
         save_path = self._save_artifacts(final_compression_token_embeddings_cpu, collected_rows, "compressed_prefixes")
+        if save_path is not None:
+            return save_path
+        return None
+
+    def train_prefix_tuning(self):
+        """Per-sample prefix tuning (PEFT) to produce compression-like prefix embeddings."""
+        set_launch_seed(self.args.random_seed)
+        device = get_device()
+
+        # Base model (frozen)
+        base_model = self.model.to(device)
+        freeze_model_parameters(base_model)
+        base_model.eval()
+
+        try:
+            from peft import PrefixTuningConfig, TaskType, get_peft_model
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError("peft is required for --train_prefix_tuning. Install it (e.g. `uv add peft`).") from e
+
+        num_virtual_tokens = int(getattr(self.args, "number_of_mem_tokens", 1))
+        if num_virtual_tokens < 1:
+            raise ValueError(f"number_of_mem_tokens must be >= 1 for prefix tuning, got {num_virtual_tokens}")
+
+        # Create PEFT model once; we'll re-initialize prefix params per sample.
+        peft_config = PrefixTuningConfig(
+            task_type=TaskType.CAUSAL_LM,
+            num_virtual_tokens=num_virtual_tokens,
+        )
+        peft_model = get_peft_model(base_model, peft_config).to(device)
+
+        dataloader = self._create_dataloader()
+
+        collected_rows = []
+        sample_id_counter = 0
+        final_prefix_embeddings_cpu = None
+
+        tokenizer = self.processing_class
+        hidden_size = base_model.config.hidden_size
+
+        for batch in tqdm(dataloader):
+            input_ids_b = batch.input_ids.squeeze(1).to(device)  # [B, T]
+            attention_mask_b = batch.attention_mask.squeeze(1).to(device)  # [B, T]
+            batch_size = input_ids_b.shape[0]
+
+            for j in range(batch_size):
+                input_ids = input_ids_b[j].unsqueeze(0)
+                attention_mask = attention_mask_b[j].unsqueeze(0)
+
+                with torch.no_grad():
+                    token_embeddings = base_model.get_input_embeddings()(input_ids)
+                target_hidden = self.compute_target_hidden(base_model, token_embeddings, attention_mask)
+
+                peft_model.train()
+
+                trainable_params = [p for p in peft_model.parameters() if p.requires_grad]
+                if not trainable_params:
+                    raise RuntimeError("No trainable parameters found in PEFT model for prefix tuning")
+
+                # Re-initialize trainable PEFT parameters for this sample.
+                with torch.no_grad():
+                    for p in trainable_params:
+                        if p.ndim == 0:
+                            continue
+                        nn.init.normal_(p, mean=0.0, std=0.02)
+
+                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
+                    trainable_params,
+                    num_training_steps=self.args.max_optimization_steps_per_sample,
+                )
+
+                found = self._find_prefix_embedding_parameter(peft_model, num_virtual_tokens)
+                prefix_name, prefix_param = found if found is not None else (None, None)
+
+                initialization_prefix_embedding = None
+                if prefix_param is not None:
+                    initialization_prefix_embedding = prefix_param.detach().clone().to(torch.float32).cpu()
+
+                loss = None
+                alignment_loss = None
+                convergence_per_sample = None
+
+                progress_bar = tqdm(
+                    range(self.args.max_optimization_steps_per_sample),
+                    total=self.args.max_optimization_steps_per_sample,
+                    leave=False,
+                )
+                progress_bar.set_description("Prefix tuning")
+
+                for step_i in progress_bar:
+                    outputs = peft_model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_hidden_states=True,
+                    )
+                    loss, alignment_loss = compute_hybrid_cross_entropy_and_alignment_loss_no_prefix(
+                        logits=outputs.logits,
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        target_hidden_states=target_hidden,
+                        compression_hidden_states=outputs.hidden_states,
+                        num_alignment_layers=self.args.num_alignment_layers,
+                        inverted_alignment=self.args.inverted_alignment,
+                        loss_type=self.args.loss_type,
+                        hybrid_alpha=self.args.hybrid_alpha,
+                    )
+
+                    loss.backward()
+                    optimizer.step()
+                    if lr_scheduler is not None:
+                        lr_scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
+
+                    with torch.no_grad():
+                        convergence_per_sample = token_argmax_match_rate(
+                            outputs.logits,
+                            input_ids,
+                            attention_mask,
+                        )
+                        log_lr = self.args.learning_rate
+                        if lr_scheduler is not None:
+                            log_lr = lr_scheduler.get_last_lr()[0]
+                        progress_bar.set_postfix(
+                            loss=float(loss.item()),
+                            convergence=float(convergence_per_sample.mean().item()),
+                            lr=float(log_lr),
+                            prefix_param=(prefix_name or "n/a"),
+                        )
+                        self._log_step_prefix_tuning(
+                            loss,
+                            alignment_loss,
+                            convergence_per_sample,
+                            prefix_param,
+                            lr_scheduler,
+                        )
+
+                    if float(convergence_per_sample.mean().item()) >= 1.0:
+                        break
+
+                # Save per-sample artifacts
+                with torch.no_grad():
+                    sample_attention_mask = attention_mask[0].bool()
+                    sample_input_ids = input_ids[0][sample_attention_mask]
+                    sample_text = tokenizer.decode(sample_input_ids, skip_special_tokens=True)
+
+                    prefix_embedding_cpu = None
+                    if prefix_param is not None:
+                        prefix_embedding_cpu = prefix_param.detach().clone().to(torch.float32).cpu()
+                        final_prefix_embeddings_cpu = prefix_embedding_cpu.unsqueeze(0)
+
+                    collected_rows.append(
+                        {
+                            "sample_id": sample_id_counter,
+                            "text": sample_text,
+                            "prefix_embedding": (
+                                prefix_embedding_cpu.numpy().tolist() if prefix_embedding_cpu is not None else None
+                            ),
+                            "initialization_prefix_embedding": (
+                                initialization_prefix_embedding.numpy().tolist()
+                                if initialization_prefix_embedding is not None
+                                else None
+                            ),
+                            "final_loss": float(loss.item()) if loss is not None else None,
+                            "final_convergence": (
+                                float(convergence_per_sample.item()) if convergence_per_sample is not None else None
+                            ),
+                            "num_virtual_tokens": int(num_virtual_tokens),
+                            "hidden_size": int(hidden_size),
+                            "loss_type": self.args.loss_type,
+                            "hybrid_alpha": self.args.hybrid_alpha,
+                            "dtype": self.args.dtype,
+                            "num_alignment_layers": self.args.num_alignment_layers,
+                            "model_checkpoint": self.args.model_checkpoint,
+                            "max_optimization_steps_per_sample": self.args.max_optimization_steps_per_sample,
+                        }
+                    )
+                    sample_id_counter += 1
+
+        # Close TensorBoard writer
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+
+        save_path = self._save_prefix_tuning_artifacts(final_prefix_embeddings_cpu, collected_rows, "prefix_tuning_prefixes")
         if save_path is not None:
             return save_path
         return None

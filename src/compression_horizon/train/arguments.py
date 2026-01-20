@@ -186,6 +186,7 @@ class MyTrainingArguments(TrainingArguments):
     )
 
     progressive_train: bool = field(default=False, metadata={"help": "Whether to use progressive training."})
+    train_prefix_tuning: bool = field(default=False, metadata={"help": "Whether to use PEFT prefix tuning training."})
     progressive_min_seq_len: int = field(
         default=1,
         metadata={"help": "Starting effective sequence length for progressive_train."},
