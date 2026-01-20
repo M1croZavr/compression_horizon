@@ -1077,7 +1077,9 @@ def plot_pca_reconstruction_accuracy(
                 extended_attention_mask = torch.cat([comp_attention, attention_mask], dim=1)
 
                 # Forward pass
-                compression_outputs = model(inputs_embeds=input_embeds, attention_mask=extended_attention_mask)
+                compression_outputs = model(
+                    inputs_embeds=input_embeds.to(torch.bfloat16), attention_mask=extended_attention_mask
+                )
 
                 # Compute accuracy: compare predicted tokens with input_ids
                 # logits[:, num_compression_tokens - 1 : -1] corresponds to predictions for input tokens
@@ -1968,7 +1970,7 @@ def main():
         plot_pca_components_vs_sequence_length_aggregate(
             by_sid,
             outfile=os.path.join(out_dir, "aggregate_pca_components_vs_seq_len.png"),
-            target_seq_lengths=[4, 16, 32, 48, 64, 96, 128],
+            target_seq_lengths=[4, 16, 32, 48, 64, 96, 128, 256, 512, 1024],
         )
 
     # Visualize PCA component similarity across samples

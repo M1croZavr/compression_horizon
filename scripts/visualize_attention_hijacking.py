@@ -22,6 +22,8 @@ def filter_records(
     stage_index: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Filter records by sample_id and/or stage_index."""
+    ds = ds.remove_columns(["orig_embedding", "initialization_embedding"])
+
     rows: List[Dict[str, Any]] = []
     for i in tqdm(range(len(ds)), desc="Filtering records"):
         r = ds[i]
