@@ -205,7 +205,7 @@ class MyTrainingArguments(TrainingArguments):
     )
     max_grad_norm: float = field(default=1.0, metadata={"help": "Max gradient norm."})
     lr_scheduler_type: SchedulerType | str = field(
-        default="cosine_warmup_with_min_lr",
+        default="cosine_with_min_lr",
         metadata={"help": "The scheduler type to use."},
     )
     # NOTE: Keep this as `str` for CLI parsing. It is converted to `dict` in __post_init__.

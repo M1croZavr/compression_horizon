@@ -2,7 +2,6 @@ import json
 import math
 import os
 import time
-from functools import partial
 from typing import Optional
 
 import numpy as np
@@ -14,7 +13,6 @@ from accelerate.utils import DistributedDataParallelKwargs
 from datasets import Dataset
 from sklearn.decomposition import PCA
 from torch.optim import SGD, AdamW
-from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
@@ -32,42 +30,6 @@ from compression_horizon.utils.launch import (
     get_device,
     set_launch_seed,
 )
-
-
-def _cosine_with_min_lr_warmup_clamped_lambda(
-    current_step: int,
-    *,
-    num_warmup_steps: int,
-    num_training_steps: int,
-    num_cycles: float,
-    min_lr_rate: float,
-    warmup_lr_rate: float | None = None,
-) -> float:
-    """
-    Cosine schedule with warmup and min LR that clamps progress to [0, 1].
-
-    This avoids unintended LR oscillations if the scheduler is stepped past `num_training_steps`.
-    """
-    current_step_f = float(current_step)
-    num_warmup_steps_f = float(num_warmup_steps)
-    num_training_steps_f = float(num_training_steps)
-
-    if current_step_f < num_warmup_steps_f:
-        if warmup_lr_rate is None:
-            return (current_step_f + 1.0) / max(1.0, num_warmup_steps_f)
-        warmup_lr_rate_f = float(warmup_lr_rate)
-        return warmup_lr_rate_f + (1.0 - warmup_lr_rate_f) * (current_step_f) / max(1.0, num_warmup_steps_f - 1.0)
-
-    denom = max(1.0, num_training_steps_f - num_warmup_steps_f)
-    progress = (current_step_f - num_warmup_steps_f + 1.0) / denom
-    if progress < 0.0:
-        progress = 0.0
-    if progress > 1.0:
-        progress = 1.0
-
-    factor = 0.5 * (1.0 + math.cos(math.pi * num_cycles * 2.0 * progress))
-    factor = factor * (1.0 - min_lr_rate) + min_lr_rate
-    return max(0.0, float(factor))
 
 
 class MyTrainer:
@@ -300,6 +262,7 @@ class MyTrainer:
         num_epochs = int(getattr(args, "num_train_epochs", 1) or 1)
         if total_update_steps is None:
             print("train_loader", len(train_loader))
+            print("accelerator.num_processes", accelerator.num_processes)
             micro_steps_per_epoch = len(train_loader)
             if accelerator.num_processes > 1:
                 micro_steps_per_epoch = int(math.ceil(micro_steps_per_epoch / accelerator.num_processes))
@@ -312,6 +275,8 @@ class MyTrainer:
         optimizer, scheduler = self._build_optimizer_and_scheduler(params, num_training_steps=total_update_steps)
 
         model, optimizer, train_loader, scheduler = accelerator.prepare(model, optimizer, train_loader, scheduler)
+        print("train_loader after prepare", len(train_loader))
+
         unwrapped_model = accelerator.unwrap_model(model)
         params = [p for p in model.parameters() if p.requires_grad]
 
@@ -469,32 +434,10 @@ class MyTrainer:
                                 accelerator.clip_grad_norm_(params, args.max_grad_norm)
 
                             optimizer.step()
-
-                            # Check for NaN/Inf in model parameters after optimizer step
-                            has_nan_param = False
-                            has_inf_param = False
-                            nan_param_names = []
-                            inf_param_names = []
-                            for name, param in unwrapped_model.named_parameters():
-                                if param.requires_grad:
-                                    if torch.isnan(param).any():
-                                        has_nan_param = True
-                                        nan_param_names.append(name)
-                                    if torch.isinf(param).any():
-                                        has_inf_param = True
-                                        inf_param_names.append(name)
-
-                            if has_nan_param or has_inf_param:
-                                accelerator.print(
-                                    f"DEBUG: NaN/Inf detected in model parameters after optimizer step {update_step}"
-                                )
-                                if has_nan_param:
-                                    accelerator.print(f"  NaN parameters: {nan_param_names}")
-                                if has_inf_param:
-                                    accelerator.print(f"  Inf parameters: {inf_param_names}")
-                                accelerator.print("  This may indicate learning rate is too high or numerical instability")
+                            # print("Optimizer step", update_step)
 
                             if scheduler is not None:
+                                # print("Scheduler step", update_step)
                                 scheduler.step()
                             optimizer.zero_grad(set_to_none=True)
                             _sync()
@@ -1016,41 +959,11 @@ class MyTrainer:
                     self.args.lr_scheduler_kwargs["min_lr"] < self.args.learning_rate
                 ), f"min_lr must be lower than regular LR, {self.args.lr_scheduler_kwargs['min_lr']} < {self.args.learning_rate}"
 
-            sched_name = getattr(self.args.lr_scheduler_type, "value", self.args.lr_scheduler_type)
-            if str(sched_name) == "cosine_warmup_with_min_lr":
-                # HF 4.57.1 implementation does not clamp progress, so if `.step()` is called beyond
-                # `num_training_steps`, the cosine oscillates and you see multiple cycles in LR.
-                # Clamp progress to [0, 1] to make the schedule robust.
-                scheduler_specific_kwargs = self.args.lr_scheduler_kwargs or {}
-                min_lr = scheduler_specific_kwargs.get("min_lr")
-                min_lr_rate = scheduler_specific_kwargs.get("min_lr_rate")
-                warmup_lr_rate = scheduler_specific_kwargs.get("warmup_lr_rate")
-                num_cycles = float(scheduler_specific_kwargs.get("num_cycles", 0.5))
-                last_epoch = int(scheduler_specific_kwargs.get("last_epoch", -1))
-
-                if min_lr is not None and min_lr_rate is not None:
-                    raise ValueError("Only one of min_lr or min_lr_rate should be set")
-                if min_lr is not None:
-                    min_lr_rate = float(min_lr) / float(optimizer.defaults["lr"])
-                if min_lr_rate is None:
-                    raise ValueError("One of min_lr or min_lr_rate should be set through lr_scheduler_kwargs")
-                min_lr_rate = float(min_lr_rate)
-
-                lr_lambda = partial(
-                    _cosine_with_min_lr_warmup_clamped_lambda,
-                    num_warmup_steps=int(self.args.warmup_steps),
-                    num_training_steps=int(num_training_steps),
-                    num_cycles=num_cycles,
-                    min_lr_rate=min_lr_rate,
-                    warmup_lr_rate=warmup_lr_rate,
-                )
-                lr_scheduler = LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
-            else:
-                lr_scheduler = get_scheduler(
-                    name=self.args.lr_scheduler_type,
-                    **scheduler_kwargs,
-                    scheduler_specific_kwargs=self.args.lr_scheduler_kwargs,
-                )
+            lr_scheduler = get_scheduler(
+                name=self.args.lr_scheduler_type,
+                **scheduler_kwargs,
+                scheduler_specific_kwargs=self.args.lr_scheduler_kwargs,
+            )
 
         return optimizer, lr_scheduler
 

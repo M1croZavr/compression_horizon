@@ -92,7 +92,7 @@ if __name__ == "__main__":
         "--lr_scheduler_type",
         type=str,
         default=None,
-        help="Learning rate scheduler type. Default: cosine_warmup_with_min_lr",
+        help="Learning rate scheduler type. Default: cosine_with_min_lr",
     )
     parser.add_argument(
         "--lr_scheduler_kwargs",
@@ -257,7 +257,7 @@ if __name__ == "__main__":
         max_grad_norm = args.max_grad_norm if args.max_grad_norm is not None else 1.0
         warmup_steps = args.warmup_steps if args.warmup_steps is not None else 0
         logging_steps = args.logging_steps if args.logging_steps is not None else 50
-        lr_scheduler_type = args.lr_scheduler_type if args.lr_scheduler_type is not None else "cosine_warmup_with_min_lr"
+        lr_scheduler_type = args.lr_scheduler_type if args.lr_scheduler_type is not None else "cosine_with_min_lr"
 
         cmd_args = [
             "--train_compression_head",
@@ -329,7 +329,7 @@ if __name__ == "__main__":
         if args.dtype is not None and args.dtype != "bf16":
             exp_suffix = f"{exp_suffix}_dtype_{args.dtype}"
 
-        if args.lr_scheduler_type is not None and args.lr_scheduler_type != "cosine_warmup_with_min_lr":
+        if args.lr_scheduler_type is not None and args.lr_scheduler_type != "cosine_with_min_lr":
             exp_suffix = f"{exp_suffix}_sched_{args.lr_scheduler_type}"
 
         if not compression_head_freeze_base_model:
