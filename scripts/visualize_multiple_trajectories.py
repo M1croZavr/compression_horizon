@@ -34,6 +34,10 @@ def filter_records(
     rows: List[Dict[str, Any]] = []
 
     ds = ds.remove_columns(["orig_embedding", "initialization_embedding"])
+    if "low_dim_prjoection_b" in ds.column_names:
+        ds = ds.remove_columns(["low_dim_prjoection_b"])
+    if "low_dim_prjoection_w" in ds.column_names:
+        ds = ds.remove_columns(["low_dim_prjoection_w"])
 
     for i in tqdm(range(len(ds)), desc="Filtering records"):
         r = ds[i]
@@ -1062,6 +1066,12 @@ def main():
             f"Number of names in --names_mapping ({len(positional_names)}) "
             f"does not match number of checkpoints ({len(args.checkpoints)})"
         )
+
+    not_exists_checkpoints = []
+    for checkpoint in args.checkpoints:
+        if not os.path.isdir(checkpoint):
+            not_exists_checkpoints.append(checkpoint)
+    assert len(not_exists_checkpoints) == 0, f"checkpoints not exists: {not_exists_checkpoints}"
 
     # Extract trajectories from each checkpoint
     trajectories = []
