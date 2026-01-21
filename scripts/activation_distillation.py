@@ -7,11 +7,7 @@ import sys
 import torch
 import transformers
 from datasets import Dataset, load_dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    DataCollatorForLanguageModeling,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
 
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer
@@ -80,7 +76,21 @@ def load_or_create_tokenized_dataset(
     if dataset_name == "mrsndmn/pg19-model-sampled-llama3.1-8B-prefix-64-max_len-2048":
         split = "train"
 
-    raw_dataset = load_dataset(dataset_name, split=split, num_proc=num_proc)
+    kwargs = {
+        "num_proc": num_proc,
+        "split": split,
+    }
+    if dataset_name == "HuggingFaceFW/fineweb-edu":
+        # split = "sample-10BT"
+        del kwargs["num_proc"]
+        del kwargs["split"]
+        kwargs["data_files"] = [f"sample/10BT/{i:03}_00000.parquet" for i in range(14)]
+        # kwargs['streaming'] = True
+
+    raw_dataset = load_dataset(dataset_name, **kwargs)
+
+    if dataset_name == "HuggingFaceFW/fineweb-edu":
+        raw_dataset = raw_dataset["train"]
 
     # Apply offset and limit
     if offset_dataset_items is not None:
@@ -109,6 +119,7 @@ def load_or_create_tokenized_dataset(
             max_length=max_sequence_length,
             return_tensors="pt",
         ),
+        num_proc=16,
         remove_columns=dataset.column_names,
     )
 
@@ -145,7 +156,9 @@ if __name__ == "__main__":
     # - If user provided --output_dir, respect it.
     # - Otherwise, construct: artifacts/{experiments|experiments_progressive|experiments_prefix_tuning}/
     #   ch_{essential_params}_{hash8}, where hash8 is derived from training args.
-    if training_args.progressive_train:
+    if getattr(training_args, "train_compression_head", False):
+        default_base = "artifacts/experiments_compression_head"
+    elif training_args.progressive_train:
         default_base = "artifacts/experiments_progressive"
     elif getattr(training_args, "train_prefix_tuning", False):
         default_base = "artifacts/experiments_prefix_tuning"
@@ -156,7 +169,9 @@ if __name__ == "__main__":
     # Build short, human-readable prefix
     loss_type = getattr(training_args, "loss_type", "l2")
     hybrid_alpha = getattr(training_args, "hybrid_alpha", None)
-    if training_args.progressive_train:
+    if getattr(training_args, "train_compression_head", False):
+        prefix = f"ch_head_seq_len_{training_args.max_sequence_length}"
+    elif training_args.progressive_train:
         prefix = f"ch_{loss_type}_init_{training_args.embedding_init_method}_seq_len_{training_args.max_sequence_length}"
     elif getattr(training_args, "train_prefix_tuning", False):
         prefix = (
@@ -218,12 +233,20 @@ if __name__ == "__main__":
 
     torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
     print("torch_dtype", torch_dtype)
-    model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
-    for p in model.parameters():
-        p.requires_grad = False
+    if getattr(training_args, "train_compression_head", False):
+        from compression_horizon.models.llama_compression_head import LlamaForCausalLMCompressionHead
+
+        model = LlamaForCausalLMCompressionHead.from_pretrained(
+            training_args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
+        for p in model.parameters():
+            p.requires_grad = False
 
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
 
     # Create cache directory for tokenized datasets
     cache_dir = "artifacts/cache/tokenized_datasets"
@@ -280,7 +303,9 @@ if __name__ == "__main__":
         data_collator=data_collator,
     )
 
-    if training_args.progressive_train:
+    if getattr(training_args, "train_compression_head", False):
+        training_artifacts = trainer.train_compression_head()
+    elif training_args.progressive_train:
         training_artifacts = trainer.progressive_train()
     elif training_args.noop_train:
         training_artifacts = trainer.train_noop()

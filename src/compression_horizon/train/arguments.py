@@ -226,3 +226,17 @@ class MyTrainingArguments(TrainingArguments):
             )
         },
     )
+
+    # Compression head training (single-pass compression embed prediction)
+    train_compression_head: bool = field(
+        default=False,
+        metadata={"help": "Train a compression head (no per-sample embedding optimization)."},
+    )
+    compression_head_distill_alpha: float = field(
+        default=1.0,
+        metadata={"help": "Weight for distillation loss for non-selected compression embeddings."},
+    )
+    compression_head_freeze_base_model: bool = field(
+        default=True,
+        metadata={"help": "Freeze base LM parameters and train only compression head parameters."},
+    )

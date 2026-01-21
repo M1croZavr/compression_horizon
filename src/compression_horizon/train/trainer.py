@@ -130,6 +130,230 @@ class MyTrainer:
             ground_truth_text,
         )
 
+    def _sample_prefix_lengths(self, attention_mask: torch.Tensor) -> torch.LongTensor:
+        # attention_mask: [B, T] with 1 for real tokens, 0 for padding
+        if attention_mask.ndim == 3 and attention_mask.shape[1] == 1:
+            attention_mask = attention_mask.squeeze(1)
+        if attention_mask.ndim != 2:
+            raise ValueError(f"Expected attention_mask to be [B, T], got shape {tuple(attention_mask.shape)}")
+        device = attention_mask.device
+        lengths = attention_mask.sum(dim=1).to(torch.long).clamp_min(1)  # [B]
+        # Sample uniformly per row in [0, lengths[b] - 1] without a Python loop.
+        u = torch.rand(lengths.shape, device=device, dtype=torch.float32)  # [B] in [0, 1)
+        prefix_lengths = torch.floor(u * lengths.to(torch.float32)).to(torch.long)
+        return torch.minimum(prefix_lengths, lengths - 1)
+
+    def _build_compressed_inputs(
+        self,
+        *,
+        compression_embeds: torch.Tensor,  # [B, 1, H]
+        token_embeddings: torch.Tensor,  # [B, T, H]
+        input_ids: torch.Tensor,  # [B, T]
+        attention_mask: torch.Tensor,  # [B, T]
+        prefix_lengths: torch.LongTensor,  # [B]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if attention_mask.ndim == 3 and attention_mask.shape[1] == 1:
+            attention_mask = attention_mask.squeeze(1)
+        if input_ids.ndim == 3 and input_ids.shape[1] == 1:
+            input_ids = input_ids.squeeze(1)
+        if attention_mask.ndim != 2 or input_ids.ndim != 2:
+            raise ValueError(
+                f"Expected input_ids/attention_mask to be [B, T], got {tuple(input_ids.shape)}/{tuple(attention_mask.shape)}"
+            )
+        device = token_embeddings.device
+        bsz, seq_len, hidden = token_embeddings.shape
+
+        lengths = attention_mask.sum(dim=1).to(torch.long).clamp_min(1)  # [B]
+        max_prefix = (lengths - 1).clamp_min(0)
+        p = prefix_lengths.to(device=device).to(torch.long)
+        p = torch.clamp(p, min=0)
+        p = torch.minimum(p, max_prefix)  # [B]
+
+        # Build fixed-length outputs: [compression] + up to T suffix tokens.
+        out_len = 1 + seq_len
+        inputs_embeds_new = torch.zeros((bsz, out_len, hidden), device=device, dtype=token_embeddings.dtype)
+        attention_mask_new = torch.zeros((bsz, out_len), device=device, dtype=attention_mask.dtype)
+        labels_new = torch.full((bsz, out_len), fill_value=-100, device=device, dtype=input_ids.dtype)
+
+        # Place compression embedding at position 0.
+        inputs_embeds_new[:, 0:1, :] = compression_embeds
+        attention_mask_new[:, 0] = 1
+
+        # Gather suffix tokens starting at p for each batch item.
+        ar = torch.arange(seq_len, device=device, dtype=torch.long)  # [T]
+        src_idx = p.unsqueeze(1) + ar.unsqueeze(0)  # [B, T]
+        valid = src_idx < lengths.unsqueeze(1)  # [B, T]
+        src_idx_safe = torch.clamp(src_idx, max=seq_len - 1)
+
+        gathered_embeds = token_embeddings.gather(1, src_idx_safe.unsqueeze(-1).expand(-1, -1, hidden))
+        gathered_ids = input_ids.gather(1, src_idx_safe)
+
+        if valid.dtype != torch.bool:
+            valid = valid.to(torch.bool)
+
+        inputs_embeds_new[:, 1:, :] = gathered_embeds * valid.unsqueeze(-1).to(dtype=token_embeddings.dtype)
+        attention_mask_new[:, 1:] = valid.to(dtype=attention_mask.dtype)
+        labels_new[:, 1:] = torch.where(valid, gathered_ids, torch.full_like(gathered_ids, -100))
+
+        return inputs_embeds_new, attention_mask_new, labels_new
+
+    def train_compression_head(self):
+        args = self.args
+        model = self.model
+        device = get_device()
+        model.to(device)
+
+        if getattr(args, "compression_head_freeze_base_model", True):
+            freeze_model_parameters(model)
+            for p in getattr(model, "compression_head", nn.Module()).parameters():
+                p.requires_grad = True
+            if hasattr(model, "compression_empty"):
+                model.compression_empty.requires_grad = True
+
+        model.train()
+
+        train_loader = DataLoader(
+            self.train_dataset,
+            batch_size=args.per_device_train_batch_size,
+            shuffle=False,  # иначе очень долго грузит данные!
+            collate_fn=self.data_collator,
+            num_workers=args.dataloader_num_workers,
+            drop_last=args.dataloader_drop_last,
+        )
+
+        params = [p for p in model.parameters() if p.requires_grad]
+
+        grad_accum = int(getattr(args, "gradient_accumulation_steps", 1) or 1)
+        if grad_accum < 1:
+            grad_accum = 1
+
+        total_update_steps = args.max_steps if getattr(args, "max_steps", -1) and args.max_steps > 0 else None
+        num_epochs = int(getattr(args, "num_train_epochs", 1) or 1)
+        if total_update_steps is None:
+            micro_steps_total = len(train_loader) * num_epochs
+            total_update_steps = int(math.ceil(micro_steps_total / grad_accum))
+
+        optimizer, scheduler = self._build_optimizer_and_scheduler(params, num_training_steps=total_update_steps)
+
+        update_step = 0
+        micro_step = 0
+        optimizer.zero_grad(set_to_none=True)
+        pbar = tqdm(total=total_update_steps, desc="train_compression_head")
+
+        while update_step < total_update_steps:
+            for _epoch in range(num_epochs):
+                for batch in train_loader:
+                    if update_step >= total_update_steps:
+                        break
+                input_ids = batch["input_ids"].to(device)
+                attention_mask = batch["attention_mask"].to(device)
+                labels = batch.get("labels", input_ids).to(device)
+
+                if input_ids.ndim == 3 and input_ids.shape[1] == 1:
+                    input_ids = input_ids.squeeze(1)
+                if attention_mask.ndim == 3 and attention_mask.shape[1] == 1:
+                    attention_mask = attention_mask.squeeze(1)
+                if labels.ndim == 3 and labels.shape[1] == 1:
+                    labels = labels.squeeze(1)
+                if input_ids.ndim != 2 or attention_mask.ndim != 2 or labels.ndim != 2:
+                    raise ValueError(
+                        f"Expected batch tensors to be [B, T], got input_ids={tuple(input_ids.shape)} "
+                        f"attention_mask={tuple(attention_mask.shape)} labels={tuple(labels.shape)}"
+                    )
+
+                prefix_lengths = self._sample_prefix_lengths(attention_mask)
+
+                out = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                    prefix_lengths=prefix_lengths,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                base_loss = out.loss
+
+                if out.compression_embeds is None or out.compression_embeds_all is None or out.hidden_states is None:
+                    raise RuntimeError("Model did not return compression embeddings and hidden states.")
+
+                token_embeddings = model.get_input_embeddings()(input_ids)
+                inputs_embeds_new, attention_mask_new, labels_new = self._build_compressed_inputs(
+                    compression_embeds=out.compression_embeds,
+                    token_embeddings=token_embeddings,
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    prefix_lengths=prefix_lengths,
+                )
+
+                out2 = model(
+                    inputs_embeds=inputs_embeds_new,
+                    attention_mask=attention_mask_new,
+                    labels=labels_new,
+                    return_dict=True,
+                )
+                after_loss = out2.loss
+
+                teacher = out.hidden_states[-1].detach()  # [B, T, H]
+                pred_all = out.compression_embeds_all  # [B, T, H]
+
+                mask_pos = attention_mask.to(dtype=pred_all.dtype)  # [B, T]
+                for b in range(mask_pos.shape[0]):
+                    p = int(prefix_lengths[b].item())
+                    if p > 0:
+                        idx = min(max(p - 1, 0), mask_pos.shape[1] - 1)
+                        mask_pos[b, idx] = 0
+
+                per_pos_mse = (pred_all - teacher).pow(2).mean(dim=-1)  # [B, T]
+                distill_loss = (per_pos_mse * mask_pos).sum() / mask_pos.sum().clamp_min(1.0)
+
+                alpha = float(getattr(args, "compression_head_distill_alpha", 1.0))
+                loss = base_loss + after_loss + alpha * distill_loss
+
+                (loss / grad_accum).backward()
+
+                micro_step += 1
+                if micro_step % grad_accum == 0:
+                    if getattr(args, "max_grad_norm", None) is not None and args.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
+                    optimizer.step()
+                    if scheduler is not None:
+                        scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
+
+                    if self.writer:
+                        self.writer.add_scalar("loss/total", loss.item(), self.global_step)
+                        self.writer.add_scalar("loss/base", base_loss.item(), self.global_step)
+                        self.writer.add_scalar("loss/after_compression", after_loss.item(), self.global_step)
+                        self.writer.add_scalar("loss/distill", distill_loss.item(), self.global_step)
+
+                    self.global_step += 1
+                    update_step += 1
+                    pbar.update(1)
+                    if update_step >= total_update_steps:
+                        break
+                if update_step >= total_update_steps:
+                    break
+            if update_step >= total_update_steps:
+                break
+
+        pbar.close()
+
+        os.makedirs(args.output_dir, exist_ok=True)
+        save_path = os.path.join(args.output_dir, "compression_head.pt")
+        torch.save(
+            {
+                "compression_head": (
+                    getattr(model, "compression_head", None).state_dict() if hasattr(model, "compression_head") else None
+                ),
+                "compression_empty": (
+                    getattr(model, "compression_empty", None).detach().cpu() if hasattr(model, "compression_empty") else None
+                ),
+                "args": getattr(args, "to_dict", lambda: {})(),
+            },
+            save_path,
+        )
+        return args.output_dir
+
     def _prepare_embedding_init(self, model):
         init_method = self.args.embedding_init_method
         mvn_dist = None
