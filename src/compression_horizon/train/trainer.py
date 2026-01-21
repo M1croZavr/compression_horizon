@@ -2,6 +2,7 @@ import json
 import math
 import os
 import time
+from functools import partial
 from typing import Optional
 
 import numpy as np
@@ -13,6 +14,7 @@ from accelerate.utils import DistributedDataParallelKwargs
 from datasets import Dataset
 from sklearn.decomposition import PCA
 from torch.optim import SGD, AdamW
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
@@ -30,6 +32,42 @@ from compression_horizon.utils.launch import (
     get_device,
     set_launch_seed,
 )
+
+
+def _cosine_with_min_lr_warmup_clamped_lambda(
+    current_step: int,
+    *,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    num_cycles: float,
+    min_lr_rate: float,
+    warmup_lr_rate: float | None = None,
+) -> float:
+    """
+    Cosine schedule with warmup and min LR that clamps progress to [0, 1].
+
+    This avoids unintended LR oscillations if the scheduler is stepped past `num_training_steps`.
+    """
+    current_step_f = float(current_step)
+    num_warmup_steps_f = float(num_warmup_steps)
+    num_training_steps_f = float(num_training_steps)
+
+    if current_step_f < num_warmup_steps_f:
+        if warmup_lr_rate is None:
+            return (current_step_f + 1.0) / max(1.0, num_warmup_steps_f)
+        warmup_lr_rate_f = float(warmup_lr_rate)
+        return warmup_lr_rate_f + (1.0 - warmup_lr_rate_f) * (current_step_f) / max(1.0, num_warmup_steps_f - 1.0)
+
+    denom = max(1.0, num_training_steps_f - num_warmup_steps_f)
+    progress = (current_step_f - num_warmup_steps_f + 1.0) / denom
+    if progress < 0.0:
+        progress = 0.0
+    if progress > 1.0:
+        progress = 1.0
+
+    factor = 0.5 * (1.0 + math.cos(math.pi * num_cycles * 2.0 * progress))
+    factor = factor * (1.0 - min_lr_rate) + min_lr_rate
+    return max(0.0, float(factor))
 
 
 class MyTrainer:
@@ -978,9 +1016,41 @@ class MyTrainer:
                     self.args.lr_scheduler_kwargs["min_lr"] < self.args.learning_rate
                 ), f"min_lr must be lower than regular LR, {self.args.lr_scheduler_kwargs['min_lr']} < {self.args.learning_rate}"
 
-            lr_scheduler = get_scheduler(
-                name=self.args.lr_scheduler_type, **scheduler_kwargs, scheduler_specific_kwargs=self.args.lr_scheduler_kwargs
-            )
+            sched_name = getattr(self.args.lr_scheduler_type, "value", self.args.lr_scheduler_type)
+            if str(sched_name) == "cosine_warmup_with_min_lr":
+                # HF 4.57.1 implementation does not clamp progress, so if `.step()` is called beyond
+                # `num_training_steps`, the cosine oscillates and you see multiple cycles in LR.
+                # Clamp progress to [0, 1] to make the schedule robust.
+                scheduler_specific_kwargs = self.args.lr_scheduler_kwargs or {}
+                min_lr = scheduler_specific_kwargs.get("min_lr")
+                min_lr_rate = scheduler_specific_kwargs.get("min_lr_rate")
+                warmup_lr_rate = scheduler_specific_kwargs.get("warmup_lr_rate")
+                num_cycles = float(scheduler_specific_kwargs.get("num_cycles", 0.5))
+                last_epoch = int(scheduler_specific_kwargs.get("last_epoch", -1))
+
+                if min_lr is not None and min_lr_rate is not None:
+                    raise ValueError("Only one of min_lr or min_lr_rate should be set")
+                if min_lr is not None:
+                    min_lr_rate = float(min_lr) / float(optimizer.defaults["lr"])
+                if min_lr_rate is None:
+                    raise ValueError("One of min_lr or min_lr_rate should be set through lr_scheduler_kwargs")
+                min_lr_rate = float(min_lr_rate)
+
+                lr_lambda = partial(
+                    _cosine_with_min_lr_warmup_clamped_lambda,
+                    num_warmup_steps=int(self.args.warmup_steps),
+                    num_training_steps=int(num_training_steps),
+                    num_cycles=num_cycles,
+                    min_lr_rate=min_lr_rate,
+                    warmup_lr_rate=warmup_lr_rate,
+                )
+                lr_scheduler = LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
+            else:
+                lr_scheduler = get_scheduler(
+                    name=self.args.lr_scheduler_type,
+                    **scheduler_kwargs,
+                    scheduler_specific_kwargs=self.args.lr_scheduler_kwargs,
+                )
 
         return optimizer, lr_scheduler
 
