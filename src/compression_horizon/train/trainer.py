@@ -441,18 +441,19 @@ class MyTrainer:
                             did_step = True
                             update_step += 1
 
+                            # Mean losses across processes for cleaner logs.
+                            # NOTE: all-gather must be executed on ALL ranks to avoid NCCL deadlocks.
+                            if accelerator.num_processes == 1:
+                                loss_m = float(loss.detach().item())
+                                base_m = float(base_loss.detach().item())
+                                after_m = float(after_loss.detach().item())
+                            else:
+                                loss_m = float(accelerator.gather(loss.detach()).mean().item())
+                                base_m = float(accelerator.gather(base_loss.detach()).mean().item())
+                                after_m = float(accelerator.gather(after_loss.detach()).mean().item())
+
                             # Log only from the main process.
                             if accelerator.is_main_process:
-                                # Mean losses across processes for cleaner logs.
-                                def mean_metric(x: torch.Tensor) -> float:
-                                    if accelerator.num_processes == 1:
-                                        return float(x.detach().item())
-                                    return float(accelerator.gather(x.detach()).mean().item())
-
-                                loss_m = mean_metric(loss)
-                                base_m = mean_metric(base_loss)
-                                after_m = mean_metric(after_loss)
-
                                 if self.writer:
                                     self.writer.add_scalar("loss/total", loss_m, self.global_step)
                                     self.writer.add_scalar("loss/base", base_m, self.global_step)
