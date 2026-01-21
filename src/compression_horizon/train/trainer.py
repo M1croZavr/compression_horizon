@@ -1149,11 +1149,11 @@ class MyTrainer:
         dataloader = self._create_dataloader()
         for batch in tqdm(dataloader):
             model.eval()
-            input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
+            input_ids = batch.input_ids.squeeze(1).to(device)  # [batch, sequence]
             # print("input_ids", input_ids.shape)
             batch_size = input_ids.shape[0]
 
-            attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
+            attention_mask = batch.attention_mask.squeeze(1).to(device)  # [batch, sequence]
             with torch.no_grad():
                 token_embeddings = model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
 
@@ -1215,7 +1215,7 @@ class MyTrainer:
                     [compression_token_embeddings], num_training_steps=self.args.max_optimization_steps_per_sample
                 )
 
-            compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
+            compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype, device=device).repeat(
                 batch_size, num_compression_tokens
             )  # [batch, mem]
 
@@ -1356,7 +1356,7 @@ class MyTrainer:
                 prev_convergence = convergence_per_sample == 1.0
                 # prev_convergence_per_sample = convergence_per_sample
 
-                print("convergence_per_sample", convergence_per_sample, convergence_per_sample == 1.0)
+                # print("convergence_per_sample", convergence_per_sample, convergence_per_sample == 1.0)
                 if (convergence_per_sample == 1.0).all():
                     print(f"Early stopping: compression converged in {step_i} steps")
                     break
@@ -1643,11 +1643,11 @@ class MyTrainer:
         final_projection = None
         for batch in tqdm(dataloader):
             model.eval()
-            input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
+            input_ids = batch.input_ids.squeeze(1).to(device)  # [batch, sequence]
             # print("input_ids", input_ids.shape)
             batch_size = input_ids.shape[0]
 
-            attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
+            attention_mask = batch.attention_mask.squeeze(1).to(device)  # [batch, sequence]
             with torch.no_grad():
                 token_embeddings = model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
 
@@ -1679,7 +1679,7 @@ class MyTrainer:
                 [compression_token_embeddings], num_training_steps=self.args.max_optimization_steps_per_sample
             )
 
-            compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype).repeat(
+            compression_attention_mask = torch.tensor([1], dtype=attention_mask.dtype, device=device).repeat(
                 batch_size, num_compression_tokens
             )  # [batch, mem]
 
@@ -1781,7 +1781,7 @@ class MyTrainer:
                         ground_truth_text,
                     )
 
-                    print("convergence_per_sample", convergence_per_sample, convergence_per_sample == 1.0)
+                    # print("convergence_per_sample", convergence_per_sample, convergence_per_sample == 1.0)
                     if (convergence_per_sample == 1.0).all():
                         print(f"Early stopping: compression converged in {step_i} steps")
                         break
@@ -1900,9 +1900,9 @@ class MyTrainer:
         with torch.no_grad():
             compression_token_embeddings_single_eval = compression_token_embeddings_single.to(device)
             for batch in eval_dataloader:
-                input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
+                input_ids = batch.input_ids.squeeze(1).to(device)  # [batch, sequence]
                 batch_size = input_ids.shape[0]
-                attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
+                attention_mask = batch.attention_mask.squeeze(1).to(device)  # [batch, sequence]
 
                 if eval_seq_length is None:
                     eval_seq_length = input_ids.shape[1]
@@ -1988,12 +1988,12 @@ class MyTrainer:
 
             for batch in dataloader:
                 model.eval()
-                input_ids = batch.input_ids.squeeze(1)  # [batch, sequence]
+                input_ids = batch.input_ids.squeeze(1).to(device)  # [batch, sequence]
                 batch_size = input_ids.shape[0]
 
                 compression_token_embeddings = compression_token_embeddings_single.repeat([batch_size, 1, 1])
 
-                attention_mask = batch.attention_mask.squeeze(1)  # [batch, sequence]
+                attention_mask = batch.attention_mask.squeeze(1).to(device)  # [batch, sequence]
                 with torch.no_grad():
                     token_embeddings = model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
 
@@ -2131,9 +2131,9 @@ class MyTrainer:
             all_convergences = []
             model.eval()
             for batch in dataloader:
-                input_ids = batch.input_ids.squeeze(1)
+                input_ids = batch.input_ids.squeeze(1).to(device)
                 batch_size = input_ids.shape[0]
-                attention_mask = batch.attention_mask.squeeze(1)
+                attention_mask = batch.attention_mask.squeeze(1).to(device)
                 compression_token_embeddings = compression_token_embeddings_single.repeat([batch_size, 1, 1])
                 with torch.no_grad():
                     token_embeddings = model.get_input_embeddings()(input_ids)
@@ -2285,13 +2285,14 @@ class MyTrainer:
             low_dim_prjoection, low_dim_optim, low_dim_scheduler = self._prepare_low_dim_proj(
                 embedding_dim=model.get_input_embeddings().embedding_dim
             )
+            low_dim_prjoection = low_dim_prjoection.to(device)
 
         for batch in tqdm(dataloader):
             batch_size = batch["input_ids"].shape[0]
-            full_input_ids = batch.input_ids.squeeze(1)
+            full_input_ids = batch.input_ids.squeeze(1).to(device)
             with torch.no_grad():
                 full_model_token_embeddings = model.get_input_embeddings()(full_input_ids)
-            full_attention_mask = batch.attention_mask.squeeze(1)
+            full_attention_mask = batch.attention_mask.squeeze(1).to(device)
 
             target_hidden_full = self.compute_target_hidden(model, full_model_token_embeddings, full_attention_mask)
 
@@ -2305,6 +2306,7 @@ class MyTrainer:
                 low_dim_prjoection, low_dim_optim, low_dim_scheduler = self._prepare_low_dim_proj(
                     embedding_dim=model.get_input_embeddings().embedding_dim
                 )
+                low_dim_prjoection = low_dim_prjoection.to(device)
                 print("low_dim_prjoection", low_dim_prjoection, "low_dim_optim", low_dim_optim)
 
             # Handle pretrained_pca initialization: optimize only coefficients
@@ -2359,7 +2361,7 @@ class MyTrainer:
                     [compression_tokens], num_training_steps=self.args.max_optimization_steps_per_sample
                 )
 
-            compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype).repeat(
+            compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype, device=device).repeat(
                 batch_size, num_compression_tokens
             )
 
