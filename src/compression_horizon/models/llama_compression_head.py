@@ -107,7 +107,7 @@ class LlamaForCausalLMCompressionHead(LlamaPreTrainedModel, GenerationMixin):
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         if output_hidden_states is None:
-            output_hidden_states = self.config.output_hidden_states or (prefix_lengths is not None)
+            output_hidden_states = self.config.output_hidden_states
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         outputs = self.model(
@@ -136,11 +136,14 @@ class LlamaForCausalLMCompressionHead(LlamaPreTrainedModel, GenerationMixin):
         compression_embeds_all = None
         compression_embeds = None
         if prefix_lengths is not None:
-            compression_embeds_all = self.compression_head(hidden_states)  # [B, T, H]
-            compression_embeds = self._select_compression_embeds(
-                compression_embeds_all=compression_embeds_all,
-                prefix_lengths=prefix_lengths,
-            )
+            # Compute only the selected compression embedding to reduce memory:
+            # pick hidden_state at idx = clamp(prefix_lengths - 1) and run compression_head on [B, H].
+            bsz, seq_len, _hidden = hidden_states.shape
+            device = hidden_states.device
+            idx = prefix_lengths.to(device=device).view(-1).to(torch.long).clamp_min(1) - 1  # [B]
+            idx = idx.clamp_max(seq_len - 1)
+            selected_hidden = hidden_states[torch.arange(bsz, device=device), idx]  # [B, H]
+            compression_embeds = self.compression_head(selected_hidden).unsqueeze(1)  # [B, 1, H]
 
         if not return_dict:
             output = (logits,) + outputs[1:]

@@ -50,7 +50,20 @@ class MyTrainer:
         self.data_collator = data_collator
         # TensorBoard
         log_dir = self.args.logging_dir
-        self.writer = SummaryWriter(log_dir=log_dir) if log_dir else None
+
+        mixed_precision = "no"
+        ddp_kwargs = None
+        if args.ddp_find_unused_parameters:
+            ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=bool(args.ddp_find_unused_parameters))
+
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
+            mixed_precision=mixed_precision,
+            kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else None,
+        )
+
+        self.writer = SummaryWriter(log_dir=log_dir) if log_dir and self.accelerator.is_main_process else None
+
         self.global_step = 0
 
     def compute_loss(
@@ -206,25 +219,10 @@ class MyTrainer:
         args = self.args
         model = self.model
 
-        grad_accum = int(getattr(args, "gradient_accumulation_steps", 1) or 1)
-        if grad_accum < 1:
-            grad_accum = 1
+        grad_accum = args.gradient_accumulation_steps
+        assert grad_accum >= 1
 
-        mixed_precision = "no"
-        dtype = str(getattr(args, "dtype", "auto") or "auto").lower()
-        if dtype in {"bf16", "bfloat16"}:
-            mixed_precision = "bf16"
-        elif dtype in {"fp16", "float16"}:
-            mixed_precision = "fp16"
-
-        ddp_kwargs = None
-        if getattr(args, "ddp_find_unused_parameters", None) is not None:
-            ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=bool(args.ddp_find_unused_parameters))
-        accelerator = Accelerator(
-            gradient_accumulation_steps=grad_accum,
-            mixed_precision=mixed_precision,
-            kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else None,
-        )
+        accelerator = self.accelerator
         device = accelerator.device
 
         # Avoid multi-process TensorBoard clobbering.
@@ -253,16 +251,17 @@ class MyTrainer:
         train_loader = DataLoader(
             self.train_dataset,
             batch_size=args.per_device_train_batch_size,
-            shuffle=False,  # иначе очень долго грузит данные!
+            shuffle=False,
             collate_fn=self.data_collator,
             num_workers=args.dataloader_num_workers,
             drop_last=args.dataloader_drop_last,
         )
 
         # Compute update steps in "optimizer steps" (global steps), accounting for data-parallel sharding.
-        total_update_steps = args.max_steps if getattr(args, "max_steps", -1) and args.max_steps > 0 else None
+        total_update_steps = args.max_steps if args.max_steps and args.max_steps > 0 else None
         num_epochs = int(getattr(args, "num_train_epochs", 1) or 1)
         if total_update_steps is None:
+            print("train_loader", len(train_loader))
             micro_steps_per_epoch = len(train_loader)
             if accelerator.num_processes > 1:
                 micro_steps_per_epoch = int(math.ceil(micro_steps_per_epoch / accelerator.num_processes))
@@ -271,11 +270,30 @@ class MyTrainer:
 
         params = [p for p in model.parameters() if p.requires_grad]
 
+        print("total_update_steps", total_update_steps)
         optimizer, scheduler = self._build_optimizer_and_scheduler(params, num_training_steps=total_update_steps)
 
         model, optimizer, train_loader, scheduler = accelerator.prepare(model, optimizer, train_loader, scheduler)
         unwrapped_model = accelerator.unwrap_model(model)
         params = [p for p in model.parameters() if p.requires_grad]
+
+        # Training-time memory hygiene: disable KV cache explicitly.
+        if hasattr(unwrapped_model, "config") and unwrapped_model.config is not None:
+            unwrapped_model.config.use_cache = False
+        if hasattr(model, "config") and model.config is not None:
+            model.config.use_cache = False
+
+        # Optional gradient checkpointing (lower peak memory, higher compute).
+        if getattr(args, "gradient_checkpointing", False):
+            if hasattr(unwrapped_model, "gradient_checkpointing_enable"):
+                unwrapped_model.gradient_checkpointing_enable()
+            elif hasattr(model, "gradient_checkpointing_enable"):
+                model.gradient_checkpointing_enable()
+        else:
+            if hasattr(unwrapped_model, "gradient_checkpointing_disable"):
+                unwrapped_model.gradient_checkpointing_disable()
+            elif hasattr(model, "gradient_checkpointing_disable"):
+                model.gradient_checkpointing_disable()
 
         update_step = 0
         micro_step = 0
@@ -320,13 +338,16 @@ class MyTrainer:
                         attention_mask=attention_mask,
                         labels=labels,
                         prefix_lengths=prefix_lengths,
-                        output_hidden_states=True,
+                        use_cache=False,
+                        output_hidden_states=False,
                         return_dict=True,
                     )
                     _sync()
                     base_loss = out.loss
 
                     # Check for NaN in base_loss
+                    if base_loss is None:
+                        raise RuntimeError("Model did not return loss (labels missing?)")
                     if torch.isnan(base_loss) or torch.isinf(base_loss):
                         print(f"DEBUG: NaN/Inf detected in base_loss at step {update_step}, micro_step {micro_step}")
                         print(f"  base_loss: {base_loss.item()}")
@@ -334,8 +355,8 @@ class MyTrainer:
                         print(f"  prefix_lengths: {prefix_lengths}")
                         raise RuntimeError(f"NaN/Inf in base_loss: {base_loss.item()}")
 
-                    if out.compression_embeds is None or out.compression_embeds_all is None or out.hidden_states is None:
-                        raise RuntimeError("Model did not return compression embeddings and hidden states.")
+                    if out.compression_embeds is None:
+                        raise RuntimeError("Model did not return compression embeddings.")
 
                     # Check for NaN in compression outputs
                     if torch.isnan(out.compression_embeds).any() or torch.isinf(out.compression_embeds).any():
@@ -345,23 +366,19 @@ class MyTrainer:
                         print(f"  Inf count: {torch.isinf(out.compression_embeds).sum().item()}")
                         raise RuntimeError("NaN/Inf in compression_embeds")
 
-                    if torch.isnan(out.compression_embeds_all).any() or torch.isinf(out.compression_embeds_all).any():
-                        print(
-                            f"DEBUG: NaN/Inf detected in compression_embeds_all at step {update_step}, micro_step {micro_step}"
-                        )
-                        print(f"  compression_embeds_all shape: {out.compression_embeds_all.shape}")
-                        print(f"  NaN count: {torch.isnan(out.compression_embeds_all).sum().item()}")
-                        raise RuntimeError("NaN/Inf in compression_embeds_all")
+                    compression_embeds = out.compression_embeds
+                    del out
 
                     t0 = time.perf_counter()
                     # After `accelerator.prepare`, `model` may be a DDP wrapper without HF convenience methods.
-                    token_embeddings = unwrapped_model.get_input_embeddings()(input_ids)
+                    with accelerator.autocast():
+                        token_embeddings = unwrapped_model.get_input_embeddings()(input_ids)
                     _sync()
                     embed_s = time.perf_counter() - t0
 
                     t0 = time.perf_counter()
                     inputs_embeds_new, attention_mask_new, labels_new = self._build_compressed_inputs(
-                        compression_embeds=out.compression_embeds,
+                        compression_embeds=compression_embeds,
                         token_embeddings=token_embeddings,
                         input_ids=input_ids,
                         attention_mask=attention_mask,
@@ -370,15 +387,22 @@ class MyTrainer:
                     build_s = time.perf_counter() - t0
 
                     t0 = time.perf_counter()
-                    out2 = model(
-                        inputs_embeds=inputs_embeds_new,
-                        attention_mask=attention_mask_new,
-                        labels=labels_new,
-                        return_dict=True,
-                    )
+                    with accelerator.autocast():
+                        out2 = model(
+                            inputs_embeds=inputs_embeds_new,
+                            attention_mask=attention_mask_new,
+                            labels=labels_new,
+                            use_cache=False,
+                            output_hidden_states=False,
+                            return_dict=True,
+                        )
                     _sync()
                     fwd2_s = time.perf_counter() - t0
                     after_loss = out2.loss
+                    if after_loss is None:
+                        raise RuntimeError("Model did not return loss for compressed-input forward (labels missing?)")
+                    del out2
+                    del token_embeddings, inputs_embeds_new, attention_mask_new, labels_new, compression_embeds
 
                     alpha = args.compression_head_distill_alpha
                     loss = base_loss + after_loss * alpha

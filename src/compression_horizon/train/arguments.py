@@ -288,6 +288,15 @@ class MyTrainingArguments(TrainingArguments):
             )
         },
     )
+    gradient_checkpointing: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable gradient checkpointing to reduce activation memory during training "
+                "(trades memory for extra compute)."
+            )
+        },
+    )
 
     # Compression head training (single-pass compression embed prediction)
     train_compression_head: bool = field(
