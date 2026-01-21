@@ -272,7 +272,9 @@ class MyTrainer:
         params = [p for p in model.parameters() if p.requires_grad]
 
         print("total_update_steps", total_update_steps)
-        optimizer, scheduler = self._build_optimizer_and_scheduler(params, num_training_steps=total_update_steps)
+        optimizer, scheduler = self._build_optimizer_and_scheduler(
+            params, num_training_steps=total_update_steps, num_processes=accelerator.num_processes
+        )
 
         model, optimizer, train_loader, scheduler = accelerator.prepare(model, optimizer, train_loader, scheduler)
         print("train_loader after prepare", len(train_loader))
@@ -925,7 +927,7 @@ class MyTrainer:
             raise ValueError(f"unsupported init method: {init_method}")
         return trainable_embeddings
 
-    def _build_optimizer_and_scheduler(self, params, num_training_steps=None):
+    def _build_optimizer_and_scheduler(self, params, num_training_steps=None, num_processes=1):
 
         print("number of optimized params:", sum(p.numel() for p in params))
 
@@ -950,8 +952,8 @@ class MyTrainer:
             print("self.args.lr_scheduler_type", self.args.lr_scheduler_type)
             scheduler_kwargs = {
                 "optimizer": optimizer,
-                "num_warmup_steps": self.args.warmup_steps,
-                "num_training_steps": num_training_steps,
+                "num_warmup_steps": self.args.warmup_steps * num_processes,
+                "num_training_steps": num_training_steps * num_processes,
             }
 
             if self.args.lr_scheduler_kwargs is not None:
