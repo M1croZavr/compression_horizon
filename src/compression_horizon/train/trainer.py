@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from datasets import Dataset
 from sklearn.decomposition import PCA
 from torch.optim import SGD, AdamW
@@ -203,8 +205,35 @@ class MyTrainer:
     def train_compression_head(self):
         args = self.args
         model = self.model
-        device = get_device()
-        model.to(device)
+
+        grad_accum = int(getattr(args, "gradient_accumulation_steps", 1) or 1)
+        if grad_accum < 1:
+            grad_accum = 1
+
+        mixed_precision = "no"
+        dtype = str(getattr(args, "dtype", "auto") or "auto").lower()
+        if dtype in {"bf16", "bfloat16"}:
+            mixed_precision = "bf16"
+        elif dtype in {"fp16", "float16"}:
+            mixed_precision = "fp16"
+
+        ddp_kwargs = None
+        if getattr(args, "ddp_find_unused_parameters", None) is not None:
+            ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=bool(args.ddp_find_unused_parameters))
+        accelerator = Accelerator(
+            gradient_accumulation_steps=grad_accum,
+            mixed_precision=mixed_precision,
+            kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else None,
+        )
+        device = accelerator.device
+
+        # Avoid multi-process TensorBoard clobbering.
+        if not accelerator.is_main_process and self.writer is not None:
+            try:
+                self.writer.flush()
+                self.writer.close()
+            finally:
+                self.writer = None
 
         profile = os.environ.get("CH_PROFILE", "0") not in {"0", "", "false", "False"}
         profile_first = int(os.environ.get("CH_PROFILE_FIRST", "5"))
@@ -214,7 +243,7 @@ class MyTrainer:
             if device.type == "cuda":
                 torch.cuda.synchronize()
 
-        if getattr(args, "compression_head_freeze_base_model", True):
+        if args.compression_head_freeze_base_model:
             freeze_model_parameters(model)
             for p in getattr(model, "compression_head", nn.Module()).parameters():
                 p.requires_grad = True
@@ -230,24 +259,27 @@ class MyTrainer:
             drop_last=args.dataloader_drop_last,
         )
 
-        params = [p for p in model.parameters() if p.requires_grad]
-
-        grad_accum = int(getattr(args, "gradient_accumulation_steps", 1) or 1)
-        if grad_accum < 1:
-            grad_accum = 1
-
+        # Compute update steps in "optimizer steps" (global steps), accounting for data-parallel sharding.
         total_update_steps = args.max_steps if getattr(args, "max_steps", -1) and args.max_steps > 0 else None
         num_epochs = int(getattr(args, "num_train_epochs", 1) or 1)
         if total_update_steps is None:
-            micro_steps_total = len(train_loader) * num_epochs
+            micro_steps_per_epoch = len(train_loader)
+            if accelerator.num_processes > 1:
+                micro_steps_per_epoch = int(math.ceil(micro_steps_per_epoch / accelerator.num_processes))
+            micro_steps_total = micro_steps_per_epoch * num_epochs
             total_update_steps = int(math.ceil(micro_steps_total / grad_accum))
 
+        params = [p for p in model.parameters() if p.requires_grad]
+
         optimizer, scheduler = self._build_optimizer_and_scheduler(params, num_training_steps=total_update_steps)
+
+        model, optimizer, train_loader, scheduler = accelerator.prepare(model, optimizer, train_loader, scheduler)
+        params = [p for p in model.parameters() if p.requires_grad]
 
         update_step = 0
         micro_step = 0
         optimizer.zero_grad(set_to_none=True)
-        pbar = tqdm(total=total_update_steps, desc="train_compression_head")
+        pbar = tqdm(total=total_update_steps, desc="train_compression_head", disable=not accelerator.is_main_process)
 
         prev_iter_end = time.perf_counter()
         while update_step < total_update_steps:
@@ -358,21 +390,19 @@ class MyTrainer:
                         print(f"  alpha: {alpha}")
                         raise RuntimeError(f"NaN/Inf in total loss: {loss.item()}")
 
-                    t0 = time.perf_counter()
-                    (loss / grad_accum).backward()
-                    _sync()
-                    bwd_s = time.perf_counter() - t0
-
                     opt_s = 0.0
-                    micro_step += 1
                     did_step = False
-                    if micro_step % grad_accum == 0:
-                        t0 = time.perf_counter()
+                    t0 = time.perf_counter()
+                    with accelerator.accumulate(model):
+                        accelerator.backward(loss / grad_accum)
+                        _sync()
+                        bwd_s = time.perf_counter() - t0
 
-                        skip_optimizer = False
-                        if not skip_optimizer:
+                        micro_step += 1
+                        if accelerator.sync_gradients:
+                            t0 = time.perf_counter()
                             if getattr(args, "max_grad_norm", None) is not None and args.max_grad_norm > 0:
-                                torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
+                                accelerator.clip_grad_norm_(params, args.max_grad_norm)
 
                             optimizer.step()
 
@@ -381,7 +411,7 @@ class MyTrainer:
                             has_inf_param = False
                             nan_param_names = []
                             inf_param_names = []
-                            for name, param in model.named_parameters():
+                            for name, param in accelerator.unwrap_model(model).named_parameters():
                                 if param.requires_grad:
                                     if torch.isnan(param).any():
                                         has_nan_param = True
@@ -391,48 +421,63 @@ class MyTrainer:
                                         inf_param_names.append(name)
 
                             if has_nan_param or has_inf_param:
-                                print(f"DEBUG: NaN/Inf detected in model parameters after optimizer step {update_step}")
+                                accelerator.print(
+                                    f"DEBUG: NaN/Inf detected in model parameters after optimizer step {update_step}"
+                                )
                                 if has_nan_param:
-                                    print(f"  NaN parameters: {nan_param_names}")
+                                    accelerator.print(f"  NaN parameters: {nan_param_names}")
                                 if has_inf_param:
-                                    print(f"  Inf parameters: {inf_param_names}")
-                                print("  This may indicate learning rate is too high or numerical instability")
-                                # Don't raise here, but log it for debugging
+                                    accelerator.print(f"  Inf parameters: {inf_param_names}")
+                                accelerator.print("  This may indicate learning rate is too high or numerical instability")
 
                             if scheduler is not None:
                                 scheduler.step()
                             optimizer.zero_grad(set_to_none=True)
-                        _sync()
-                        opt_s = time.perf_counter() - t0
-                        did_step = True
+                            _sync()
+                            opt_s = time.perf_counter() - t0
 
-                        if self.writer:
-                            self.writer.add_scalar("loss/total", loss.item(), self.global_step)
-                            self.writer.add_scalar("loss/base", base_loss.item(), self.global_step)
-                            self.writer.add_scalar("loss/after_compression", after_loss.item(), self.global_step)
-                            # Log learning rate
-                            current_lr = optimizer.param_groups[0]["lr"]
-                            self.writer.add_scalar("train/learning_rate", current_lr, self.global_step)
+                            did_step = True
+                            update_step += 1
 
-                        self.global_step += 1
-                        update_step += 1
+                            # Log only from the main process.
+                            if accelerator.is_main_process:
+                                # Mean losses across processes for cleaner logs.
+                                def mean_metric(x: torch.Tensor) -> float:
+                                    if accelerator.num_processes == 1:
+                                        return float(x.detach().item())
+                                    return float(accelerator.gather(x.detach()).mean().item())
 
-                        # Format loss values safely (handle NaN/Inf)
-                        def safe_format(val):
-                            if torch.isnan(val) or torch.isinf(val):
-                                return "nan" if torch.isnan(val) else "inf"
-                            return f"{val.item():.4f}"
+                                loss_m = mean_metric(loss)
+                                base_m = mean_metric(base_loss)
+                                after_m = mean_metric(after_loss)
 
-                        pbar.set_postfix(
-                            {
-                                "loss": safe_format(loss),
-                                "base": safe_format(base_loss),
-                                "after": safe_format(after_loss),
-                            }
-                        )
-                        pbar.update(1)
+                                if self.writer:
+                                    self.writer.add_scalar("loss/total", loss_m, self.global_step)
+                                    self.writer.add_scalar("loss/base", base_m, self.global_step)
+                                    self.writer.add_scalar("loss/after_compression", after_m, self.global_step)
+                                    current_lr = optimizer.param_groups[0]["lr"]
+                                    self.writer.add_scalar("train/learning_rate", current_lr, self.global_step)
 
-                    if profile and (update_step <= profile_first or (did_step and update_step % profile_every == 0)):
+                                self.global_step += 1
+
+                                def safe_format_scalar(v: float) -> str:
+                                    if math.isnan(v) or math.isinf(v):
+                                        return "nan" if math.isnan(v) else "inf"
+                                    return f"{v:.4f}"
+
+                                pbar.set_postfix(
+                                    {
+                                        "loss": safe_format_scalar(loss_m),
+                                        "base": safe_format_scalar(base_m),
+                                        "after": safe_format_scalar(after_m),
+                                    }
+                                )
+                                pbar.update(1)
+                    if (
+                        accelerator.is_main_process
+                        and profile
+                        and (update_step <= profile_first or (did_step and update_step % profile_every == 0))
+                    ):
                         mem = ""
                         if device.type == "cuda":
                             alloc_gb = torch.cuda.memory_allocated() / (1024**3)
@@ -463,24 +508,27 @@ class MyTrainer:
 
         pbar.close()
 
-        os.makedirs(args.output_dir, exist_ok=True)
-        # Save full compression-head model as a Hugging Face checkpoint.
-        # This enables `from_pretrained()` loading without custom torch.load plumbing.
-        if not hasattr(model, "save_pretrained"):
-            raise RuntimeError("Expected a Hugging Face PreTrainedModel with save_pretrained().")
-        model.save_pretrained(args.output_dir)
-        if self.processing_class is not None and hasattr(self.processing_class, "save_pretrained"):
-            self.processing_class.save_pretrained(args.output_dir)
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            os.makedirs(args.output_dir, exist_ok=True)
+            # Save full compression-head model as a Hugging Face checkpoint.
+            # This enables `from_pretrained()` loading without custom torch.load plumbing.
+            unwrapped = accelerator.unwrap_model(model)
+            if not hasattr(unwrapped, "save_pretrained"):
+                raise RuntimeError("Expected a Hugging Face PreTrainedModel with save_pretrained().")
+            unwrapped.save_pretrained(args.output_dir)
+            if self.processing_class is not None and hasattr(self.processing_class, "save_pretrained"):
+                self.processing_class.save_pretrained(args.output_dir)
 
-        # Persist training args for easy provenance/inference in downstream scripts.
-        try:
-            args_dict = getattr(args, "to_dict", lambda: {})()
-            with open(os.path.join(args.output_dir, "training_args.json"), "w", encoding="utf-8") as f:
-                json.dump(args_dict, f, ensure_ascii=False, indent=2, sort_keys=True)
-                f.write("\n")
-        except Exception:
-            # Best-effort; do not fail training on metadata write.
-            pass
+            # Persist training args for easy provenance/inference in downstream scripts.
+            try:
+                args_dict = getattr(args, "to_dict", lambda: {})()
+                with open(os.path.join(args.output_dir, "training_args.json"), "w", encoding="utf-8") as f:
+                    json.dump(args_dict, f, ensure_ascii=False, indent=2, sort_keys=True)
+                    f.write("\n")
+            except Exception:
+                # Best-effort; do not fail training on metadata write.
+                pass
         return args.output_dir
 
     def _prepare_embedding_init(self, model):

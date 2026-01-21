@@ -245,13 +245,6 @@ if __name__ == "__main__":
         model = LlamaForCausalLMCompressionHead.from_pretrained(
             training_args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
         )
-
-        if training_args.train_compression_head_freeze_llm_backbone:
-            for p in model.model.parameters():
-                p.requires_grad = False
-            for p in model.lm_head.parameters():
-                p.requires_grad = False
-
     else:
         model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
         for p in model.parameters():

@@ -294,10 +294,6 @@ class MyTrainingArguments(TrainingArguments):
         default=False,
         metadata={"help": "Train a compression head (no per-sample embedding optimization)."},
     )
-    train_compression_head_freeze_llm_backbone: bool = field(
-        default=False,
-        metadata={"help": "train_compression_head_freeze_llm_backbone"},
-    )
     compression_head_distill_alpha: float = field(
         default=1.0,
         metadata={"help": "Weight for distillation loss for non-selected compression embeddings."},

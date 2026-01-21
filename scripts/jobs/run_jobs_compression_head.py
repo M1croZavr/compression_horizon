@@ -1,5 +1,4 @@
 import argparse
-import json
 import os
 import sys
 import time
@@ -38,12 +37,27 @@ def get_in_progress_jobs(client, region, statuses=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch compression head training jobs.")
     parser.add_argument("--dry", action="store_true", help="Only print generated scripts, do not launch jobs.")
-    parser.add_argument("--train_compression_head_freeze_llm_backbone", action="store_true")
+    parser.add_argument(
+        "--num_gpus",
+        type=int,
+        default=1,
+        help="Number of GPUs to request for the job (affects instance_type). Default: 1",
+    )
     parser.add_argument(
         "--model",
         nargs="+",
         default=None,
         help="Filter models by name (substring match). Can specify multiple models.",
+    )
+    parser.add_argument(
+        "--model_checkpoint",
+        default=None,
+        help="Explicit model checkpoint",
+    )
+    parser.add_argument(
+        "--model_name",
+        default=None,
+        help="Explicit model checkpoint",
     )
     parser.add_argument(
         "--dtype",
@@ -99,10 +113,10 @@ if __name__ == "__main__":
         help="Batch size per device. Default: 4",
     )
     parser.add_argument(
-        "--gradient_accumulation_steps",
+        "--total_batch_size",
         type=int,
         default=None,
-        help="Gradient accumulation steps. Default: 32",
+        help="Total (global) train batch size across all GPUs and gradient accumulation. Default: 128",
     )
     parser.add_argument(
         "--dataloader_num_workers",
@@ -194,9 +208,13 @@ if __name__ == "__main__":
         if not checkpoints:
             print(f"\033[33mNo models matched the filter: {args.model}\033[0m")
             sys.exit(0)
+    elif args.model_checkpoint:
+        checkpoints = [args.model_checkpoint]
 
     for model_checkpoint in checkpoints:
         model_name = model_checkpoint.split("/")[-1]
+        if model_name == "":
+            model_name = args.model_name
         exp_suffix = f"ch_head_{model_name}"
 
         # Default values
@@ -205,7 +223,27 @@ if __name__ == "__main__":
         learning_rate = args.learning_rate if args.learning_rate is not None else 1e-4
         max_sequence_length = args.max_sequence_length if args.max_sequence_length is not None else 1024
         per_device_train_batch_size = args.per_device_train_batch_size if args.per_device_train_batch_size is not None else 4
-        gradient_accumulation_steps = args.gradient_accumulation_steps if args.gradient_accumulation_steps is not None else 32
+        num_gpus = args.num_gpus if args.num_gpus is not None else 1
+        if num_gpus < 1:
+            raise ValueError(f"--num_gpus must be >= 1, got {num_gpus}")
+
+        total_batch_size = args.total_batch_size if args.total_batch_size is not None else 128
+        denom = num_gpus * per_device_train_batch_size
+        if denom <= 0:
+            raise ValueError(
+                f"Invalid batch sizing: num_gpus={num_gpus}, per_device_train_batch_size={per_device_train_batch_size}"
+            )
+        if total_batch_size % denom != 0:
+            raise ValueError(
+                "total_batch_size must be divisible by (num_gpus * per_device_train_batch_size). "
+                f"Got total_batch_size={total_batch_size}, num_gpus={num_gpus}, per_device_train_batch_size={per_device_train_batch_size}"
+            )
+        gradient_accumulation_steps = total_batch_size // denom
+        if gradient_accumulation_steps < 1:
+            raise ValueError(
+                "Computed gradient_accumulation_steps < 1. "
+                f"Got total_batch_size={total_batch_size}, num_gpus={num_gpus}, per_device_train_batch_size={per_device_train_batch_size}"
+            )
         dataloader_num_workers = args.dataloader_num_workers if args.dataloader_num_workers is not None else 4
         compression_head_distill_alpha = (
             args.compression_head_distill_alpha if args.compression_head_distill_alpha is not None else 1.0
@@ -223,7 +261,6 @@ if __name__ == "__main__":
 
         cmd_args = [
             "--train_compression_head",
-            f"--train_compression_head_freeze_llm_backbone {args.train_compression_head_freeze_llm_backbone}",
             f"--model_checkpoint {model_checkpoint}",
             f"--dataset_name {dataset_name}",
             f"--limit_dataset_items {limit_dataset_items}",
@@ -244,6 +281,8 @@ if __name__ == "__main__":
 
         if not compression_head_freeze_base_model:
             cmd_args.append("--compression_head_freeze_base_model False")
+        else:
+            exp_suffix = f"{exp_suffix}_freeze_llm"
 
         if args.max_steps is not None:
             cmd_args.append(f"--max_steps {args.max_steps}")
@@ -251,23 +290,13 @@ if __name__ == "__main__":
         else:
             exp_suffix = f"{exp_suffix}_epochs_{num_train_epochs}"
 
-        if args.train_compression_head_freeze_llm_backbone:
-            exp_suffix = f"{exp_suffix}_freeze_llm"
-
         if args.random_seed is not None and args.random_seed != 42:
             cmd_args.append(f"--random_seed {args.random_seed}")
             exp_suffix = f"{exp_suffix}_seed_{args.random_seed}"
 
         if args.lr_scheduler_kwargs is not None:
-            try:
-                json.loads(args.lr_scheduler_kwargs)
-                cmd_args.append(f"--lr_scheduler_kwargs '{args.lr_scheduler_kwargs}'")
-                kwargs_dict = json.loads(args.lr_scheduler_kwargs)
-                kwargs_parts = [f"{k}_{v}" for k, v in sorted(kwargs_dict.items())]
-                kwargs_suffix = "_".join(kwargs_parts).replace(".", "p").replace("-", "m")
-                exp_suffix = f"{exp_suffix}_schedkw_{kwargs_suffix}"
-            except json.JSONDecodeError:
-                raise ValueError(f"Invalid JSON format for --lr_scheduler_kwargs: {args.lr_scheduler_kwargs}")
+            cmd_args.append(f"--lr_scheduler_kwargs '{args.lr_scheduler_kwargs}'")
+            exp_suffix = f"{exp_suffix}_schedkw_{args.lr_scheduler_kwargs}"
 
         # Add to exp_suffix if non-default values
         if args.dataset_name is not None:
@@ -283,8 +312,11 @@ if __name__ == "__main__":
         if args.per_device_train_batch_size is not None and args.per_device_train_batch_size != 4:
             exp_suffix = f"{exp_suffix}_bs_{args.per_device_train_batch_size}"
 
-        if args.gradient_accumulation_steps is not None and args.gradient_accumulation_steps != 32:
-            exp_suffix = f"{exp_suffix}_ga_{args.gradient_accumulation_steps}"
+        if args.total_batch_size is not None and args.total_batch_size != 128:
+            exp_suffix = f"{exp_suffix}_tbs_{args.total_batch_size}"
+
+        if args.num_gpus is not None and args.num_gpus != 1:
+            exp_suffix = f"{exp_suffix}_ngpu_{args.num_gpus}"
 
         if args.learning_rate is not None and args.learning_rate != 1e-4:
             lr_str = str(args.learning_rate).replace(".", "p").replace("-", "m")
@@ -312,7 +344,13 @@ if __name__ == "__main__":
 
         cmd_args.append(f"--output_dir {out_dir_name}")
         cmd_args.append(f"--logging_dir {logging_dir}")
-        script = f" cd {workdir} && {python_path} -m scripts.activation_distillation  {' '.join(cmd_args)}"
+        if num_gpus > 1:
+            script = (
+                f" cd {workdir} && {python_path} -m accelerate.commands.launch "
+                f"--num_processes {num_gpus} --num_machines 1 --module scripts.activation_distillation  {' '.join(cmd_args)}"
+            )
+        else:
+            script = f"bash scripts/jobs/multigpu.sh scripts/activation_distillation.py  {' '.join(cmd_args)}"
         job_desc = f"CH: compression_head {exp_suffix} #{author_name} #multimodal #notify_completed @mrsndmn"
 
         if job_desc in in_progress_job_descs:
@@ -326,7 +364,7 @@ if __name__ == "__main__":
                 "PYTHONPATH": "./src",
                 "HF_HOME": "/workspace-SR004.nfs2/.cache/huggingface",
             },
-            "instance_type": "a100.1gpu",
+            "instance_type": f"a100.{num_gpus}gpu",
             "region": extra_options["region"],
             "type": "binary_exp",
             "shm_size_class": "medium",
