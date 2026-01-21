@@ -10,6 +10,7 @@ src/compression_horizon/train/trainer.py) and builds a LaTeX table with:
 Supported artifact layouts:
 - Non-progressive runs in: artifacts/experiments/<run_name>/compressed_prefixes
 - Progressive runs in:     artifacts/experiments_progressive/<run_name>/progressive_prefixes
+- Prefix tuning runs in:   artifacts/experiments_prefix_tuning/<run_name>/prefix_tuning_prefixes
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ class RunSummary:
     # Identifiers
     run_dir: str
     run_hash: str
-    dataset_type: str  # "compressed_prefixes" | "progressive_prefixes"
+    dataset_type: str  # "compressed_prefixes" | "progressive_prefixes" | "prefix_tuning_prefixes"
     # Properties (best-effort from saved rows and/or run_dir name)
     dtype: Optional[str] = None
     loss_type: Optional[str] = None
@@ -89,6 +90,8 @@ def parse_run_name_for_properties(run_name: str) -> Dict[str, Optional[str]]:
     Parse fields injected in activation_distillation.py:
     - Non-progressive: ch_{loss}_hybrid_alpha_{alpha}_init_{init}_seq_len_{L}_{suffix}
     - Progressive:     ch_{loss}_init_{init}_seq_len_{L}_{suffix}
+    - Prefix tuning:   ch_prefix_tuning_{loss}_hybrid_alpha_{alpha}_init_{init}_seq_len_{L}
+    - Prefix tuning (exp_suffix): pt_sl_{L}_{model_name} (from run_jobs_prefix_tuning.py)
     """
     props: Dict[str, Optional[str]] = {
         "loss_type": None,
@@ -96,29 +99,56 @@ def parse_run_name_for_properties(run_name: str) -> Dict[str, Optional[str]]:
         "embedding_init_method": None,
         "max_sequence_length": None,
     }
-    # Generic patterns
-    m_loss = re.search(r"ch_([^_]+)", run_name)
-    if m_loss:
-        props["loss_type"] = m_loss.group(1)
-    m_alpha = re.search(r"hybrid_alpha_([^_]+)", run_name)
-    if m_alpha:
-        props["hybrid_alpha"] = m_alpha.group(1)
-    m_init = re.search(r"init_((neg_)?random(_norm_)?\d?(\.\d+)?|mvnormal|mean|single_random)", run_name)
-    if m_init:
-        props["embedding_init_method"] = m_init.group(1)
+    # Handle prefix tuning format: ch_prefix_tuning_{loss}_hybrid_alpha_{alpha}_init_{init}_seq_len_{L}
+    if run_name.startswith("ch_prefix_tuning_"):
+        # Extract loss_type (everything between ch_prefix_tuning_ and _hybrid_alpha_)
+        m_loss = re.search(r"ch_prefix_tuning_(.+?)_hybrid_alpha_", run_name)
+        if m_loss:
+            props["loss_type"] = m_loss.group(1)
+        # Extract hybrid_alpha (everything between _hybrid_alpha_ and _init_)
+        m_alpha = re.search(r"_hybrid_alpha_(.+?)_init_", run_name)
+        if m_alpha:
+            props["hybrid_alpha"] = m_alpha.group(1)
+        # Extract embedding_init_method (everything between _init_ and _seq_len_)
+        m_init = re.search(r"_init_(.+?)_seq_len_", run_name)
+        if m_init:
+            props["embedding_init_method"] = m_init.group(1)
+        # Extract max_sequence_length
+        m_len = re.search(r"_seq_len_([0-9]+)", run_name)
+        if m_len:
+            props["max_sequence_length"] = int(m_len.group(1))
+        return props
+    # Handle prefix tuning exp_suffix format: pt_sl_{max_seq_len}_{model_name}
+    elif run_name.startswith("pt_sl_"):
+        m_len = re.search(r"pt_sl_([0-9]+)", run_name)
+        if m_len:
+            props["max_sequence_length"] = int(m_len.group(1))
+        # Return early since exp_suffix format doesn't have other fields in the name
+        return props
     else:
-        print("Failed to parse init method:", run_name)
+        # Generic patterns for non-progressive and progressive
+        m_loss = re.search(r"ch_([^_]+)", run_name)
+        if m_loss:
+            props["loss_type"] = m_loss.group(1)
+        m_alpha = re.search(r"hybrid_alpha_([^_]+)", run_name)
+        if m_alpha:
+            props["hybrid_alpha"] = m_alpha.group(1)
+        m_init = re.search(r"init_((neg_)?random(_norm_)?\d?(\.\d+)?|mvnormal|mean|single_random)", run_name)
+        if m_init:
+            props["embedding_init_method"] = m_init.group(1)
+        else:
+            print("Failed to parse init method:", run_name)
 
-    m_len = re.search(r"seq_len_([0-9]+)", run_name)
-    if m_len:
-        props["max_sequence_length"] = int(m_len.group(1))
+        m_len = re.search(r"seq_len_([0-9]+)", run_name)
+        if m_len:
+            props["max_sequence_length"] = int(m_len.group(1))
     return props
 
 
 def discover_run_datasets(base_dirs: Iterable[str]) -> List[Tuple[str, str]]:
     """
     Return list of tuples: (dataset_path, dataset_type)
-    dataset_type in {"compressed_prefixes", "progressive_prefixes"}
+    dataset_type in {"compressed_prefixes", "progressive_prefixes", "prefix_tuning_prefixes"}
     """
     results: List[Tuple[str, str]] = []
     for base in base_dirs:
@@ -129,7 +159,7 @@ def discover_run_datasets(base_dirs: Iterable[str]) -> List[Tuple[str, str]]:
             continue
         for run_dir in sorted([p for p in base_path.iterdir() if p.is_dir()]):
             # Look for known dataset subfolders
-            for ds_type in ("compressed_prefixes", "progressive_prefixes"):
+            for ds_type in ("compressed_prefixes", "progressive_prefixes", "prefix_tuning_prefixes"):
                 ds_path = run_dir / ds_type
                 # A HF dataset saved_to_disk has a "dataset_info.json" or "state.json" and an "arrow" subdir
                 if ds_path.exists() and ds_path.is_dir():
@@ -248,6 +278,97 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         ),
         convergence_after_steps_mean=safe_mean([float(x) for x in conv_steps]),
         convergence_after_steps_std=safe_std([float(x) for x in conv_steps]),
+        final_convergence_mean=safe_mean([float(x) for x in fin_conv]),
+        final_convergence_std=safe_std([float(x) for x in fin_conv]),
+        final_loss_mean=safe_mean([float(x) for x in fin_loss]),
+        final_loss_std=safe_std([float(x) for x in fin_loss]),
+    )
+    return summary
+
+
+def aggregate_prefix_tuning(run_dir: str, ds_rows: List[dict]) -> RunSummary:
+    """
+    Aggregate prefix tuning runs. Similar to non-progressive but:
+    - Uses num_virtual_tokens instead of num_compression_tokens
+    - No convergence_after_steps (set to None)
+    """
+    # Pull common properties – they should be constant within a run
+    props_from_rows: Dict[str, Optional[object]] = {}
+    for key in (
+        "loss_type",
+        "hybrid_alpha",
+        "num_alignment_layers",
+        "fix_position_ids",
+        "model_checkpoint",
+        "max_optimization_steps_per_sample",
+        "num_virtual_tokens",
+        "dtype",
+    ):
+        val = None
+        for r in ds_rows:
+            if key in r:
+                val = r[key]
+                break
+        props_from_rows[key] = val
+
+    run_name = Path(run_dir).parent.name
+    parsed = parse_run_name_for_properties(run_name)
+
+    fin_conv = [r.get("final_convergence") for r in ds_rows if r.get("final_convergence") is not None]
+    fin_loss = [r.get("final_loss") for r in ds_rows if r.get("final_loss") is not None]
+
+    run_dir_parent = str(Path(run_dir).parent)
+    run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
+    if not os.path.exists(run_hash_file):
+        print("Can't find run hash file:", run_hash_file)
+        return None
+
+    with open(run_hash_file, "r") as hash_file:
+        run_hash = hash_file.readline()
+
+    loss_type = props_from_rows.get("loss_type") or parsed.get("loss_type")
+    if loss_type in abbreviation["loss_type"]:
+        loss_type = abbreviation["loss_type"][loss_type]
+
+    embedding_init_method = parsed.get("embedding_init_method")
+    if embedding_init_method in abbreviation.get("embedding_init_method", {}):
+        embedding_init_method = abbreviation["embedding_init_method"][embedding_init_method]
+
+    model_checkpoint = str(props_from_rows["model_checkpoint"]) if props_from_rows.get("model_checkpoint") is not None else None
+    if model_checkpoint in abbreviation.get("model_checkpoint", {}):
+        model_checkpoint = abbreviation["model_checkpoint"][model_checkpoint]
+
+    summary = RunSummary(
+        run_dir=run_dir_parent,
+        run_hash=run_hash,
+        dataset_type="prefix_tuning_prefixes",
+        loss_type=loss_type,
+        hybrid_alpha=str(
+            props_from_rows.get("hybrid_alpha")
+            if props_from_rows.get("hybrid_alpha") is not None
+            else parsed.get("hybrid_alpha")
+        ),
+        dtype=(props_from_rows.get("dtype")),
+        embedding_init_method=embedding_init_method,
+        max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
+        number_of_mem_tokens=(
+            int(props_from_rows["num_virtual_tokens"]) if props_from_rows.get("num_virtual_tokens") is not None else None
+        ),
+        num_alignment_layers=(
+            int(props_from_rows["num_alignment_layers"]) if props_from_rows.get("num_alignment_layers") is not None else None
+        ),
+        inverted_alignment=None,  # not persisted in rows; unknown
+        fix_position_ids=(
+            bool(props_from_rows["fix_position_ids"]) if props_from_rows.get("fix_position_ids") is not None else None
+        ),
+        model_checkpoint=model_checkpoint,
+        max_optimization_steps_per_sample=(
+            int(props_from_rows["max_optimization_steps_per_sample"])
+            if props_from_rows.get("max_optimization_steps_per_sample") is not None
+            else None
+        ),
+        convergence_after_steps_mean=None,  # N/A for prefix tuning
+        convergence_after_steps_std=None,
         final_convergence_mean=safe_mean([float(x) for x in fin_conv]),
         final_convergence_std=safe_std([float(x) for x in fin_conv]),
         final_loss_mean=safe_mean([float(x) for x in fin_loss]),
@@ -493,13 +614,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             By default scans:
               - artifacts/experiments/*/compressed_prefixes
               - artifacts/experiments_progressive/*/progressive_prefixes
+              - artifacts/experiments_prefix_tuning/*/prefix_tuning_prefixes
             """
         ),
     )
     parser.add_argument(
         "--dirs",
         nargs="*",
-        default=["artifacts/experiments", "artifacts/experiments_progressive"],
+        default=["artifacts/experiments", "artifacts/experiments_progressive", "artifacts/experiments_prefix_tuning"],
         help="Base directories to scan for runs.",
     )
     parser.add_argument(
@@ -580,8 +702,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
         if ds_type == "compressed_prefixes":
             summary = aggregate_non_progressive(ds_path, rows)
-        else:
+        elif ds_type == "progressive_prefixes":
             summary = aggregate_progressive(ds_path, rows)
+        elif ds_type == "prefix_tuning_prefixes":
+            summary = aggregate_prefix_tuning(ds_path, rows)
+        else:
+            print(f"Unknown dataset type: {ds_type}", file=sys.stderr)
+            continue
         if summary is None:
             continue
         summaries.append(summary)
