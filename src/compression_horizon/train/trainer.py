@@ -1526,7 +1526,8 @@ class MyTrainer:
                     outputs = peft_model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-                        output_hidden_states=True,
+                        output_hidden_states=(self.args.loss_type != "cross_entropy"),
+                        use_cache=False,
                     )
                     loss, alignment_loss = compute_hybrid_cross_entropy_and_alignment_loss_no_prefix(
                         logits=outputs.logits,

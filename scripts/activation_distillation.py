@@ -246,7 +246,9 @@ if __name__ == "__main__":
             training_args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
         )
     else:
-        model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
+        model = AutoModelForCausalLM.from_pretrained(
+            training_args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
+        )
         for p in model.parameters():
             p.requires_grad = False
 

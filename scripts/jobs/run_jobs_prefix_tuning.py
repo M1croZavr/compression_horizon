@@ -132,6 +132,8 @@ if __name__ == "__main__":
 
     checkpoints = [
         "HuggingFaceTB/SmolLM2-1.7B",
+        "HuggingFaceTB/SmolLM2-135M",
+        "HuggingFaceTB/SmolLM2-360M",
         "unsloth/Llama-3.2-3B",
         "Qwen/Qwen3-4B",
         "unsloth/Meta-Llama-3.1-8B",
