@@ -69,7 +69,8 @@ def load_or_create_tokenized_dataset(
     # Try to load cached tokenized dataset
     if os.path.exists(cache_path):
         print(f"Loading tokenized dataset from cache: {cache_path}")
-        return Dataset.load_from_disk(cache_path)
+        ds = Dataset.load_from_disk(cache_path)
+        return ds.with_format("torch")
 
     # Create dataset if not cached
     print("Tokenizing dataset (this may take a while)...")
@@ -111,15 +112,20 @@ def load_or_create_tokenized_dataset(
     else:
         dataset = raw_dataset
 
-    dataset = dataset.map(
-        lambda x: tokenizer(
-            x["text"],
+    def _tokenize(example):
+        # Important: do NOT use return_tensors="pt" here.
+        # HF Datasets stores tensors as nested lists like [1, T] which makes __getitem__ very slow.
+        # We'll instead store plain lists and set .with_format("torch") on the resulting dataset.
+        return tokenizer(
+            example["text"],
             truncation=True,
             padding="max_length",
             max_length=max_sequence_length,
-            return_tensors="pt",
-        ),
-        num_proc=16,
+        )
+
+    dataset = dataset.map(
+        _tokenize,
+        num_proc=num_proc,
         remove_columns=dataset.column_names,
     )
 
@@ -127,7 +133,7 @@ def load_or_create_tokenized_dataset(
     print(f"Saving tokenized dataset to cache: {cache_path}")
     dataset.save_to_disk(cache_path)
 
-    return dataset
+    return dataset.with_format("torch")
 
 
 if __name__ == "__main__":

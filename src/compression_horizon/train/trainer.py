@@ -1,5 +1,6 @@
 import math
 import os
+import time
 from typing import Optional
 
 import numpy as np
@@ -203,6 +204,14 @@ class MyTrainer:
         device = get_device()
         model.to(device)
 
+        profile = os.environ.get("CH_PROFILE", "0") not in {"0", "", "false", "False"}
+        profile_first = int(os.environ.get("CH_PROFILE_FIRST", "5"))
+        profile_every = int(os.environ.get("CH_PROFILE_EVERY", str(getattr(args, "logging_steps", 50) or 50)))
+
+        def _sync():
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+
         if getattr(args, "compression_head_freeze_base_model", True):
             freeze_model_parameters(model)
             for p in getattr(model, "compression_head", nn.Module()).parameters():
@@ -240,95 +249,151 @@ class MyTrainer:
         optimizer.zero_grad(set_to_none=True)
         pbar = tqdm(total=total_update_steps, desc="train_compression_head")
 
+        prev_iter_end = time.perf_counter()
         while update_step < total_update_steps:
             for _epoch in range(num_epochs):
                 for batch in train_loader:
                     if update_step >= total_update_steps:
                         break
-                input_ids = batch["input_ids"].to(device)
-                attention_mask = batch["attention_mask"].to(device)
-                labels = batch.get("labels", input_ids).to(device)
+                    t_batch_ready = time.perf_counter()
+                    data_wait_s = t_batch_ready - prev_iter_end
 
-                if input_ids.ndim == 3 and input_ids.shape[1] == 1:
-                    input_ids = input_ids.squeeze(1)
-                if attention_mask.ndim == 3 and attention_mask.shape[1] == 1:
-                    attention_mask = attention_mask.squeeze(1)
-                if labels.ndim == 3 and labels.shape[1] == 1:
-                    labels = labels.squeeze(1)
-                if input_ids.ndim != 2 or attention_mask.ndim != 2 or labels.ndim != 2:
-                    raise ValueError(
-                        f"Expected batch tensors to be [B, T], got input_ids={tuple(input_ids.shape)} "
-                        f"attention_mask={tuple(attention_mask.shape)} labels={tuple(labels.shape)}"
+                    t0 = time.perf_counter()
+                    input_ids = batch["input_ids"].to(device)
+                    attention_mask = batch["attention_mask"].to(device)
+                    labels = batch.get("labels", input_ids).to(device)
+                    _sync()
+                    h2d_s = time.perf_counter() - t0
+
+                    if input_ids.ndim == 3 and input_ids.shape[1] == 1:
+                        input_ids = input_ids.squeeze(1)
+                    if attention_mask.ndim == 3 and attention_mask.shape[1] == 1:
+                        attention_mask = attention_mask.squeeze(1)
+                    if labels.ndim == 3 and labels.shape[1] == 1:
+                        labels = labels.squeeze(1)
+                    if input_ids.ndim != 2 or attention_mask.ndim != 2 or labels.ndim != 2:
+                        raise ValueError(
+                            f"Expected batch tensors to be [B, T], got input_ids={tuple(input_ids.shape)} "
+                            f"attention_mask={tuple(attention_mask.shape)} labels={tuple(labels.shape)}"
+                        )
+
+                    t0 = time.perf_counter()
+                    prefix_lengths = self._sample_prefix_lengths(attention_mask)
+                    prefix_s = time.perf_counter() - t0
+
+                    t0 = time.perf_counter()
+                    out = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                        prefix_lengths=prefix_lengths,
+                        output_hidden_states=True,
+                        return_dict=True,
                     )
+                    _sync()
+                    fwd1_s = time.perf_counter() - t0
+                    base_loss = out.loss
 
-                prefix_lengths = self._sample_prefix_lengths(attention_mask)
+                    if out.compression_embeds is None or out.compression_embeds_all is None or out.hidden_states is None:
+                        raise RuntimeError("Model did not return compression embeddings and hidden states.")
 
-                out = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                    prefix_lengths=prefix_lengths,
-                    output_hidden_states=True,
-                    return_dict=True,
-                )
-                base_loss = out.loss
+                    t0 = time.perf_counter()
+                    token_embeddings = model.get_input_embeddings()(input_ids)
+                    _sync()
+                    embed_s = time.perf_counter() - t0
 
-                if out.compression_embeds is None or out.compression_embeds_all is None or out.hidden_states is None:
-                    raise RuntimeError("Model did not return compression embeddings and hidden states.")
+                    t0 = time.perf_counter()
+                    inputs_embeds_new, attention_mask_new, labels_new = self._build_compressed_inputs(
+                        compression_embeds=out.compression_embeds,
+                        token_embeddings=token_embeddings,
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        prefix_lengths=prefix_lengths,
+                    )
+                    build_s = time.perf_counter() - t0
 
-                token_embeddings = model.get_input_embeddings()(input_ids)
-                inputs_embeds_new, attention_mask_new, labels_new = self._build_compressed_inputs(
-                    compression_embeds=out.compression_embeds,
-                    token_embeddings=token_embeddings,
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    prefix_lengths=prefix_lengths,
-                )
+                    t0 = time.perf_counter()
+                    out2 = model(
+                        inputs_embeds=inputs_embeds_new,
+                        attention_mask=attention_mask_new,
+                        labels=labels_new,
+                        return_dict=True,
+                    )
+                    _sync()
+                    fwd2_s = time.perf_counter() - t0
+                    after_loss = out2.loss
 
-                out2 = model(
-                    inputs_embeds=inputs_embeds_new,
-                    attention_mask=attention_mask_new,
-                    labels=labels_new,
-                    return_dict=True,
-                )
-                after_loss = out2.loss
+                    t0 = time.perf_counter()
+                    teacher = out.hidden_states[-1].detach()  # [B, T, H]
+                    pred_all = out.compression_embeds_all  # [B, T, H]
 
-                teacher = out.hidden_states[-1].detach()  # [B, T, H]
-                pred_all = out.compression_embeds_all  # [B, T, H]
+                    mask_pos = attention_mask.to(dtype=pred_all.dtype)  # [B, T]
+                    idx = (prefix_lengths.to(device=device).to(torch.long) - 1).clamp(min=0, max=mask_pos.shape[1] - 1)
+                    has_idx = prefix_lengths > 0
+                    if has_idx.any():
+                        mask_pos[has_idx, idx[has_idx]] = 0
 
-                mask_pos = attention_mask.to(dtype=pred_all.dtype)  # [B, T]
-                for b in range(mask_pos.shape[0]):
-                    p = int(prefix_lengths[b].item())
-                    if p > 0:
-                        idx = min(max(p - 1, 0), mask_pos.shape[1] - 1)
-                        mask_pos[b, idx] = 0
+                    per_pos_mse = (pred_all - teacher).pow(2).mean(dim=-1)  # [B, T]
+                    distill_loss = (per_pos_mse * mask_pos).sum() / mask_pos.sum().clamp_min(1.0)
+                    distill_s = time.perf_counter() - t0
 
-                per_pos_mse = (pred_all - teacher).pow(2).mean(dim=-1)  # [B, T]
-                distill_loss = (per_pos_mse * mask_pos).sum() / mask_pos.sum().clamp_min(1.0)
+                    alpha = float(getattr(args, "compression_head_distill_alpha", 1.0))
+                    loss = base_loss + after_loss + alpha * distill_loss
 
-                alpha = float(getattr(args, "compression_head_distill_alpha", 1.0))
-                loss = base_loss + after_loss + alpha * distill_loss
+                    t0 = time.perf_counter()
+                    (loss / grad_accum).backward()
+                    _sync()
+                    bwd_s = time.perf_counter() - t0
 
-                (loss / grad_accum).backward()
+                    opt_s = 0.0
+                    micro_step += 1
+                    did_step = False
+                    if micro_step % grad_accum == 0:
+                        t0 = time.perf_counter()
+                        if getattr(args, "max_grad_norm", None) is not None and args.max_grad_norm > 0:
+                            torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
+                        optimizer.step()
+                        if scheduler is not None:
+                            scheduler.step()
+                        optimizer.zero_grad(set_to_none=True)
+                        _sync()
+                        opt_s = time.perf_counter() - t0
+                        did_step = True
 
-                micro_step += 1
-                if micro_step % grad_accum == 0:
-                    if getattr(args, "max_grad_norm", None) is not None and args.max_grad_norm > 0:
-                        torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
-                    optimizer.step()
-                    if scheduler is not None:
-                        scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
+                        if self.writer:
+                            self.writer.add_scalar("loss/total", loss.item(), self.global_step)
+                            self.writer.add_scalar("loss/base", base_loss.item(), self.global_step)
+                            self.writer.add_scalar("loss/after_compression", after_loss.item(), self.global_step)
+                            self.writer.add_scalar("loss/distill", distill_loss.item(), self.global_step)
 
-                    if self.writer:
-                        self.writer.add_scalar("loss/total", loss.item(), self.global_step)
-                        self.writer.add_scalar("loss/base", base_loss.item(), self.global_step)
-                        self.writer.add_scalar("loss/after_compression", after_loss.item(), self.global_step)
-                        self.writer.add_scalar("loss/distill", distill_loss.item(), self.global_step)
+                        self.global_step += 1
+                        update_step += 1
+                        pbar.update(1)
 
-                    self.global_step += 1
-                    update_step += 1
-                    pbar.update(1)
+                    if profile and (update_step <= profile_first or (did_step and update_step % profile_every == 0)):
+                        mem = ""
+                        if device.type == "cuda":
+                            alloc_gb = torch.cuda.memory_allocated() / (1024**3)
+                            max_alloc_gb = torch.cuda.max_memory_allocated() / (1024**3)
+                            mem = f" cuda_mem_gb={alloc_gb:.2f} max={max_alloc_gb:.2f}"
+                        print(
+                            "profile:"
+                            f" upd={update_step}/{total_update_steps}"
+                            f" micro={micro_step}"
+                            f" data_wait={data_wait_s:.3f}s"
+                            f" h2d={h2d_s:.3f}s"
+                            f" prefix={prefix_s:.3f}s"
+                            f" fwd1={fwd1_s:.3f}s"
+                            f" embed={embed_s:.3f}s"
+                            f" build={build_s:.3f}s"
+                            f" fwd2={fwd2_s:.3f}s"
+                            f" distill={distill_s:.3f}s"
+                            f" bwd={bwd_s:.3f}s"
+                            f" opt={opt_s:.3f}s"
+                            f"{mem}"
+                        )
+
+                    prev_iter_end = time.perf_counter()
                     if update_step >= total_update_steps:
                         break
                 if update_step >= total_update_steps:
