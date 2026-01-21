@@ -221,7 +221,7 @@ def main():
         "--compression_head_checkpoint",
         type=str,
         required=True,
-        help="Path to compression_head.pt checkpoint file",
+        help="Path to a Hugging Face checkpoint directory (preferred) or legacy compression_head.pt file",
     )
     parser.add_argument(
         "--limit_samples",
@@ -290,20 +290,33 @@ def main():
     torch_dtype = _resolve_torch_dtype(args.dtype)
     device = get_device()
 
-    # Load base model
-    print(f"Loading base model from {args.model_checkpoint}...")
-    model = LlamaForCausalLMCompressionHead.from_pretrained(
-        args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
-    )
+    # Load model + compression head.
+    # Preferred: HF checkpoint directory saved via `save_pretrained()`.
+    if os.path.isdir(args.compression_head_checkpoint) and os.path.exists(
+        os.path.join(args.compression_head_checkpoint, "config.json")
+    ):
+        print(f"Loading compression-head model from HF checkpoint: {args.compression_head_checkpoint}...")
+        model = LlamaForCausalLMCompressionHead.from_pretrained(
+            args.compression_head_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
+        )
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(args.compression_head_checkpoint)
+        except Exception:
+            tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
+    else:
+        # Legacy: base model from model_checkpoint + compression_head.pt state dict.
+        print(f"Loading base model from {args.model_checkpoint}...")
+        model = LlamaForCausalLMCompressionHead.from_pretrained(
+            args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
+        )
 
-    # Load compression head checkpoint
-    print(f"Loading compression head from {args.compression_head_checkpoint}...")
-    checkpoint = torch.load(args.compression_head_checkpoint, map_location=device)
-    if "compression_head" in checkpoint and checkpoint["compression_head"] is not None:
-        model.compression_head.load_state_dict(checkpoint["compression_head"])
-        print("Loaded compression_head state dict")
+        print(f"Loading compression head from legacy checkpoint: {args.compression_head_checkpoint}...")
+        checkpoint = torch.load(args.compression_head_checkpoint, map_location=device)
+        if "compression_head" in checkpoint and checkpoint["compression_head"] is not None:
+            model.compression_head.load_state_dict(checkpoint["compression_head"])
+            print("Loaded compression_head state dict")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"

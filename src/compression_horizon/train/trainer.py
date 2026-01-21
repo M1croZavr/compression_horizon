@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import time
@@ -463,16 +464,23 @@ class MyTrainer:
         pbar.close()
 
         os.makedirs(args.output_dir, exist_ok=True)
-        save_path = os.path.join(args.output_dir, "compression_head.pt")
-        torch.save(
-            {
-                "compression_head": (
-                    getattr(model, "compression_head", None).state_dict() if hasattr(model, "compression_head") else None
-                ),
-                "args": getattr(args, "to_dict", lambda: {})(),
-            },
-            save_path,
-        )
+        # Save full compression-head model as a Hugging Face checkpoint.
+        # This enables `from_pretrained()` loading without custom torch.load plumbing.
+        if not hasattr(model, "save_pretrained"):
+            raise RuntimeError("Expected a Hugging Face PreTrainedModel with save_pretrained().")
+        model.save_pretrained(args.output_dir)
+        if self.processing_class is not None and hasattr(self.processing_class, "save_pretrained"):
+            self.processing_class.save_pretrained(args.output_dir)
+
+        # Persist training args for easy provenance/inference in downstream scripts.
+        try:
+            args_dict = getattr(args, "to_dict", lambda: {})()
+            with open(os.path.join(args.output_dir, "training_args.json"), "w", encoding="utf-8") as f:
+                json.dump(args_dict, f, ensure_ascii=False, indent=2, sort_keys=True)
+                f.write("\n")
+        except Exception:
+            # Best-effort; do not fail training on metadata write.
+            pass
         return args.output_dir
 
     def _prepare_embedding_init(self, model):

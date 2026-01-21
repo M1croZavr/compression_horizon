@@ -59,7 +59,7 @@ if __name__ == "__main__":
         "--compression_head_checkpoint",
         type=str,
         required=True,
-        help="Path to compression_head.pt checkpoint file (relative to workdir or absolute).",
+        help="Path to HF checkpoint directory (preferred) or legacy compression_head.pt file (relative to workdir or absolute).",
     )
     parser.add_argument(
         "--model_checkpoint",
@@ -123,7 +123,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--search_checkpoints",
         action="store_true",
-        help="Search for compression_head.pt checkpoints in artifacts/experiments_compression_head/ and evaluate all found.",
+        help="Search for compression-head checkpoints in artifacts/experiments_compression_head/ and evaluate all found.",
     )
     args = parser.parse_args()
     workdir = os.getcwd()
@@ -142,15 +142,29 @@ if __name__ == "__main__":
     checkpoints_to_evaluate = []
 
     if args.search_checkpoints:
-        # Search for compression_head.pt files in artifacts/experiments_compression_head/
+        # Search for checkpoints in artifacts/experiments_compression_head/
+        # - New format: HF checkpoint directory (config.json + model weights)
+        # - Legacy format: compression_head.pt
         search_dir = "artifacts/experiments_compression_head"
         if os.path.exists(search_dir):
             for root, dirs, files in os.walk(search_dir):
                 if "compression_head.pt" in files:
-                    checkpoint_path = os.path.join(root, "compression_head.pt")
-                    checkpoints_to_evaluate.append(checkpoint_path)
+                    checkpoints_to_evaluate.append(os.path.join(root, "compression_head.pt"))
+                    continue
+
+                if "config.json" in files:
+                    has_weights = any(
+                        fn.endswith(".safetensors")
+                        or fn == "pytorch_model.bin"
+                        or fn.endswith(".bin")
+                        or fn.endswith(".bin.index.json")
+                        or fn.startswith("pytorch_model")
+                        for fn in files
+                    )
+                    if has_weights:
+                        checkpoints_to_evaluate.append(root)
         if not checkpoints_to_evaluate:
-            print(f"\033[33mNo compression_head.pt checkpoints found in {search_dir}\033[0m")
+            print(f"\033[33mNo compression-head checkpoints found in {search_dir}\033[0m")
             sys.exit(0)
         print(f"Found {len(checkpoints_to_evaluate)} checkpoints to evaluate")
     else:
@@ -167,17 +181,45 @@ if __name__ == "__main__":
         # Determine model checkpoint
         model_checkpoint = args.model_checkpoint
         if model_checkpoint is None:
-            # Try to infer from checkpoint path or checkpoint file
-            # Check if checkpoint has args saved
-            try:
-                import torch
+            # Try to infer from checkpoint metadata
+            if os.path.isdir(compression_head_checkpoint):
+                # New format: training_args.json written by trainer (best-effort)
+                try:
+                    import json
 
-                checkpoint_data = torch.load(compression_head_checkpoint, map_location="cpu")
-                if "args" in checkpoint_data and isinstance(checkpoint_data["args"], dict):
-                    if "model_checkpoint" in checkpoint_data["args"]:
-                        model_checkpoint = checkpoint_data["args"]["model_checkpoint"]
-            except Exception:
-                pass
+                    args_path = os.path.join(compression_head_checkpoint, "training_args.json")
+                    if os.path.exists(args_path):
+                        with open(args_path, "r", encoding="utf-8") as f:
+                            saved_args = json.load(f)
+                        if isinstance(saved_args, dict) and "model_checkpoint" in saved_args:
+                            model_checkpoint = saved_args["model_checkpoint"]
+                except Exception:
+                    pass
+
+                # Fallback: config.json may contain _name_or_path
+                if model_checkpoint is None:
+                    try:
+                        import json
+
+                        cfg_path = os.path.join(compression_head_checkpoint, "config.json")
+                        if os.path.exists(cfg_path):
+                            with open(cfg_path, "r", encoding="utf-8") as f:
+                                cfg = json.load(f)
+                            if isinstance(cfg, dict) and "_name_or_path" in cfg and cfg["_name_or_path"]:
+                                model_checkpoint = cfg["_name_or_path"]
+                    except Exception:
+                        pass
+            else:
+                # Legacy: torch checkpoint
+                try:
+                    import torch
+
+                    checkpoint_data = torch.load(compression_head_checkpoint, map_location="cpu")
+                    if "args" in checkpoint_data and isinstance(checkpoint_data["args"], dict):
+                        if "model_checkpoint" in checkpoint_data["args"]:
+                            model_checkpoint = checkpoint_data["args"]["model_checkpoint"]
+                except Exception:
+                    pass
 
             # If still not found, try to infer from directory structure
             if model_checkpoint is None:
@@ -189,7 +231,9 @@ if __name__ == "__main__":
 
         # Build experiment suffix from checkpoint path
         rel_checkpoint_path = os.path.relpath(compression_head_checkpoint, workdir)
-        checkpoint_dir = os.path.dirname(rel_checkpoint_path)
+        checkpoint_dir = (
+            rel_checkpoint_path if os.path.isdir(compression_head_checkpoint) else os.path.dirname(rel_checkpoint_path)
+        )
         exp_suffix = checkpoint_dir.replace("artifacts/experiments_compression_head/", "").replace("/", "_")
         if not exp_suffix:
             exp_suffix = "compression_head_eval"
