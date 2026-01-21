@@ -1,9 +1,63 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import Any
 
 from transformers import SchedulerType, TrainingArguments
+
+
+def _parse_cli_dict(value: Any) -> dict[str, Any] | None:
+    """
+    Parse dict-like CLI values.
+
+    Supported forms:
+    - JSON object string: '{"min_lr": 0.0001}'
+    - Comma-separated key=value: 'min_lr=0.0001,foo="bar"'
+    - None / "" / "null" / "none" -> None
+    - dict -> unchanged
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"Expected dict or str for dict-like CLI arg, got {type(value)}")
+
+    s = value.strip()
+    if s == "" or s.lower() in {"none", "null"}:
+        return None
+
+    # Prefer JSON for unambiguous typing.
+    try:
+        parsed = json.loads(s)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if parsed is not None:
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Expected a JSON object for dict-like CLI arg, got {type(parsed)}")
+        return parsed
+
+    # Fallback: key=value[,key=value...] (best-effort typing via json.loads on values).
+    result: dict[str, Any] = {}
+    for chunk in s.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            raise ValueError(f"Invalid dict-like CLI arg chunk (expected key=value): {chunk!r}")
+        key, raw_val = chunk.split("=", 1)
+        key = key.strip()
+        raw_val = raw_val.strip()
+        if key == "":
+            raise ValueError(f"Invalid dict-like CLI arg chunk (empty key): {chunk!r}")
+        try:
+            val = json.loads(raw_val)
+        except json.JSONDecodeError:
+            val = raw_val
+        result[key] = val
+    return result
 
 
 @dataclass
@@ -154,9 +208,16 @@ class MyTrainingArguments(TrainingArguments):
         default="cosine_warmup_with_min_lr",
         metadata={"help": "The scheduler type to use."},
     )
-    lr_scheduler_kwargs: Union[dict[str, Any], str] = field(
+    # NOTE: Keep this as `str` for CLI parsing. It is converted to `dict` in __post_init__.
+    lr_scheduler_kwargs: str = field(
         default_factory=lambda: {"min_lr": 1e-3},
-        metadata={"help": "Additional keyword arguments to pass to the learning rate scheduler."},
+        metadata={
+            "help": (
+                "Additional keyword arguments to pass to the learning rate scheduler. "
+                "Pass as JSON (recommended), e.g. --lr_scheduler_kwargs '{\"min_lr\": 0.0001}', "
+                "or as key=value pairs, e.g. --lr_scheduler_kwargs 'min_lr=0.0001'."
+            )
+        },
     )
     ddp_find_unused_parameters: bool | None = field(
         default=False,
@@ -245,3 +306,8 @@ class MyTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Freeze base LM parameters and train only compression head parameters."},
     )
+
+    def __post_init__(self):
+        # Convert CLI-friendly forms into a real dict early, before base TrainingArguments validation.
+        self.lr_scheduler_kwargs = _parse_cli_dict(getattr(self, "lr_scheduler_kwargs", None))  # type: ignore[assignment]
+        super().__post_init__()
