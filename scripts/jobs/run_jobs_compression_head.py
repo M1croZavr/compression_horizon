@@ -275,7 +275,7 @@ if __name__ == "__main__":
             f"--weight_decay {weight_decay}",
             f"--max_grad_norm {max_grad_norm}",
             f"--warmup_steps {warmup_steps}",
-            f"--logging_steps {logging_steps}",
+            f"--logging_steps {int(logging_steps)}",
             f"--lr_scheduler_type {lr_scheduler_type}",
         ]
 
@@ -344,13 +344,7 @@ if __name__ == "__main__":
 
         cmd_args.append(f"--output_dir {out_dir_name}")
         cmd_args.append(f"--logging_dir {logging_dir}")
-        if num_gpus > 1:
-            script = (
-                f" cd {workdir} && {python_path} -m accelerate.commands.launch "
-                f"--num_processes {num_gpus} --num_machines 1 --module scripts.activation_distillation  {' '.join(cmd_args)}"
-            )
-        else:
-            script = f"bash scripts/jobs/multigpu.sh scripts/activation_distillation.py  {' '.join(cmd_args)}"
+        script = f"bash {workdir}/scripts/jobs/multigpu.sh scripts/activation_distillation.py  {' '.join(cmd_args)}"
         job_desc = f"CH: compression_head {exp_suffix} #{author_name} #multimodal #notify_completed @mrsndmn"
 
         if job_desc in in_progress_job_descs:

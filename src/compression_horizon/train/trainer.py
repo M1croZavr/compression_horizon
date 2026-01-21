@@ -237,7 +237,7 @@ class MyTrainer:
 
         profile = os.environ.get("CH_PROFILE", "0") not in {"0", "", "false", "False"}
         profile_first = int(os.environ.get("CH_PROFILE_FIRST", "5"))
-        profile_every = int(os.environ.get("CH_PROFILE_EVERY", str(getattr(args, "logging_steps", 50) or 50)))
+        profile_every = int(os.environ.get("CH_PROFILE_EVERY", "50"))
 
         def _sync():
             if device.type == "cuda":
@@ -274,6 +274,7 @@ class MyTrainer:
         optimizer, scheduler = self._build_optimizer_and_scheduler(params, num_training_steps=total_update_steps)
 
         model, optimizer, train_loader, scheduler = accelerator.prepare(model, optimizer, train_loader, scheduler)
+        unwrapped_model = accelerator.unwrap_model(model)
         params = [p for p in model.parameters() if p.requires_grad]
 
         update_step = 0
@@ -353,7 +354,8 @@ class MyTrainer:
                         raise RuntimeError("NaN/Inf in compression_embeds_all")
 
                     t0 = time.perf_counter()
-                    token_embeddings = model.get_input_embeddings()(input_ids)
+                    # After `accelerator.prepare`, `model` may be a DDP wrapper without HF convenience methods.
+                    token_embeddings = unwrapped_model.get_input_embeddings()(input_ids)
                     _sync()
                     embed_s = time.perf_counter() - t0
 
@@ -411,7 +413,7 @@ class MyTrainer:
                             has_inf_param = False
                             nan_param_names = []
                             inf_param_names = []
-                            for name, param in accelerator.unwrap_model(model).named_parameters():
+                            for name, param in unwrapped_model.named_parameters():
                                 if param.requires_grad:
                                     if torch.isnan(param).any():
                                         has_nan_param = True
@@ -513,10 +515,9 @@ class MyTrainer:
             os.makedirs(args.output_dir, exist_ok=True)
             # Save full compression-head model as a Hugging Face checkpoint.
             # This enables `from_pretrained()` loading without custom torch.load plumbing.
-            unwrapped = accelerator.unwrap_model(model)
-            if not hasattr(unwrapped, "save_pretrained"):
+            if not hasattr(unwrapped_model, "save_pretrained"):
                 raise RuntimeError("Expected a Hugging Face PreTrainedModel with save_pretrained().")
-            unwrapped.save_pretrained(args.output_dir)
+            unwrapped_model.save_pretrained(args.output_dir)
             if self.processing_class is not None and hasattr(self.processing_class, "save_pretrained"):
                 self.processing_class.save_pretrained(args.output_dir)
 
@@ -948,7 +949,9 @@ class MyTrainer:
             }
 
             if self.args.lr_scheduler_kwargs is not None:
-                assert self.args.lr_scheduler_kwargs["min_lr"] < self.args.learning_rate, "min_lr must be lower than regular LR"
+                assert (
+                    self.args.lr_scheduler_kwargs["min_lr"] < self.args.learning_rate
+                ), f"min_lr must be lower than regular LR, {self.args.lr_scheduler_kwargs['min_lr']} < {self.args.learning_rate}"
 
             lr_scheduler = get_scheduler(
                 name=self.args.lr_scheduler_type, **scheduler_kwargs, scheduler_specific_kwargs=self.args.lr_scheduler_kwargs
