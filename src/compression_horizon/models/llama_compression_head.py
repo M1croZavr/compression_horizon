@@ -42,7 +42,6 @@ class LlamaForCausalLMCompressionHead(LlamaPreTrainedModel, GenerationMixin):
             nn.GELU(),
             nn.Linear(hidden, hidden),
         )
-        self.compression_empty = nn.Parameter(torch.zeros(hidden))
 
         self.post_init()
 
@@ -72,18 +71,17 @@ class LlamaForCausalLMCompressionHead(LlamaPreTrainedModel, GenerationMixin):
     ) -> torch.Tensor:
         # compression_embeds_all: [B, T, H]
         # prefix_lengths: [B] (number of tokens compressed in the original sequence)
+        # prefix_lengths must be >= 1 (enforced by caller)
         bsz, seq_len, hidden = compression_embeds_all.shape
         device = compression_embeds_all.device
-        prefix_lengths = prefix_lengths.to(device=device).view(-1)
+        prefix_lengths = prefix_lengths.to(device=device).view(-1).clamp_min(1)
 
         selected = torch.empty((bsz, hidden), device=device, dtype=compression_embeds_all.dtype)
         for b in range(bsz):
             p = int(prefix_lengths[b].item())
-            if p <= 0:
-                selected[b] = self.compression_empty.to(device=device, dtype=compression_embeds_all.dtype)
-            else:
-                idx = min(max(p - 1, 0), seq_len - 1)
-                selected[b] = compression_embeds_all[b, idx]
+            # p is guaranteed to be >= 1, so we can safely use p - 1 as index
+            idx = min(p - 1, seq_len - 1)
+            selected[b] = compression_embeds_all[b, idx]
         return selected.unsqueeze(1)  # [B, 1, H]
 
     def forward(

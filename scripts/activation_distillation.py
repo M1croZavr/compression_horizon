@@ -239,12 +239,19 @@ if __name__ == "__main__":
 
     torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
     print("torch_dtype", torch_dtype)
-    if getattr(training_args, "train_compression_head", False):
+    if training_args.train_compression_head:
         from compression_horizon.models.llama_compression_head import LlamaForCausalLMCompressionHead
 
         model = LlamaForCausalLMCompressionHead.from_pretrained(
             training_args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
         )
+
+        if training_args.train_compression_head_freeze_llm_backbone:
+            for p in model.model.parameters():
+                p.requires_grad = False
+            for p in model.lm_head.parameters():
+                p.requires_grad = False
+
     else:
         model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, torch_dtype=torch_dtype)
         for p in model.parameters():

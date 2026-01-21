@@ -139,10 +139,11 @@ class MyTrainer:
             raise ValueError(f"Expected attention_mask to be [B, T], got shape {tuple(attention_mask.shape)}")
         device = attention_mask.device
         lengths = attention_mask.sum(dim=1).to(torch.long).clamp_min(1)  # [B]
-        # Sample uniformly per row in [0, lengths[b] - 1] without a Python loop.
+        # Sample uniformly per row in [1, lengths[b]] (ensuring minimum of 1)
+        # u in [0, 1) -> floor(u * lengths) in [0, lengths-1] -> +1 gives [1, lengths]
         u = torch.rand(lengths.shape, device=device, dtype=torch.float32)  # [B] in [0, 1)
-        prefix_lengths = torch.floor(u * lengths.to(torch.float32)).to(torch.long)
-        return torch.minimum(prefix_lengths, lengths - 1)
+        prefix_lengths = (torch.floor(u * lengths.to(torch.float32)).to(torch.long) + 1).clamp_min(1)
+        return torch.minimum(prefix_lengths, lengths).clamp_min(1)
 
     def _build_compressed_inputs(
         self,
@@ -216,8 +217,6 @@ class MyTrainer:
             freeze_model_parameters(model)
             for p in getattr(model, "compression_head", nn.Module()).parameters():
                 p.requires_grad = True
-            if hasattr(model, "compression_empty"):
-                model.compression_empty.requires_grad = True
 
         model.train()
 
@@ -291,11 +290,34 @@ class MyTrainer:
                         return_dict=True,
                     )
                     _sync()
-                    fwd1_s = time.perf_counter() - t0
                     base_loss = out.loss
+
+                    # Check for NaN in base_loss
+                    if torch.isnan(base_loss) or torch.isinf(base_loss):
+                        print(f"DEBUG: NaN/Inf detected in base_loss at step {update_step}, micro_step {micro_step}")
+                        print(f"  base_loss: {base_loss.item()}")
+                        print(f"  input_ids shape: {input_ids.shape}, attention_mask shape: {attention_mask.shape}")
+                        print(f"  prefix_lengths: {prefix_lengths}")
+                        raise RuntimeError(f"NaN/Inf in base_loss: {base_loss.item()}")
 
                     if out.compression_embeds is None or out.compression_embeds_all is None or out.hidden_states is None:
                         raise RuntimeError("Model did not return compression embeddings and hidden states.")
+
+                    # Check for NaN in compression outputs
+                    if torch.isnan(out.compression_embeds).any() or torch.isinf(out.compression_embeds).any():
+                        print(f"DEBUG: NaN/Inf detected in compression_embeds at step {update_step}, micro_step {micro_step}")
+                        print(f"  compression_embeds shape: {out.compression_embeds.shape}")
+                        print(f"  NaN count: {torch.isnan(out.compression_embeds).sum().item()}")
+                        print(f"  Inf count: {torch.isinf(out.compression_embeds).sum().item()}")
+                        raise RuntimeError("NaN/Inf in compression_embeds")
+
+                    if torch.isnan(out.compression_embeds_all).any() or torch.isinf(out.compression_embeds_all).any():
+                        print(
+                            f"DEBUG: NaN/Inf detected in compression_embeds_all at step {update_step}, micro_step {micro_step}"
+                        )
+                        print(f"  compression_embeds_all shape: {out.compression_embeds_all.shape}")
+                        print(f"  NaN count: {torch.isnan(out.compression_embeds_all).sum().item()}")
+                        raise RuntimeError("NaN/Inf in compression_embeds_all")
 
                     t0 = time.perf_counter()
                     token_embeddings = model.get_input_embeddings()(input_ids)
@@ -323,22 +345,17 @@ class MyTrainer:
                     fwd2_s = time.perf_counter() - t0
                     after_loss = out2.loss
 
-                    t0 = time.perf_counter()
-                    teacher = out.hidden_states[-1].detach()  # [B, T, H]
-                    pred_all = out.compression_embeds_all  # [B, T, H]
+                    alpha = args.compression_head_distill_alpha
+                    loss = base_loss + after_loss * alpha
 
-                    mask_pos = attention_mask.to(dtype=pred_all.dtype)  # [B, T]
-                    idx = (prefix_lengths.to(device=device).to(torch.long) - 1).clamp(min=0, max=mask_pos.shape[1] - 1)
-                    has_idx = prefix_lengths > 0
-                    if has_idx.any():
-                        mask_pos[has_idx, idx[has_idx]] = 0
-
-                    per_pos_mse = (pred_all - teacher).pow(2).mean(dim=-1)  # [B, T]
-                    distill_loss = (per_pos_mse * mask_pos).sum() / mask_pos.sum().clamp_min(1.0)
-                    distill_s = time.perf_counter() - t0
-
-                    alpha = float(getattr(args, "compression_head_distill_alpha", 1.0))
-                    loss = base_loss + after_loss + alpha * distill_loss
+                    # Check for NaN in total loss
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        print(f"DEBUG: NaN/Inf detected in total loss at step {update_step}, micro_step {micro_step}")
+                        print(f"  loss: {loss.item()}")
+                        print(f"  base_loss: {base_loss.item()}")
+                        print(f"  after_loss: {after_loss.item()}")
+                        print(f"  alpha: {alpha}")
+                        raise RuntimeError(f"NaN/Inf in total loss: {loss.item()}")
 
                     t0 = time.perf_counter()
                     (loss / grad_accum).backward()
@@ -350,12 +367,40 @@ class MyTrainer:
                     did_step = False
                     if micro_step % grad_accum == 0:
                         t0 = time.perf_counter()
-                        if getattr(args, "max_grad_norm", None) is not None and args.max_grad_norm > 0:
-                            torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
-                        optimizer.step()
-                        if scheduler is not None:
-                            scheduler.step()
-                        optimizer.zero_grad(set_to_none=True)
+
+                        skip_optimizer = False
+                        if not skip_optimizer:
+                            if getattr(args, "max_grad_norm", None) is not None and args.max_grad_norm > 0:
+                                torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
+
+                            optimizer.step()
+
+                            # Check for NaN/Inf in model parameters after optimizer step
+                            has_nan_param = False
+                            has_inf_param = False
+                            nan_param_names = []
+                            inf_param_names = []
+                            for name, param in model.named_parameters():
+                                if param.requires_grad:
+                                    if torch.isnan(param).any():
+                                        has_nan_param = True
+                                        nan_param_names.append(name)
+                                    if torch.isinf(param).any():
+                                        has_inf_param = True
+                                        inf_param_names.append(name)
+
+                            if has_nan_param or has_inf_param:
+                                print(f"DEBUG: NaN/Inf detected in model parameters after optimizer step {update_step}")
+                                if has_nan_param:
+                                    print(f"  NaN parameters: {nan_param_names}")
+                                if has_inf_param:
+                                    print(f"  Inf parameters: {inf_param_names}")
+                                print("  This may indicate learning rate is too high or numerical instability")
+                                # Don't raise here, but log it for debugging
+
+                            if scheduler is not None:
+                                scheduler.step()
+                            optimizer.zero_grad(set_to_none=True)
                         _sync()
                         opt_s = time.perf_counter() - t0
                         did_step = True
@@ -364,10 +409,26 @@ class MyTrainer:
                             self.writer.add_scalar("loss/total", loss.item(), self.global_step)
                             self.writer.add_scalar("loss/base", base_loss.item(), self.global_step)
                             self.writer.add_scalar("loss/after_compression", after_loss.item(), self.global_step)
-                            self.writer.add_scalar("loss/distill", distill_loss.item(), self.global_step)
+                            # Log learning rate
+                            current_lr = optimizer.param_groups[0]["lr"]
+                            self.writer.add_scalar("train/learning_rate", current_lr, self.global_step)
 
                         self.global_step += 1
                         update_step += 1
+
+                        # Format loss values safely (handle NaN/Inf)
+                        def safe_format(val):
+                            if torch.isnan(val) or torch.isinf(val):
+                                return "nan" if torch.isnan(val) else "inf"
+                            return f"{val.item():.4f}"
+
+                        pbar.set_postfix(
+                            {
+                                "loss": safe_format(loss),
+                                "base": safe_format(base_loss),
+                                "after": safe_format(after_loss),
+                            }
+                        )
                         pbar.update(1)
 
                     if profile and (update_step <= profile_first or (did_step and update_step % profile_every == 0)):
@@ -383,11 +444,9 @@ class MyTrainer:
                             f" data_wait={data_wait_s:.3f}s"
                             f" h2d={h2d_s:.3f}s"
                             f" prefix={prefix_s:.3f}s"
-                            f" fwd1={fwd1_s:.3f}s"
                             f" embed={embed_s:.3f}s"
                             f" build={build_s:.3f}s"
                             f" fwd2={fwd2_s:.3f}s"
-                            f" distill={distill_s:.3f}s"
                             f" bwd={bwd_s:.3f}s"
                             f" opt={opt_s:.3f}s"
                             f"{mem}"
@@ -409,9 +468,6 @@ class MyTrainer:
             {
                 "compression_head": (
                     getattr(model, "compression_head", None).state_dict() if hasattr(model, "compression_head") else None
-                ),
-                "compression_empty": (
-                    getattr(model, "compression_empty", None).detach().cpu() if hasattr(model, "compression_empty") else None
                 ),
                 "args": getattr(args, "to_dict", lambda: {})(),
             },
@@ -807,6 +863,9 @@ class MyTrainer:
         return trainable_embeddings
 
     def _build_optimizer_and_scheduler(self, params, num_training_steps=None):
+
+        print("number of optimized params:", sum(p.numel() for p in params))
+
         if self.args.optim == "adamw_torch":
             optimizer = AdamW(
                 params,
@@ -831,6 +890,9 @@ class MyTrainer:
                 "num_warmup_steps": self.args.warmup_steps,
                 "num_training_steps": num_training_steps,
             }
+
+            if self.args.lr_scheduler_kwargs is not None:
+                assert self.args.lr_scheduler_kwargs["min_lr"] < self.args.learning_rate, "min_lr must be lower than regular LR"
 
             lr_scheduler = get_scheduler(
                 name=self.args.lr_scheduler_type, **scheduler_kwargs, scheduler_specific_kwargs=self.args.lr_scheduler_kwargs

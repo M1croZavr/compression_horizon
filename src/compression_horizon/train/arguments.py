@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, Union
 
 from transformers import SchedulerType, TrainingArguments
 
@@ -153,7 +154,7 @@ class MyTrainingArguments(TrainingArguments):
         default="cosine_warmup_with_min_lr",
         metadata={"help": "The scheduler type to use."},
     )
-    lr_scheduler_kwargs: dict | None = field(
+    lr_scheduler_kwargs: Union[dict[str, Any], str] = field(
         default_factory=lambda: {"min_lr": 1e-3},
         metadata={"help": "Additional keyword arguments to pass to the learning rate scheduler."},
     )
@@ -231,6 +232,10 @@ class MyTrainingArguments(TrainingArguments):
     train_compression_head: bool = field(
         default=False,
         metadata={"help": "Train a compression head (no per-sample embedding optimization)."},
+    )
+    train_compression_head_freeze_llm_backbone: bool = field(
+        default=False,
+        metadata={"help": "train_compression_head_freeze_llm_backbone"},
     )
     compression_head_distill_alpha: float = field(
         default=1.0,
