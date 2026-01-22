@@ -219,7 +219,10 @@ if __name__ == "__main__":
         "allenai/Olmo-3-1025-7B",
         "google/gemma-3-4b-pt",
         "google/gemma-3-1b-pt",
+        f"{workdir}/artifacts/experiments_compression_head/ch_head_Llama-3.2-3B-ch-pretrained_epochs_1_schedkw_min_lr=0.00005_limit_1000000_tbs_256_ngpu_8_lr_0p0005_unfrozen",
     ]
+
+    checkpoints = [c.removesuffix("/") for c in checkpoints]
     # checkpoints = []
 
     # Filter checkpoints by --model flag if provided
@@ -242,7 +245,7 @@ if __name__ == "__main__":
     max_optimization_steps_per_token = 1_000
 
     for model_checkpoint in checkpoints:
-        exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[1]}"
+        exp_suffix = f"sl_{max_seq_len}_{model_checkpoint.split('/')[-1]}"
 
         # Build command arguments
         limit_dataset_items = args.limit_dataset_items if args.limit_dataset_items is not None else 10

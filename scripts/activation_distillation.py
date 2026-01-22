@@ -239,7 +239,7 @@ if __name__ == "__main__":
 
     torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
     print("torch_dtype", torch_dtype)
-    if training_args.train_compression_head:
+    if training_args.train_compression_head or "experiments_compression_head/ch_head_" in training_args.model_checkpoint:
         from compression_horizon.models.llama_compression_head import LlamaForCausalLMCompressionHead
 
         model = LlamaForCausalLMCompressionHead.from_pretrained(
