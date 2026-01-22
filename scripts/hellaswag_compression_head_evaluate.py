@@ -214,7 +214,6 @@ def main():
     parser.add_argument(
         "--model_checkpoint",
         type=str,
-        required=True,
         help="Base model checkpoint to use (e.g., meta-llama/Llama-2-7b-hf)",
     )
     parser.add_argument(
@@ -299,10 +298,7 @@ def main():
         model = LlamaForCausalLMCompressionHead.from_pretrained(
             args.compression_head_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
         )
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(args.compression_head_checkpoint)
-        except Exception:
-            tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
+        tokenizer = AutoTokenizer.from_pretrained(args.compression_head_checkpoint)
     else:
         # Legacy: base model from model_checkpoint + compression_head.pt state dict.
         print(f"Loading base model from {args.model_checkpoint}...")
