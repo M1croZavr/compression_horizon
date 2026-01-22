@@ -187,6 +187,8 @@ abbreviation = {
     },
     "model_checkpoint": {
         "HuggingFaceTB/SmolLM2-1.7B": "SLM2-1.7B",
+        "HuggingFaceTB/SmolLM2-360M": "SLM2-360M",
+        "HuggingFaceTB/SmolLM2-135M": "SLM2-135M",
         "Qwen/Qwen3-4B": "Q3-4B",
         "unsloth/Llama-3.2-3B": "L3.2-3B",
         "unsloth/Llama-3.2-1B": "L3.2-1B",

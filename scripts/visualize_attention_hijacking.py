@@ -1,6 +1,6 @@
 import argparse
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,25 +11,74 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
+def detect_dataset_type(ds: Dataset) -> str:
+    """
+    Detect dataset type by checking for key fields.
+
+    Returns:
+        "progressive" if embedding and stage_index exist
+        "prefix_tuning" if prefix_embedding exists
+        "unknown" otherwise
+    """
+    if len(ds) == 0:
+        return "unknown"
+    # Check first record for field presence
+    first_record = ds[0]
+    if "prefix_embedding" in first_record:
+        return "prefix_tuning"
+    elif "embedding" in first_record and "stage_index" in first_record:
+        return "progressive"
+    return "unknown"
+
+
+def load_dataset(dataset_path: str) -> Tuple[Dataset, str]:
+    """
+    Load dataset and detect its type.
+
+    Returns:
+        Tuple of (dataset, dataset_type) where dataset_type is "progressive" or "prefix_tuning"
+    """
+    ds = Dataset.load_from_disk(dataset_path)
+    dataset_type = detect_dataset_type(ds)
+    return ds, dataset_type
+
+
 def load_progressive_dataset(dataset_path: str) -> Dataset:
-    """Load progressive checkpoint dataset."""
-    return Dataset.load_from_disk(dataset_path)
+    """Load progressive checkpoint dataset (deprecated, use load_dataset instead)."""
+    ds, _ = load_dataset(dataset_path)
+    return ds
 
 
 def filter_records(
     ds: Dataset,
     sample_id: Optional[int] = None,
     stage_index: Optional[int] = None,
+    dataset_type: str = "progressive",
 ) -> List[Dict[str, Any]]:
-    """Filter records by sample_id and/or stage_index."""
-    ds = ds.remove_columns(["orig_embedding", "initialization_embedding"])
+    """
+    Filter records by sample_id and/or stage_index.
+
+    Args:
+        ds: Dataset to filter
+        sample_id: Optional sample_id filter
+        stage_index: Optional stage_index filter (ignored for prefix_tuning datasets)
+        dataset_type: Type of dataset ("progressive" or "prefix_tuning")
+    """
+    # Remove columns that may not exist in all dataset types
+    columns_to_remove = []
+    for col in ["orig_embedding", "initialization_embedding", "initialization_prefix_embedding"]:
+        if col in ds.column_names:
+            columns_to_remove.append(col)
+    if columns_to_remove:
+        ds = ds.remove_columns(columns_to_remove)
 
     rows: List[Dict[str, Any]] = []
     for i in tqdm(range(len(ds)), desc="Filtering records"):
         r = ds[i]
         if sample_id is not None and int(r.get("sample_id", -1)) != int(sample_id):
             continue
-        if stage_index is not None and int(r.get("stage_index", -1)) != int(stage_index):
+        # Only filter by stage_index for progressive datasets
+        if dataset_type == "progressive" and stage_index is not None and int(r.get("stage_index", -1)) != int(stage_index):
             continue
         rows.append(r)
     return rows
@@ -37,16 +86,24 @@ def filter_records(
 
 def collate_stages_by_sample(
     rows: List[Dict[str, Any]],
+    dataset_type: str = "progressive",
 ) -> Dict[int, List[Dict[str, Any]]]:
-    """Group rows by sample_id and sort by stage_index."""
+    """
+    Group rows by sample_id and sort by stage_index (for progressive) or keep single entry (for prefix_tuning).
+
+    For prefix_tuning datasets, each sample has only one entry, so we create a single-item list.
+    """
     by_sid: Dict[int, List[Dict[str, Any]]] = {}
     for r in rows:
         sid = int(r.get("sample_id", -1))
         if sid not in by_sid:
             by_sid[sid] = []
         by_sid[sid].append(r)
-    for sid in by_sid:
-        by_sid[sid].sort(key=lambda x: int(x.get("stage_index", 0)))
+    # For progressive datasets, sort by stage_index
+    # For prefix_tuning, each sample should have only one entry (no stages)
+    if dataset_type == "progressive":
+        for sid in by_sid:
+            by_sid[sid].sort(key=lambda x: int(x.get("stage_index", 0)))
     return by_sid
 
 
@@ -124,13 +181,31 @@ def extract_attention_mass_for_all_seq_lengths(
     for item in tqdm(items, desc="Save results attention mass all seq lengths"):
         members = item["lengths"]
         effective_lengths = [num_compression_tokens + t for t in members]
-        effective_lengths = [e for e in effective_lengths if 1 <= e <= total_seq_len]
+        # Filter to valid lengths: effective_lengths are 1-indexed (total sequence length including prefix)
+        # indices are 0-indexed, so max valid effective_length is total_seq_len, max index is total_seq_len - 1
+        # But we need to be careful: if e = total_seq_len, then idx = total_seq_len - 1 is valid
+        # So we allow e in [1, total_seq_len] which gives idx in [0, total_seq_len - 1]
+        max_valid_idx = prefix_sums.shape[1] - 1  # 0-indexed max index
+        effective_lengths = [e for e in effective_lengths if 1 <= e <= max_valid_idx + 1]
         if not effective_lengths:
             continue
 
         # Compute per-length means: prefix_sums[:, e-1] / e, then average across lengths.
-        idx = torch.tensor([e - 1 for e in effective_lengths], dtype=torch.long)
-        denom = torch.tensor(effective_lengths, dtype=prefix_sums.dtype).unsqueeze(0)
+        # e is 1-indexed effective length, so idx = e - 1 is 0-indexed
+        # Ensure all indices are valid: idx in [0, max_valid_idx]
+        idx_list = []
+        valid_effective_lengths = []
+        for e in effective_lengths:
+            idx_val = e - 1
+            if 0 <= idx_val <= max_valid_idx:
+                idx_list.append(idx_val)
+                valid_effective_lengths.append(e)
+
+        if not idx_list:
+            continue
+
+        idx = torch.tensor(idx_list, dtype=torch.long)
+        denom = torch.tensor(valid_effective_lengths, dtype=prefix_sums.dtype).unsqueeze(0)
         per_length_means = prefix_sums[:, idx] / denom  # [num_layers, num_lengths]
         mean_comp_attn = per_length_means.mean(dim=1)  # [num_layers]
 
@@ -147,6 +222,7 @@ def compute_attention_mass_for_stages(
     device: torch.device,
     attention_block_size: int = 16,
     target_seq_lengths_override: Optional[List[int]] = None,
+    dataset_type: str = "progressive",
 ) -> Dict[int, Dict[int, float]]:
     """
     Compute attention mass percent for all stages.
@@ -154,29 +230,54 @@ def compute_attention_mass_for_stages(
     Uses the longest sequence to compute attention once, then extracts attention mass
     for each stage from the full attention map (due to causal attention mask).
 
+    For prefix_tuning datasets, computes attention across different sequence lengths
+    using the same prefix embedding.
+
     Args:
         model: Language model
         tokenizer: Tokenizer
-        stages: List of stage records, sorted by stage_index
+        stages: List of stage records, sorted by stage_index (progressive) or single entry (prefix_tuning)
         device: Device to run on
+        dataset_type: Type of dataset ("progressive" or "prefix_tuning")
 
     Returns:
-        Dictionary mapping stage_seq_len to layer_index to attention_mass_percent
+        Dictionary mapping seq_len to layer_index to attention_mass_percent
     """
     if not stages:
         return {}
 
-    # Find the longest sequence and get its compression embeddings and text
-    longest_stage = max(stages, key=lambda s: int(s.get("stage_seq_len", 0)))
-    max_seq_len = int(longest_stage.get("stage_seq_len", -1))
-
-    if max_seq_len < 1:
-        return {}
-
-    # Extract compression embeddings for longest sequence
-    embedding = longest_stage.get("embedding")
-    if embedding is None:
-        return {}
+    # Get the stage record (for prefix_tuning, there's only one; for progressive, use the longest)
+    if dataset_type == "prefix_tuning":
+        stage_record = stages[0]
+        # For prefix tuning, extract sequence length from tokenized text
+        text = stage_record.get("text", "")
+        if not isinstance(text, str) or text.strip() == "":
+            return {}
+        # Tokenize to get actual sequence length
+        enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+        max_seq_len = enc["input_ids"].shape[1]
+        # Extract prefix embedding
+        embedding = stage_record.get("prefix_embedding")
+        if embedding is None:
+            return {}
+        # Get number of virtual tokens
+        num_compression_tokens = int(stage_record.get("num_virtual_tokens", 1))
+    else:
+        # Progressive: find the longest sequence
+        longest_stage = max(stages, key=lambda s: int(s.get("stage_seq_len", 0)))
+        max_seq_len = int(longest_stage.get("stage_seq_len", -1))
+        if max_seq_len < 1:
+            return {}
+        # Extract compression embeddings
+        embedding = longest_stage.get("embedding")
+        if embedding is None:
+            return {}
+        # Get number of compression tokens
+        num_compression_tokens = int(longest_stage.get("num_compression_tokens", 1))
+        # Get text
+        text = longest_stage.get("text", "")
+        if not isinstance(text, str) or text.strip() == "":
+            return {}
 
     # Convert to tensor
     if isinstance(embedding, list):
@@ -184,45 +285,239 @@ def compute_attention_mass_for_stages(
     else:
         compression_embeddings = torch.tensor(embedding, dtype=torch.float32)
 
-    # Get number of compression tokens
-    num_compression_tokens = int(longest_stage.get("num_compression_tokens", 1))
+    # Get model's hidden size for validation
+    model_hidden_size = model.config.hidden_size
 
-    # Get text
-    text = longest_stage.get("text", "")
-    if not isinstance(text, str) or text.strip() == "":
-        return {}
+    # For prefix tuning, embeddings are stored as PEFT module state and may need special handling
+    if dataset_type == "prefix_tuning":
+        # Prefix tuning embeddings are stored as PEFT parameters which may have different shapes
+        # We need to use PEFT to properly convert them to the format needed for attention computation
+        try:
+            from peft import PrefixTuningConfig, TaskType, get_peft_model
+        except ImportError:
+            raise ImportError("peft is required for prefix tuning visualization. Install it (e.g. `uv add peft`).")
+
+        # Create a PEFT model to properly handle prefix embeddings
+        peft_config = PrefixTuningConfig(
+            task_type=TaskType.CAUSAL_LM,
+            num_virtual_tokens=num_compression_tokens,
+        )
+        peft_model = get_peft_model(model, peft_config).to(device)
+
+        # Find the prefix embedding parameter in the PEFT model
+        prefix_param_name = None
+        for name, param in peft_model.named_parameters():
+            if param.requires_grad and param.ndim == 2 and param.shape[0] == num_compression_tokens:
+                prefix_param_name = name
+                break
+
+        if prefix_param_name is None:
+            raise ValueError("Could not find prefix embedding parameter in PEFT model.")
+
+        # Load the saved prefix embedding into the PEFT model parameter
+        original_shape = compression_embeddings.shape
+        print(f"Original prefix embedding shape: {original_shape}, num_virtual_tokens: {num_compression_tokens}")
+
+        # Reshape to match PEFT parameter shape (which may be different from model hidden_size)
+        target_param = dict(peft_model.named_parameters())[prefix_param_name]
+        target_shape = target_param.shape
+        print(f"PEFT parameter shape: {target_shape}")
+
+        # Reshape the embedding to match the PEFT parameter shape
+        if compression_embeddings.shape != target_shape:
+            total_elements = compression_embeddings.numel()
+            if total_elements == target_param.numel():
+                compression_embeddings = compression_embeddings.reshape(target_shape)
+                print(f"Reshaped prefix embedding from {original_shape} to {target_shape}")
+            else:
+                raise ValueError(
+                    f"Cannot reshape prefix embedding from {original_shape} (total: {total_elements}) "
+                    f"to PEFT parameter shape {target_shape} (total: {target_param.numel()}). "
+                    f"Element counts don't match."
+                )
+
+        # Set the PEFT parameter
+        with torch.no_grad():
+            target_param.data = compression_embeddings.to(device).to(target_param.dtype)
+
+        # Now we'll use the PEFT model for forward pass, which will properly handle the prefix embeddings
+        use_peft_model = True
+    else:
+        # Progressive: reshape compression embeddings to correct shape: [num_compression_tokens, hidden_size]
+        # Handle different possible shapes the embedding might be stored in
+        original_shape = compression_embeddings.shape
+        print(
+            f"Original embedding shape: {original_shape}, model hidden_size: {model_hidden_size}, num_compression_tokens: {num_compression_tokens}"
+        )
+        use_peft_model = False
+
+        # Progressive training: handle shape reshaping
+        if len(original_shape) == 1:
+            # Flattened: reshape to [num_compression_tokens, hidden_size]
+            total_elements = compression_embeddings.numel()
+            if total_elements % model_hidden_size == 0:
+                num_tokens_from_shape = total_elements // model_hidden_size
+                compression_embeddings = compression_embeddings.reshape(num_tokens_from_shape, model_hidden_size)
+                if num_tokens_from_shape != num_compression_tokens:
+                    print(
+                        f"Warning: Reshaped embedding from {original_shape} to [{num_tokens_from_shape}, {model_hidden_size}], but expected {num_compression_tokens} tokens. Using {num_tokens_from_shape}."
+                    )
+                    num_compression_tokens = num_tokens_from_shape
+            else:
+                raise ValueError(
+                    f"Cannot reshape embedding from shape {original_shape} (total elements: {total_elements}) "
+                    f"to [num_tokens, hidden_size={model_hidden_size}]. Total elements must be divisible by hidden_size."
+                )
+        elif len(original_shape) == 2:
+            # Should be [num_compression_tokens, hidden_size] or [hidden_size, num_compression_tokens]
+            if original_shape[1] == model_hidden_size:
+                # Already correct shape [num_compression_tokens, hidden_size]
+                if original_shape[0] != num_compression_tokens:
+                    print(
+                        f"Warning: Embedding has {original_shape[0]} tokens but expected {num_compression_tokens}. Using {original_shape[0]}."
+                    )
+                    num_compression_tokens = original_shape[0]
+            elif original_shape[0] == model_hidden_size:
+                # Transpose if it's [hidden_size, num_compression_tokens]
+                compression_embeddings = compression_embeddings.transpose(0, 1)
+                if compression_embeddings.shape[0] != num_compression_tokens:
+                    print(
+                        f"Warning: After transpose, embedding has {compression_embeddings.shape[0]} tokens but expected {num_compression_tokens}. Using {compression_embeddings.shape[0]}."
+                    )
+                    num_compression_tokens = compression_embeddings.shape[0]
+            elif original_shape[0] == num_compression_tokens and original_shape[1] != model_hidden_size:
+                # [num_compression_tokens, wrong_hidden_size] - model mismatch
+                raise ValueError(
+                    f"Model hidden size mismatch: embedding has hidden_size={original_shape[1]}, "
+                    f"but model has hidden_size={model_hidden_size}. "
+                    f"This embedding was created with a different model. "
+                    f"Please use the same model checkpoint that was used to create the embeddings."
+                )
+            elif original_shape[1] == num_compression_tokens and original_shape[0] != model_hidden_size:
+                # [wrong_hidden_size, num_compression_tokens] - transpose and check
+                compression_embeddings = compression_embeddings.transpose(0, 1)
+                if compression_embeddings.shape[1] != model_hidden_size:
+                    raise ValueError(
+                        f"Model hidden size mismatch: embedding has hidden_size={original_shape[0]}, "
+                        f"but model has hidden_size={model_hidden_size}. "
+                        f"This embedding was created with a different model. "
+                        f"Please use the same model checkpoint that was used to create the embeddings."
+                    )
+            elif original_shape[0] * original_shape[1] == num_compression_tokens * model_hidden_size:
+                # Reshape if dimensions are swapped but total elements match
+                compression_embeddings = compression_embeddings.reshape(num_compression_tokens, model_hidden_size)
+            else:
+                # Try to reshape based on total elements
+                total_elements = compression_embeddings.numel()
+                if total_elements % model_hidden_size == 0:
+                    num_tokens_from_shape = total_elements // model_hidden_size
+                    compression_embeddings = compression_embeddings.reshape(num_tokens_from_shape, model_hidden_size)
+                    if num_tokens_from_shape != num_compression_tokens:
+                        print(
+                            f"Warning: Reshaped embedding from {original_shape} to [{num_tokens_from_shape}, {model_hidden_size}], but expected {num_compression_tokens} tokens. Using {num_tokens_from_shape}."
+                        )
+                        num_compression_tokens = num_tokens_from_shape
+                else:
+                    raise ValueError(
+                        f"Cannot reshape embedding from shape {original_shape} to match model hidden_size={model_hidden_size}. "
+                        f"Expected shape [num_compression_tokens={num_compression_tokens}, hidden_size={model_hidden_size}] "
+                        f"or total elements divisible by {model_hidden_size}. "
+                        f"This may indicate the embedding was created with a different model."
+                    )
+        elif len(original_shape) == 3:
+            # Remove batch dimension if present: [1, num_tokens, hidden_size] or [1, hidden_size, num_tokens]
+            if original_shape[0] == 1:
+                compression_embeddings = compression_embeddings.squeeze(0)
+                # Recursively handle the 2D case
+                if compression_embeddings.shape[1] == model_hidden_size:
+                    pass  # Already correct
+                elif compression_embeddings.shape[0] == model_hidden_size:
+                    compression_embeddings = compression_embeddings.transpose(0, 1)
+                else:
+                    total_elements = compression_embeddings.numel()
+                    if total_elements % model_hidden_size == 0:
+                        num_tokens_from_shape = total_elements // model_hidden_size
+                        compression_embeddings = compression_embeddings.reshape(num_tokens_from_shape, model_hidden_size)
+                        if num_tokens_from_shape != num_compression_tokens:
+                            print(
+                                f"Warning: Reshaped embedding from {original_shape} to [{num_tokens_from_shape}, {model_hidden_size}], but expected {num_compression_tokens} tokens. Using {num_tokens_from_shape}."
+                            )
+                            num_compression_tokens = num_tokens_from_shape
+                    else:
+                        raise ValueError(
+                            f"Cannot reshape embedding from shape {original_shape} to match model hidden_size={model_hidden_size}."
+                        )
+            else:
+                raise ValueError(f"Unexpected 3D embedding shape: {original_shape}. Expected [1, num_tokens, hidden_size].")
+        else:
+            raise ValueError(f"Unexpected embedding shape: {original_shape}. Expected 1D, 2D, or 3D tensor.")
+
+        # Final validation for progressive: ensure shape is [num_compression_tokens, hidden_size]
+        if compression_embeddings.shape != (num_compression_tokens, model_hidden_size):
+            # Check if this might be a model mismatch
+            if compression_embeddings.shape[1] != model_hidden_size:
+                raise ValueError(
+                    f"Embedding hidden size mismatch: embedding has hidden_size={compression_embeddings.shape[1]}, "
+                    f"but model has hidden_size={model_hidden_size}. "
+                    f"This suggests the embedding was created with a different model. "
+                    f"Please use the same model checkpoint that was used to create the embeddings. "
+                    f"Embedding shape: {compression_embeddings.shape}, expected: [{num_compression_tokens}, {model_hidden_size}], "
+                    f"original shape: {original_shape}."
+                )
+            else:
+                raise ValueError(
+                    f"After reshaping, embedding shape is {compression_embeddings.shape}, "
+                    f"but expected [{num_compression_tokens}, {model_hidden_size}]. "
+                    f"Original shape was {original_shape}."
+                )
 
     # Compute attention once for the longest sequence
     print(f"Computing attention for longest sequence (length={max_seq_len})...")
-    model.eval()
+    if use_peft_model:
+        print(f"Using PEFT model for prefix tuning with {num_compression_tokens} virtual tokens")
+    else:
+        print(f"Compression embeddings shape: {compression_embeddings.shape}, num_compression_tokens: {num_compression_tokens}")
+
+    model_to_use = peft_model if use_peft_model else model
+    model_to_use.eval()
     with torch.no_grad():
         # Tokenize text
         enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
         input_ids = enc["input_ids"].to(device)
         attention_mask = enc["attention_mask"].to(device)
 
-        # Get input embeddings
-        input_embeddings_layer = model.get_input_embeddings()
-        input_text_embeds = input_embeddings_layer(input_ids)
+        if use_peft_model:
+            # For PEFT, we can use input_ids directly - PEFT will handle prefix embeddings internally
+            # Forward pass with attention outputs
+            outputs = model_to_use(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_attentions=True,
+            )
+        else:
+            # Progressive: manually concatenate compression embeddings
+            # Get input embeddings
+            input_embeddings_layer = model.get_input_embeddings()
+            input_text_embeds = input_embeddings_layer(input_ids)
 
-        # Concatenate compression embeddings with input text embeddings
-        compression_embeddings = compression_embeddings.to(device).to(input_text_embeds.dtype)
-        # Add batch dimension: [1, num_compression_tokens, hidden_size]
-        compression_embeddings = compression_embeddings.unsqueeze(0)
-        input_embeds = torch.cat([compression_embeddings, input_text_embeds], dim=1)
+            # Concatenate compression embeddings with input text embeddings
+            compression_embeddings = compression_embeddings.to(device).to(input_text_embeds.dtype)
+            # Add batch dimension: [1, num_compression_tokens, hidden_size]
+            compression_embeddings = compression_embeddings.unsqueeze(0)
+            input_embeds = torch.cat([compression_embeddings, input_text_embeds], dim=1)
 
-        # Extend attention mask to include compression tokens
-        comp_attention = torch.ones(
-            (attention_mask.shape[0], num_compression_tokens), device=device, dtype=attention_mask.dtype
-        )
-        extended_attention_mask = torch.cat([comp_attention, attention_mask], dim=1)
+            # Extend attention mask to include compression tokens
+            comp_attention = torch.ones(
+                (attention_mask.shape[0], num_compression_tokens), device=device, dtype=attention_mask.dtype
+            )
+            extended_attention_mask = torch.cat([comp_attention, attention_mask], dim=1)
 
-        # Forward pass with attention outputs
-        outputs = model(
-            inputs_embeds=input_embeds,
-            attention_mask=extended_attention_mask,
-            output_attentions=True,
-        )
+            # Forward pass with attention outputs
+            outputs = model_to_use(
+                inputs_embeds=input_embeds,
+                attention_mask=extended_attention_mask,
+                output_attentions=True,
+            )
 
         # Extract attention weights
         attentions = outputs.attentions
@@ -237,8 +532,14 @@ def compute_attention_mass_for_stages(
     if target_seq_lengths_override is not None:
         target_seq_lengths = list(target_seq_lengths_override)
     else:
-        # Get all unique sequence lengths from stages
-        target_seq_lengths = sorted(set(int(s.get("stage_seq_len", -1)) for s in stages if int(s.get("stage_seq_len", -1)) > 0))
+        if dataset_type == "prefix_tuning":
+            # For prefix tuning, use sequence lengths from 1 to max_seq_len
+            target_seq_lengths = list(range(1, max_seq_len + 1))
+        else:
+            # Get all unique sequence lengths from stages
+            target_seq_lengths = sorted(
+                set(int(s.get("stage_seq_len", -1)) for s in stages if int(s.get("stage_seq_len", -1)) > 0)
+            )
 
     # Extract attention mass for all sequence lengths at once
     print(f"Extracting attention mass for {len(target_seq_lengths)} sequence lengths...")
@@ -344,7 +645,7 @@ def main():
         "--dataset_path",
         type=str,
         required=True,
-        help="Path to progressive_prefixes dataset",
+        help="Path to progressive_prefixes or prefix_tuning_prefixes dataset",
     )
     parser.add_argument(
         "--model_checkpoint",
@@ -368,7 +669,7 @@ def main():
         "--min_seq_length",
         type=int,
         default=1,
-        help="Filter out samples whose max stage_seq_len is < this value.",
+        help="Filter out samples whose max sequence length is < this value.",
     )
     parser.add_argument(
         "--attention_block_size",
@@ -384,24 +685,32 @@ def main():
     if output_dir is None:
         # Try to infer from dataset path
         dataset_path = args.dataset_path
-        if "artifacts/experiments" in dataset_path or "artifacts/experiments_progressive" in dataset_path:
+        if (
+            "artifacts/experiments" in dataset_path
+            or "artifacts/experiments_progressive" in dataset_path
+            or "artifacts/experiments_prefix_tuning" in dataset_path
+        ):
             exp_dir = os.path.dirname(dataset_path)
             output_dir = os.path.join(exp_dir, "attention_visualizations")
         else:
             output_dir = "attention_visualizations"
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load dataset
+    # Load dataset and detect type
     print(f"Loading dataset from: {args.dataset_path}")
-    ds = load_progressive_dataset(args.dataset_path)
+    ds, dataset_type = load_dataset(args.dataset_path)
+    print(f"Detected dataset type: {dataset_type}")
+
+    if dataset_type == "unknown":
+        raise ValueError("Could not detect dataset type. Expected 'progressive' or 'prefix_tuning' dataset.")
 
     # Filter records
-    rows = filter_records(ds, sample_id=args.sample_id)
+    rows = filter_records(ds, sample_id=args.sample_id, dataset_type=dataset_type)
     if not rows:
         raise ValueError("No records found with given filters.")
 
     # Group by sample
-    by_sid = collate_stages_by_sample(rows)
+    by_sid = collate_stages_by_sample(rows, dataset_type=dataset_type)
 
     # Determine model checkpoint
     model_checkpoint = args.model_checkpoint
@@ -450,13 +759,23 @@ def main():
         eligible_by_sid: Dict[int, List[Dict[str, Any]]] = {}
         per_sample_max = []
         for _sid, stages in by_sid.items():
-            max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
+            if dataset_type == "prefix_tuning":
+                # For prefix tuning, get sequence length from tokenized text
+                stage_record = stages[0]
+                text = stage_record.get("text", "")
+                if not isinstance(text, str) or text.strip() == "":
+                    continue
+                enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+                max_len = enc["input_ids"].shape[1]
+            else:
+                # Progressive: use stage_seq_len
+                max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
             if max_len >= args.min_seq_length:
                 eligible_by_sid[_sid] = stages
                 per_sample_max.append(max_len)
         if not per_sample_max:
             raise ValueError(
-                f"No samples with max stage_seq_len >= {args.min_seq_length} found. "
+                f"No samples with max sequence length >= {args.min_seq_length} found. "
                 "Lower --min_seq_length or check the dataset."
             )
 
@@ -469,7 +788,9 @@ def main():
 
         all_results: List[Dict[int, Dict[int, float]]] = []
         for sample_id, stages in eligible_by_sid.items():
-            print(f"\nProcessing sample {sample_id} with {len(stages)} stages...")
+            stage_count = len(stages)
+            stage_label = "stages" if dataset_type == "progressive" else "entry"
+            print(f"\nProcessing sample {sample_id} with {stage_count} {stage_label}...")
             results = compute_attention_mass_for_stages(
                 model=model,
                 tokenizer=tokenizer,
@@ -477,6 +798,7 @@ def main():
                 device=device,
                 attention_block_size=args.attention_block_size,
                 target_seq_lengths_override=target_seq_lengths_override,
+                dataset_type=dataset_type,
             )
             if results:
                 all_results.append(results)
@@ -490,17 +812,31 @@ def main():
         )
     else:
         for sample_id, stages in by_sid.items():
-            max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
+            if dataset_type == "prefix_tuning":
+                # For prefix tuning, get sequence length from tokenized text
+                stage_record = stages[0]
+                text = stage_record.get("text", "")
+                if not isinstance(text, str) or text.strip() == "":
+                    print(f"\nSkipping sample {sample_id}: empty text")
+                    continue
+                enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+                max_len = enc["input_ids"].shape[1]
+            else:
+                # Progressive: use stage_seq_len
+                max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
             if max_len < args.min_seq_length:
-                print(f"\nSkipping sample {sample_id}: max stage_seq_len={max_len} < min_seq_length={args.min_seq_length}")
+                print(f"\nSkipping sample {sample_id}: max sequence length={max_len} < min_seq_length={args.min_seq_length}")
                 continue
-            print(f"\nProcessing sample {sample_id} with {len(stages)} stages...")
+            stage_count = len(stages)
+            stage_label = "stages" if dataset_type == "progressive" else "entry"
+            print(f"\nProcessing sample {sample_id} with {stage_count} {stage_label}...")
             results = compute_attention_mass_for_stages(
                 model=model,
                 tokenizer=tokenizer,
                 stages=stages,
                 device=device,
                 attention_block_size=args.attention_block_size,
+                dataset_type=dataset_type,
             )
             output_path = os.path.join(output_dir, f"attention_hijacking_sample_{sample_id}.png")
             plot_attention_hijacking_heatmap(
