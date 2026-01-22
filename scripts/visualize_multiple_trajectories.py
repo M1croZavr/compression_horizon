@@ -583,10 +583,11 @@ def extract_trajectory(
         if not np.isnan(num_pca_explained_99_var):
             all_num_pca_for99_var.append(num_pca_explained_99_var)
 
-        # Compute random projections metric
-        num_random_projections = compute_num_random_projections_explained_99_var(sample_embeddings)
-        if not np.isnan(num_random_projections):
-            all_num_random_projections_for99_var.append(num_random_projections)
+        # Compute random projections metric (only if env var is set)
+        if os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_RAND_PROJ") == "1":
+            num_random_projections = compute_num_random_projections_explained_99_var(sample_embeddings)
+            if not np.isnan(num_random_projections):
+                all_num_random_projections_for99_var.append(num_random_projections)
 
     num_pca_explained_99_var_all_embeds = compute_num_pca_explained_99_var(all_embeds)
 
