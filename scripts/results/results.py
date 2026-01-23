@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Results aggregation and LaTeX table printer for compression_horizon experiments.
+Results aggregation and table printer for compression_horizon experiments.
 
 This script scans experiment artifact folders produced by MyTrainer (see
-src/compression_horizon/train/trainer.py) and builds a LaTeX table with:
+src/compression_horizon/train/trainer.py) and builds a tabulate table with:
 - experiment properties (loss type, init, seq len, etc.)
 - metrics averaged over samples with standard deviation (mean ± std)
 
@@ -224,6 +224,9 @@ abbreviation = {
         "unsloth/Meta-Llama-3.1-8B": "L3.1-8B",
         "allenai/OLMo-1B-hf": "OLM-1B",
         "allenai/Olmo-3-1025-7B": "OLM3-7B",
+        "EleutherAI/pythia-160m": "P-160m",
+        "EleutherAI/pythia-410m": "P-410m",
+        "EleutherAI/pythia-1.4b": "P-1.4b",
     },
 }
 
@@ -527,21 +530,29 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     return summary
 
 
-def to_mean_std_cell(val_mean: Optional[float], val_std: Optional[float], is_int: bool = False) -> str:
+def is_latex_tablefmt(tablefmt: str) -> bool:
+    return tablefmt.startswith("latex")
+
+
+def to_mean_std_cell(val_mean: Optional[float], val_std: Optional[float], is_int: bool = False, use_latex: bool = True) -> str:
     if val_mean is None:
         return ""
     if is_int:
         mean_str = f"{int(round(val_mean))}"
         std_str = f"{int(round(val_std))}" if val_std is not None else "0"
+    else:
+        mean_str = f"{val_mean:.4f}".rstrip("0").rstrip(".")
+        std_str = f"{val_std:.4f}".rstrip("0").rstrip(".") if val_std is not None else "0"
+    if use_latex:
         return f"{mean_str} $\\pm$ {std_str}"
-    # floats
-    mean_str = f"{val_mean:.4f}".rstrip("0").rstrip(".")
-    std_str = f"{val_std:.4f}".rstrip("0").rstrip(".") if val_std is not None else "0"
-    return f"{mean_str} $\\pm$ {std_str}"
+    return f"{mean_str} ± {std_str}"
 
 
 def build_latex_table(
-    summaries: List[RunSummary], include_progressive: bool, selected_columns: Optional[List[str]] = None
+    summaries: List[RunSummary],
+    include_progressive: bool,
+    selected_columns: Optional[List[str]] = None,
+    tablefmt: str = "latex_raw",
 ) -> str:
     """
     Build a LaTeX tabular with key properties and metrics using tabulate.
@@ -559,14 +570,13 @@ def build_latex_table(
         ("embedding_init_method", "Init"),
         ("max_sequence_length", "SeqLen"),
         ("number_of_mem_tokens", "MemT"),
-        ("num_alignment_layers", "AlignLayers"),
+        ("num_alignment_layers", "AlignL"),
         ("fix_position_ids", "FixPosIds"),
         ("model_checkpoint", "Model"),
         ("dtype", "DType"),
         ("max_optimization_steps_per_sample", "MaxSteps"),
         ("learning_rate", "LR"),
         ("low_dim_size", "LowDim"),
-        ("num_alignment_layers", "AlignLayersHybrid"),
     ]
     # Metric columns (non-progressive)
     metric_cols = [
@@ -593,6 +603,7 @@ def build_latex_table(
     if include_progressive or (selected_columns is not None and progressive_metric_cols):
         headers += [hdr for _, hdr, _ in progressive_metric_cols]
 
+    use_latex = is_latex_tablefmt(tablefmt)
     table_rows: List[List[str]] = []
     for s in summaries:
         row: List[str] = []
@@ -603,26 +614,39 @@ def build_latex_table(
                 cell = "True" if val else "False"
             else:
                 cell = "" if val is None else str(val)
-            row.append(latex_escape(cell))
+            row.append(latex_escape(cell) if use_latex else cell)
         # Metrics
         for field_name, _hdr, is_int in metric_cols:
             if field_name == "convergence_after_steps_mean":
                 if s.dataset_type == "compressed_prefixes":
-                    row.append(to_mean_std_cell(s.convergence_after_steps_mean, s.convergence_after_steps_std, is_int=is_int))
+                    row.append(
+                        to_mean_std_cell(
+                            s.convergence_after_steps_mean,
+                            s.convergence_after_steps_std,
+                            is_int=is_int,
+                            use_latex=use_latex,
+                        )
+                    )
                 else:
                     row.append("")
             elif field_name == "final_convergence_mean":
-                row.append(to_mean_std_cell(s.final_convergence_mean, s.final_convergence_std, is_int=is_int))
+                row.append(
+                    to_mean_std_cell(s.final_convergence_mean, s.final_convergence_std, is_int=is_int, use_latex=use_latex)
+                )
             elif field_name == "final_loss_mean":
-                row.append(to_mean_std_cell(s.final_loss_mean, s.final_loss_std, is_int=is_int))
+                row.append(to_mean_std_cell(s.final_loss_mean, s.final_loss_std, is_int=is_int, use_latex=use_latex))
             elif field_name == "information_gain_bits_mean":
-                row.append(to_mean_std_cell(s.information_gain_bits_mean, s.information_gain_bits_std, is_int=is_int))
+                row.append(
+                    to_mean_std_cell(
+                        s.information_gain_bits_mean, s.information_gain_bits_std, is_int=is_int, use_latex=use_latex
+                    )
+                )
         # Progressive extras if requested or explicitly selected
         if include_progressive or (selected_columns is not None and progressive_metric_cols):
             for field_name, _hdr, is_int in progressive_metric_cols:
                 if field_name == "steps_taken_mean":
                     if s.dataset_type == "progressive_prefixes":
-                        row.append(to_mean_std_cell(s.steps_taken_mean, s.steps_taken_std, is_int=is_int))
+                        row.append(to_mean_std_cell(s.steps_taken_mean, s.steps_taken_std, is_int=is_int, use_latex=use_latex))
                     else:
                         row.append("")
                 elif field_name == "convergence_threshold":
@@ -632,8 +656,7 @@ def build_latex_table(
                         row.append("")
         table_rows.append(row)
 
-    # Use latex_raw to respect our own escaping and math cells
-    return tabulate(table_rows, headers=headers, tablefmt="latex_raw")
+    return tabulate(table_rows, headers=headers, tablefmt=tablefmt)
 
 
 def load_dataset_rows(ds_path: str) -> List[dict]:
@@ -665,7 +688,7 @@ def load_dataset_rows(ds_path: str) -> List[dict]:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="results.py",
-        description="Aggregate experiment artifacts and print a LaTeX table.",
+        description="Aggregate experiment artifacts and print a table.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
             """\
@@ -696,7 +719,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--output",
         type=str,
         default=None,
-        help="Optional path to save the LaTeX table; prints to stdout otherwise.",
+        help="Optional path to save the table; prints to stdout otherwise.",
+    )
+    parser.add_argument(
+        "--tablefmt",
+        type=str,
+        default="grid",
+        help="Tabulate table format (e.g., grid, simple, github, latex_raw). Default: grid.",
     )
     parser.add_argument(
         "--columns",
@@ -824,7 +853,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return True
 
     summaries_sorted = [s for s in summaries_sorted if matches_filters(s)]
-    latex = build_latex_table(summaries_sorted, include_progressive=args.include_progressive, selected_columns=args.columns)
+    latex = build_latex_table(
+        summaries_sorted,
+        include_progressive=args.include_progressive,
+        selected_columns=args.columns,
+        tablefmt=args.tablefmt,
+    )
 
     if args.output:
         out_path = Path(args.output)

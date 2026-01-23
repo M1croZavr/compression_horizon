@@ -1164,6 +1164,7 @@ def compute_pairwise_distances(final_embeddings: List[np.ndarray]) -> Tuple[np.n
 def print_statistics_table(
     checkpoint_names: List[str],
     statistics: List[Dict[str, Any]],
+    tablefmt: str = "grid",
 ):
     """Print a statistics table using tabulate.
 
@@ -1204,7 +1205,7 @@ def print_statistics_table(
         "Info Gain (Dataset)",
         "Emb. Stats (Comp/Vocab)",
     ]
-    table = tabulate(table_data, headers=headers, tablefmt="grid", numalign="right", stralign="left")
+    table = tabulate(table_data, headers=headers, tablefmt=tablefmt, numalign="right", stralign="left")
 
     print("\n" + "=" * 80)
     print("Progressive Embeddings Statistics")
@@ -1218,6 +1219,7 @@ def print_pairwise_distances_table(
     l2_distances: np.ndarray,
     l1_distances: np.ndarray,
     cosine_distances: np.ndarray,
+    tablefmt: str = "grid",
 ):
     """Print pairwise distances tables using tabulate.
 
@@ -1246,7 +1248,7 @@ def print_pairwise_distances_table(
                 row.append(f"{l2_distances[i, j]:.4f}")
         l2_table_data.append(row)
     l2_headers = ["Experiment"] + checkpoint_names
-    l2_table = tabulate(l2_table_data, headers=l2_headers, tablefmt="grid", numalign="right", stralign="left")
+    l2_table = tabulate(l2_table_data, headers=l2_headers, tablefmt=tablefmt, numalign="right", stralign="left")
     print(l2_table)
 
     # L1 distances table
@@ -1263,7 +1265,7 @@ def print_pairwise_distances_table(
                 row.append(f"{l1_distances[i, j]:.4f}")
         l1_table_data.append(row)
     l1_headers = ["Experiment"] + checkpoint_names
-    l1_table = tabulate(l1_table_data, headers=l1_headers, tablefmt="grid", numalign="right", stralign="left")
+    l1_table = tabulate(l1_table_data, headers=l1_headers, tablefmt=tablefmt, numalign="right", stralign="left")
     print(l1_table)
 
     # Cosine distances table
@@ -1280,7 +1282,7 @@ def print_pairwise_distances_table(
                 row.append(f"{cosine_distances[i, j]:.4f}")
         cos_table_data.append(row)
     cos_headers = ["Experiment"] + checkpoint_names
-    cos_table = tabulate(cos_table_data, headers=cos_headers, tablefmt="grid", numalign="right", stralign="left")
+    cos_table = tabulate(cos_table_data, headers=cos_headers, tablefmt=tablefmt, numalign="right", stralign="left")
     print(cos_table)
     print("=" * 80 + "\n")
 
@@ -1360,6 +1362,12 @@ def main():
         "Two formats supported: 1) Path-based: 'path1:name1,path2:name2' "
         "2) Positional list: 'name1,name2,name3' (corresponds to --checkpoints order)",
     )
+    parser.add_argument(
+        "--tablefmt",
+        type=str,
+        default="grid",
+        help="Tabulate table format for printed statistics (e.g., grid, simple, github). Default: grid.",
+    )
 
     args = parser.parse_args()
 
@@ -1414,7 +1422,7 @@ def main():
 
     # Print statistics table
     if len(statistics_list) > 0:
-        print_statistics_table(checkpoint_names, statistics_list)
+        print_statistics_table(checkpoint_names, statistics_list, tablefmt=args.tablefmt)
 
     if args.only_stat_table:
         return
