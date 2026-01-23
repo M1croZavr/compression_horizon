@@ -219,6 +219,7 @@ def filter_records(
                 require_embedding_stats=require_emb_stats,
                 allow_info_gain_from_dataset=allow_info_gain_from_dataset,
             ):
+                print("Drop embeddings")
                 ds = ds.remove_columns(["embedding"])
 
     for i in tqdm(range(len(ds)), desc="Filtering records"):

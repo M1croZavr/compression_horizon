@@ -2644,7 +2644,7 @@ class MyTrainer:
                         sample_id_val = int(sample_id_counter + j)
 
                         # Save embeddings to disk in bfloat16 before converting to fp32
-                        if embeddings_dir is not None and stage_index % 50 == 0:
+                        if embeddings_dir is not None and stage_index % 500 == 0:
                             # Get embeddings from GPU tensors and convert to bfloat16 (before moving to CPU and converting to fp32)
                             comp_tokens_bfloat = comp_tokens_gpu[j].to(torch.bfloat16).detach().cpu()
                             orig_comp_tokens_bfloat = orig_comp_tokens_gpu[j].to(torch.bfloat16).detach().cpu()

@@ -71,7 +71,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument(
         "--embedding_init_methods",
         nargs="+",
-        default=["mvnormal"],
+        default=["random0.02"],
         help="List of embedding initialization methods.",
     )
     parser.add_argument(
@@ -86,7 +86,7 @@ def build_args() -> argparse.Namespace:
         "--fix_position_ids",
         nargs="+",
         type=int,
-        default=[0, 1],
+        default=[0],
         help="Fix position ids or not?",
     )
     parser.add_argument(
@@ -99,7 +99,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument(
         "--hybrid_alphas",
         nargs="+",
-        default=[None, "1.0"],
+        default=[None],
         help='List of hybrid alpha values. Use "none" to disable hybrid and use cross-entropy loss.',
     )
 
