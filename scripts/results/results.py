@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import sys
 import textwrap
 from dataclasses import dataclass
@@ -49,6 +50,9 @@ class RunSummary:
     fix_position_ids: Optional[bool] = None
     model_checkpoint: Optional[str] = None
     max_optimization_steps_per_sample: Optional[int] = None
+    learning_rate: Optional[str] = None
+    low_dim_size: Optional[str] = None
+    num_alignment_layers: Optional[str] = None
     # Metrics (aggregated across samples)
     convergence_after_steps_mean: Optional[float] = None
     convergence_after_steps_std: Optional[float] = None
@@ -147,6 +151,29 @@ def parse_run_name_for_properties(run_name: str) -> Dict[str, Optional[str]]:
     return props
 
 
+def parse_cmd_args(run_dir: str) -> Dict[str, str]:
+    cmd_path = Path(run_dir) / "cmd.txt"
+    if not cmd_path.exists():
+        return {}
+    content = cmd_path.read_text(encoding="utf-8").strip()
+    if not content:
+        return {}
+    tokens = shlex.split(content)
+    parsed: Dict[str, str] = {}
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token.startswith("--"):
+            key = token[2:].replace("-", "_")
+            val = "True"
+            if i + 1 < len(tokens) and not tokens[i + 1].startswith("--"):
+                val = tokens[i + 1]
+                i += 1
+            parsed[key] = val
+        i += 1
+    return parsed
+
+
 def discover_run_datasets(base_dirs: Iterable[str]) -> List[Tuple[str, str]]:
     """
     Return list of tuples: (dataset_path, dataset_type)
@@ -230,6 +257,7 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     info_gain_bits = [r.get("information_gain_bits") for r in ds_rows if r.get("information_gain_bits") is not None]
 
     run_dir_parent = str(Path(run_dir).parent)
+    cmd_args = parse_cmd_args(run_dir_parent)
     run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
     if not os.path.exists(run_hash_file):
         print("Can't find run hash file:", run_hash_file)
@@ -268,9 +296,9 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
             if props_from_rows.get("num_compression_tokens") is not None
             else None
         ),
-        num_alignment_layers=(
-            int(props_from_rows["num_alignment_layers"]) if props_from_rows.get("num_alignment_layers") is not None else None
-        ),
+        # num_alignment_layers=(
+        #     int(props_from_rows["num_alignment_layers"]) if props_from_rows.get("num_alignment_layers") is not None else None
+        # ),
         inverted_alignment=None,  # not persisted in rows; unknown
         fix_position_ids=(
             bool(props_from_rows["fix_position_ids"]) if props_from_rows.get("fix_position_ids") is not None else None
@@ -281,6 +309,9 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
             if props_from_rows.get("max_optimization_steps_per_sample") is not None
             else None
         ),
+        learning_rate=cmd_args.get("learning_rate"),
+        low_dim_size=cmd_args.get("low_dim_size"),
+        num_alignment_layers=cmd_args.get("num_alignment_layers"),
         convergence_after_steps_mean=safe_mean([float(x) for x in conv_steps]),
         convergence_after_steps_std=safe_std([float(x) for x in conv_steps]),
         final_convergence_mean=safe_mean([float(x) for x in fin_conv]),
@@ -326,6 +357,7 @@ def aggregate_prefix_tuning(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     info_gain_bits = [r.get("information_gain_bits") for r in ds_rows if r.get("information_gain_bits") is not None]
 
     run_dir_parent = str(Path(run_dir).parent)
+    cmd_args = parse_cmd_args(run_dir_parent)
     run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
     if not os.path.exists(run_hash_file):
         print("Can't find run hash file:", run_hash_file)
@@ -362,9 +394,9 @@ def aggregate_prefix_tuning(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         number_of_mem_tokens=(
             int(props_from_rows["num_virtual_tokens"]) if props_from_rows.get("num_virtual_tokens") is not None else None
         ),
-        num_alignment_layers=(
-            int(props_from_rows["num_alignment_layers"]) if props_from_rows.get("num_alignment_layers") is not None else None
-        ),
+        # num_alignment_layers=(
+        #     int(props_from_rows["num_alignment_layers"]) if props_from_rows.get("num_alignment_layers") is not None else None
+        # ),
         inverted_alignment=None,  # not persisted in rows; unknown
         fix_position_ids=(
             bool(props_from_rows["fix_position_ids"]) if props_from_rows.get("fix_position_ids") is not None else None
@@ -375,6 +407,9 @@ def aggregate_prefix_tuning(run_dir: str, ds_rows: List[dict]) -> RunSummary:
             if props_from_rows.get("max_optimization_steps_per_sample") is not None
             else None
         ),
+        learning_rate=cmd_args.get("learning_rate"),
+        low_dim_size=cmd_args.get("low_dim_size"),
+        num_alignment_layers=cmd_args.get("num_alignment_layers"),
         convergence_after_steps_mean=None,  # N/A for prefix tuning
         convergence_after_steps_std=None,
         final_convergence_mean=safe_mean([float(x) for x in fin_conv]),
@@ -430,6 +465,7 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
             break
 
     run_dir_parent = str(Path(run_dir).parent)
+    cmd_args = parse_cmd_args(run_dir_parent)
     run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
     if not os.path.exists(run_hash_file):
         print("Can't find run hash file:", run_hash_file)
@@ -464,7 +500,7 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
             if props_from_rows.get("num_compression_tokens") is not None
             else None
         ),
-        num_alignment_layers=None,
+        # num_alignment_layers=None,
         inverted_alignment=None,
         fix_position_ids=None,
         model_checkpoint=model_checkpoint,
@@ -473,6 +509,9 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
             if props_from_rows.get("max_optimization_steps_per_sample") is not None
             else None
         ),
+        learning_rate=cmd_args.get("learning_rate"),
+        low_dim_size=cmd_args.get("low_dim_size"),
+        num_alignment_layers=cmd_args.get("num_alignment_layers"),
         convergence_after_steps_mean=None,  # N/A for progressive
         convergence_after_steps_std=None,
         final_convergence_mean=safe_mean([float(x) for x in fin_conv]),
@@ -525,6 +564,9 @@ def build_latex_table(
         ("model_checkpoint", "Model"),
         ("dtype", "DType"),
         ("max_optimization_steps_per_sample", "MaxSteps"),
+        ("learning_rate", "LR"),
+        ("low_dim_size", "LowDim"),
+        ("num_alignment_layers", "AlignLayersHybrid"),
     ]
     # Metric columns (non-progressive)
     metric_cols = [
@@ -663,7 +705,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Specify which columns to include in the table. Available columns: "
         "run_hash, loss_type, hybrid_alpha, embedding_init_method, max_sequence_length, "
         "number_of_mem_tokens, num_alignment_layers, fix_position_ids, model_checkpoint, "
-        "dtype, max_optimization_steps_per_sample, convergence_after_steps_mean, "
+        "dtype, max_optimization_steps_per_sample, learning_rate, low_dim_size, "
+        "num_alignment_layers, "
+        "convergence_after_steps_mean, "
         "final_convergence_mean, final_loss_mean, information_gain_bits_mean, steps_taken_mean, convergence_threshold. "
         "If not specified, all columns are included.",
     )

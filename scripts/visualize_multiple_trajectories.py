@@ -886,6 +886,7 @@ def extract_trajectory(
     stats = {
         "num_embeddings": format_mean_std(all_num_embeddings, precision=2),
         "total_steps": format_mean_std(all_total_steps, precision=2),
+        "steps_taken": format_mean_std(all_total_steps, precision=2),
         "trajectory_length": format_mean_std(all_trajectory_lengths, precision=2),
         "num_pca_for99_var": format_mean_std(all_num_pca_for99_var, precision=2) if len(all_num_pca_for99_var) > 0 else "nan",
         "num_pca_for99_var_all_embeds": num_pca_explained_99_var_all_embeds,
@@ -1181,6 +1182,7 @@ def print_statistics_table(
                 name,
                 stats.get("num_embeddings", "nan"),
                 stats.get("trajectory_length", "nan"),
+                stats.get("steps_taken", "nan"),
                 stats.get("num_pca_for99_var", "nan"),
                 stats.get("num_pca_for99_var_all_embeds", "nan"),
                 stats.get("num_random_projections_for99_var", "nan"),
@@ -1194,6 +1196,7 @@ def print_statistics_table(
         "Experiment",
         "# Compr. Tok",
         "Traj. Len",
+        "Steps Taken",
         "PCA 99%",
         "PCA ALL 99%",
         "Rand. Proj. 99%",

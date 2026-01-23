@@ -208,6 +208,9 @@ if __name__ == "__main__":
     in_progress_job_descs = {job.get("job_desc", "") for job in in_progress_jobs}
 
     checkpoints = [
+        "EleutherAI/pythia-160m",
+        "EleutherAI/pythia-410m",
+        "EleutherAI/pythia-1.4b",
         "HuggingFaceTB/SmolLM2-1.7B",
         "HuggingFaceTB/SmolLM2-135M",
         "HuggingFaceTB/SmolLM2-360M",
