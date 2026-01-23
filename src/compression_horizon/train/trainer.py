@@ -1387,6 +1387,83 @@ class MyTrainer:
                     pca_coefficients_to_save = pca_coefficients.clone().detach().to(torch.float32).cpu().numpy().tolist()
                 else:
                     compression_token_embeddings_cpu = compression_token_embeddings.detach().cpu()
+                # Compute per-sample information gain (CE reduction in bits) with sum reduction
+                if init_method == "pretrained_pca":
+                    final_compression_tokens_for_ig = reconstructed_flat.reshape(
+                        batch_size, num_compression_tokens, hidden_size
+                    )
+                else:
+                    final_compression_tokens_for_ig = compression_token_embeddings
+
+                per_sample_info_gain = []
+                for j in range(batch_size):
+                    sample_input_ids = input_ids[j : j + 1]
+                    sample_attention_mask = attention_mask[j : j + 1]
+
+                    sample_outputs_lm = model(input_ids=sample_input_ids, attention_mask=sample_attention_mask)
+                    sample_logits_lm = sample_outputs_lm.logits
+                    sample_shift_logits_lm = sample_logits_lm[:, :-1, :].contiguous()
+                    sample_shift_labels_lm = sample_input_ids[:, 1:].contiguous()
+                    sample_shift_mask_lm = sample_attention_mask[:, 1:].contiguous()
+
+                    sample_shift_logits_lm_flat = sample_shift_logits_lm.view(-1, sample_shift_logits_lm.size(-1))
+                    sample_shift_labels_lm_flat = sample_shift_labels_lm.view(-1)
+                    sample_shift_mask_lm_flat = sample_shift_mask_lm.view(-1)
+
+                    sample_valid_mask_lm = sample_shift_mask_lm_flat.bool()
+                    if sample_valid_mask_lm.sum() > 0:
+                        sample_ce_lm_sum = F.cross_entropy(
+                            sample_shift_logits_lm_flat[sample_valid_mask_lm],
+                            sample_shift_labels_lm_flat[sample_valid_mask_lm],
+                            reduction="sum",
+                        )
+                        sample_H_LM_bits = sample_ce_lm_sum.item() / math.log(2)
+                    else:
+                        sample_H_LM_bits = 0.0
+
+                    sample_inputs_embeds = token_embeddings[j : j + 1]
+                    sample_compression_tokens = final_compression_tokens_for_ig[j : j + 1]
+                    sample_model_tokens_with_compression = torch.cat(
+                        [
+                            sample_compression_tokens.to(sample_inputs_embeds.device).to(sample_inputs_embeds.dtype),
+                            sample_inputs_embeds,
+                        ],
+                        dim=1,
+                    )
+                    sample_compression_attention_mask = compression_attention_mask[j : j + 1]
+                    sample_attention_mask_with_compression = torch.cat(
+                        [sample_compression_attention_mask, sample_attention_mask], dim=1
+                    )
+
+                    sample_outputs_mem = model(
+                        inputs_embeds=sample_model_tokens_with_compression,
+                        attention_mask=sample_attention_mask_with_compression,
+                    )
+                    sample_logits_mem = sample_outputs_mem.logits
+                    sample_aligned_logits_mem = sample_logits_mem[:, num_compression_tokens:, :]
+                    sample_shift_logits_mem = sample_aligned_logits_mem[:, :-1, :].contiguous()
+                    sample_shift_labels_mem = sample_input_ids[:, 1:].contiguous()
+                    sample_shift_mask_mem = sample_attention_mask[:, 1:].contiguous()
+
+                    sample_shift_logits_mem_flat = sample_shift_logits_mem.view(-1, sample_shift_logits_mem.size(-1))
+                    sample_shift_labels_mem_flat = sample_shift_labels_mem.view(-1)
+                    sample_shift_mask_mem_flat = sample_shift_mask_mem.view(-1)
+
+                    sample_valid_mask_mem = sample_shift_mask_mem_flat.bool()
+                    if sample_valid_mask_mem.sum() > 0:
+                        sample_ce_mem_sum = F.cross_entropy(
+                            sample_shift_logits_mem_flat[sample_valid_mask_mem],
+                            sample_shift_labels_mem_flat[sample_valid_mask_mem],
+                            reduction="sum",
+                        )
+                        sample_H_LM_mem_bits = sample_ce_mem_sum.item() / math.log(2)
+                    else:
+                        sample_H_LM_mem_bits = 0.0
+
+                    sample_info_gain = sample_H_LM_bits - sample_H_LM_mem_bits
+                    per_sample_info_gain.append(sample_info_gain)
+                    print("sample_info_gain", sample_info_gain)
+
                 for j in range(batch_size):
                     sample_attention_mask = attention_mask[j].bool()
                     sample_input_ids = input_ids[j][sample_attention_mask]
@@ -1421,6 +1498,7 @@ class MyTrainer:
                             "num_alignment_layers": self.args.num_alignment_layers,
                             "model_checkpoint": self.args.model_checkpoint,
                             "max_optimization_steps_per_sample": self.args.max_optimization_steps_per_sample,
+                            "information_gain_bits": float(per_sample_info_gain[j]),
                         }
                     )
                     sample_id_counter += 1

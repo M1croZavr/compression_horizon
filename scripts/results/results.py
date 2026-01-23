@@ -56,6 +56,8 @@ class RunSummary:
     final_convergence_std: Optional[float] = None
     final_loss_mean: Optional[float] = None
     final_loss_std: Optional[float] = None
+    information_gain_bits_mean: Optional[float] = None
+    information_gain_bits_std: Optional[float] = None
     # Progressive-only optional extras
     steps_taken_mean: Optional[float] = None
     steps_taken_std: Optional[float] = None
@@ -225,6 +227,7 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     conv_steps = [r.get("convergence_after_steps") for r in ds_rows if r.get("convergence_after_steps") is not None]
     fin_conv = [r.get("final_convergence") for r in ds_rows if r.get("final_convergence") is not None]
     fin_loss = [r.get("final_loss") for r in ds_rows if r.get("final_loss") is not None]
+    info_gain_bits = [r.get("information_gain_bits") for r in ds_rows if r.get("information_gain_bits") is not None]
 
     run_dir_parent = str(Path(run_dir).parent)
     run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
@@ -284,6 +287,8 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         final_convergence_std=safe_std([float(x) for x in fin_conv]),
         final_loss_mean=safe_mean([float(x) for x in fin_loss]),
         final_loss_std=safe_std([float(x) for x in fin_loss]),
+        information_gain_bits_mean=safe_mean([float(x) for x in info_gain_bits]),
+        information_gain_bits_std=safe_std([float(x) for x in info_gain_bits]),
     )
     return summary
 
@@ -318,6 +323,7 @@ def aggregate_prefix_tuning(run_dir: str, ds_rows: List[dict]) -> RunSummary:
 
     fin_conv = [r.get("final_convergence") for r in ds_rows if r.get("final_convergence") is not None]
     fin_loss = [r.get("final_loss") for r in ds_rows if r.get("final_loss") is not None]
+    info_gain_bits = [r.get("information_gain_bits") for r in ds_rows if r.get("information_gain_bits") is not None]
 
     run_dir_parent = str(Path(run_dir).parent)
     run_hash_file = os.path.join(run_dir_parent, "cmd_hash.txt")
@@ -375,6 +381,8 @@ def aggregate_prefix_tuning(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         final_convergence_std=safe_std([float(x) for x in fin_conv]),
         final_loss_mean=safe_mean([float(x) for x in fin_loss]),
         final_loss_std=safe_std([float(x) for x in fin_loss]),
+        information_gain_bits_mean=safe_mean([float(x) for x in info_gain_bits]),
+        information_gain_bits_std=safe_std([float(x) for x in info_gain_bits]),
     )
     return summary
 
@@ -402,6 +410,7 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     fin_conv = [r.get("final_convergence") for r in last_rows if r.get("final_convergence") is not None]
     fin_loss = [r.get("final_loss") for r in last_rows if r.get("final_loss") is not None]
     steps_taken = [r.get("steps_taken") for r in last_rows if r.get("steps_taken") is not None]
+    info_gain_bits = [r.get("information_gain_bits") for r in last_rows if r.get("information_gain_bits") is not None]
 
     # Extract a few more properties if present in rows
     props_from_rows: Dict[str, Optional[object]] = {}
@@ -470,6 +479,8 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         final_convergence_std=safe_std([float(x) for x in fin_conv]),
         final_loss_mean=safe_mean([float(x) for x in fin_loss]),
         final_loss_std=safe_std([float(x) for x in fin_loss]),
+        information_gain_bits_mean=safe_mean([float(x) for x in info_gain_bits]),
+        information_gain_bits_std=safe_std([float(x) for x in info_gain_bits]),
         steps_taken_mean=safe_mean([float(x) for x in steps_taken]),
         steps_taken_std=safe_std([float(x) for x in steps_taken]),
         convergence_threshold=(float(cthr) if cthr is not None else None),
@@ -520,6 +531,7 @@ def build_latex_table(
         ("convergence_after_steps_mean", "ConvSteps", True),  # True => integer formatting
         ("final_convergence_mean", "FinalConv (mean $\\pm$ std)", False),
         ("final_loss_mean", "FinalLoss (mean $\\pm$ std)", False),
+        ("information_gain_bits_mean", "InfoGain (bits)", False),
     ]
     # Progressive specific (optional tail columns)
     progressive_metric_cols = [
@@ -561,6 +573,8 @@ def build_latex_table(
                 row.append(to_mean_std_cell(s.final_convergence_mean, s.final_convergence_std, is_int=is_int))
             elif field_name == "final_loss_mean":
                 row.append(to_mean_std_cell(s.final_loss_mean, s.final_loss_std, is_int=is_int))
+            elif field_name == "information_gain_bits_mean":
+                row.append(to_mean_std_cell(s.information_gain_bits_mean, s.information_gain_bits_std, is_int=is_int))
         # Progressive extras if requested or explicitly selected
         if include_progressive or (selected_columns is not None and progressive_metric_cols):
             for field_name, _hdr, is_int in progressive_metric_cols:
@@ -650,7 +664,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "run_hash, loss_type, hybrid_alpha, embedding_init_method, max_sequence_length, "
         "number_of_mem_tokens, num_alignment_layers, fix_position_ids, model_checkpoint, "
         "dtype, max_optimization_steps_per_sample, convergence_after_steps_mean, "
-        "final_convergence_mean, final_loss_mean, steps_taken_mean, convergence_threshold. "
+        "final_convergence_mean, final_loss_mean, information_gain_bits_mean, steps_taken_mean, convergence_threshold. "
         "If not specified, all columns are included.",
     )
 
