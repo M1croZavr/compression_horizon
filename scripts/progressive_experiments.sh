@@ -11,6 +11,10 @@
 # MODEL_NAME=HuggingFaceTB/SmolLM2-360M
 # MODEL_NAME=HuggingFaceTB/SmolLM2-1.7B
 
+# MODEL_NAME=google/gemma-3-270m
+# MODEL_NAME=google/gemma-3-1b-pt
+# MODEL_NAME=google/gemma-3-4b-pt
+
 # LR check
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.1
@@ -26,10 +30,10 @@ python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --low_dim_projection --low_dim_size 512
 
 # Low Dim = 512 LR check
-# python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.1 --low_dim_projection --low_dim_size 512
-# python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.5 --low_dim_projection --low_dim_size 512
-# python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 1.0 --low_dim_projection --low_dim_size 512
-# python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 5.0 --low_dim_projection --low_dim_size 512
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.1 --low_dim_projection --low_dim_size 512
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.5 --low_dim_projection --low_dim_size 512
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 1.0 --low_dim_projection --low_dim_size 512
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 5.0 --low_dim_projection --low_dim_size 512
 
 # Hybrid alpha
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 4

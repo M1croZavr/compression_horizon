@@ -223,6 +223,7 @@ if __name__ == "__main__":
         "allenai/Olmo-3-1025-7B",
         "google/gemma-3-4b-pt",
         "google/gemma-3-1b-pt",
+        "google/gemma-3-270m",
         f"{workdir}/artifacts/experiments_compression_head/ch_head_Llama-3.2-3B-ch-pretrained_epochs_1_schedkw_min_lr=0.00005_limit_1000000_tbs_256_ngpu_8_lr_0p0005_unfrozen",
     ]
 
