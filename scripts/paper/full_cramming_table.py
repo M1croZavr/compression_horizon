@@ -34,8 +34,8 @@ def main() -> None:
         "7359e14b",  # 512
         "ef2ea924",  # 1024
         # Llama-3.1-8B
-        # '', # 1024
-        # '', # 1568
+        "dfbe32b8",  # 1024
+        "b5aef07e",  # 1568
         # Pythia 160M
         "dbced9cc",  # 32
         "6a93af63",  # 64
@@ -82,7 +82,7 @@ def main() -> None:
 
         summaries_progressive.append(summary)
 
-    columns = ["Experiment", "Max Tokens", "Info Gain", "Accuracy"]
+    columns = ["Experiment", "Train", "Max Tokens", "Info Gain", "Accuracy"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
@@ -105,7 +105,9 @@ def main() -> None:
             summary.information_gain_bits_std,
             use_latex=False,
         )
-        if summary.dataset_type != "progressive_prefixes":
+        is_progressive = summary.dataset_type == "progressive_prefixes"
+        train_type = "progr" if is_progressive else "full"
+        if not is_progressive:
             accuracy = to_mean_std_cell(
                 summary.final_convergence_mean,
                 summary.final_convergence_std,
@@ -120,7 +122,7 @@ def main() -> None:
                 use_latex=False,
             )
 
-        result_table_rows.append([experiment, max_tokens, info_gain, accuracy])
+        result_table_rows.append([experiment, train_type, max_tokens, info_gain, accuracy])
 
     print(tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt))
 
