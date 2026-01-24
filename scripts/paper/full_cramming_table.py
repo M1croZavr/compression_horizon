@@ -1,6 +1,8 @@
 import argparse
 import glob
+import json
 import os
+from types import SimpleNamespace
 
 from scripts.results.results import (
     aggregate_non_progressive,
@@ -24,6 +26,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    cache_filename = "full_cramming_table_cache.json"
+    cache_version = 1
 
     experiments_list = [
         # Llama-3.2-1B
@@ -66,6 +71,51 @@ def main() -> None:
 
         return label
 
+    def summary_to_cache(summary) -> dict:
+        return {
+            "dataset_type": summary.dataset_type,
+            "model_checkpoint": summary.model_checkpoint,
+            "run_hash": summary.run_hash,
+            "information_gain_bits_mean": summary.information_gain_bits_mean,
+            "information_gain_bits_std": summary.information_gain_bits_std,
+            "final_convergence_mean": summary.final_convergence_mean,
+            "final_convergence_std": summary.final_convergence_std,
+            "number_of_compressed_tokens": summary.number_of_compressed_tokens,
+            "number_of_compressed_tokens_std": summary.number_of_compressed_tokens_std,
+            "max_sequence_length": summary.max_sequence_length,
+        }
+
+    def summary_from_cache(data: dict) -> SimpleNamespace:
+        return SimpleNamespace(**data)
+
+    def load_cache(run_dir: str, ds_path: str) -> SimpleNamespace | None:
+        cache_path = os.path.join(run_dir, cache_filename)
+        if not os.path.isfile(cache_path):
+            return None
+        try:
+            with open(cache_path, "r", encoding="utf-8") as cache_file:
+                payload = json.load(cache_file)
+        except (json.JSONDecodeError, OSError):
+            return None
+        if payload.get("version") != cache_version:
+            return None
+        if payload.get("dataset_mtime") != os.path.getmtime(ds_path):
+            return None
+        summary_data = payload.get("summary")
+        if not isinstance(summary_data, dict):
+            return None
+        return summary_from_cache(summary_data)
+
+    def save_cache(run_dir: str, ds_path: str, summary) -> None:
+        cache_path = os.path.join(run_dir, cache_filename)
+        payload = {
+            "version": cache_version,
+            "dataset_mtime": os.path.getmtime(ds_path),
+            "summary": summary_to_cache(summary),
+        }
+        with open(cache_path, "w", encoding="utf-8") as cache_file:
+            json.dump(payload, cache_file)
+
     ordered_summaries = []
     for experiment in tqdm(experiments_list, desc="Processing Runs"):
         rows = None
@@ -73,15 +123,25 @@ def main() -> None:
         if experiment["train"] == "full":
             full_exp_name = glob.glob(f"artifacts/experiments/*{experiment['id']}/")
             assert len(full_exp_name) == 1, f"experiments hashes must be unique: {full_exp_name}"
-            full_exp_name = os.path.join(full_exp_name[0], "compressed_prefixes")
+            run_dir = full_exp_name[0]
+            full_exp_name = os.path.join(run_dir, "compressed_prefixes")
             if os.path.isdir(full_exp_name):
-                rows = load_dataset_rows(full_exp_name)
-                summary = aggregate_non_progressive(full_exp_name, rows)
+                summary = load_cache(run_dir, full_exp_name)
+                if summary is None:
+                    rows = load_dataset_rows(full_exp_name)
+                    summary = aggregate_non_progressive(full_exp_name, rows)
+                    if summary is not None:
+                        save_cache(run_dir, full_exp_name, summary)
         elif experiment["train"] == "progr":
-            full_ds_path = f"artifacts/experiments_progressive/{experiment['id']}/progressive_prefixes/"
+            run_dir = f"artifacts/experiments_progressive/{experiment['id']}"
+            full_ds_path = os.path.join(run_dir, "progressive_prefixes")
             if os.path.isdir(full_ds_path):
-                rows = load_dataset_rows(full_ds_path)
-                summary = aggregate_progressive(full_ds_path, rows)
+                summary = load_cache(run_dir, full_ds_path)
+                if summary is None:
+                    rows = load_dataset_rows(full_ds_path)
+                    summary = aggregate_progressive(full_ds_path, rows)
+                    if summary is not None:
+                        save_cache(run_dir, full_ds_path, summary)
         else:
             raise ValueError(f"Unknown train type: {experiment['train']}")
 
