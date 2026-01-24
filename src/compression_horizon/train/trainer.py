@@ -140,11 +140,12 @@ class MyTrainer:
         model.eval()
         with torch.no_grad():
             # Accuracy by logits
-            convergence_numerator = (
-                compression_outputs.logits[:, num_compression_tokens - 1 : -1].argmax(dim=-1) == input_ids
-            ).sum(
-                dim=-1
-            )  # [batch]
+            # Make sure padding tokens do not match in predictions and ground truths
+            predicted_ids = compression_outputs.logits[:, num_compression_tokens - 1 : -1].argmax(dim=-1)
+            predicted_ids[attention_mask == 0] = -101
+            ground_truth_ids = input_ids.clone()
+            ground_truth_ids[attention_mask == 0] = -100
+            convergence_numerator = (predicted_ids == ground_truth_ids).sum(dim=-1)  # [batch]
             convergence_per_sample = convergence_numerator / attention_mask.sum(dim=-1)  # [batch]
 
             # Accuracy by autoregressive generation
@@ -235,6 +236,7 @@ class MyTrainer:
         optimizer = AdamW(
             [compression_token_embeddings],
             lr=self.args.learning_rate,
+            betas=(self.args.adam_beta1, self.args.adam_beta2),
             weight_decay=self.args.weight_decay,
         )
         lr_scheduler = get_scheduler(
@@ -276,7 +278,11 @@ class MyTrainer:
         lr_val = lr_scheduler.get_last_lr()[0]
         self.writer.add_scalar("train/lr", lr_val, self.global_step)
         if generated_text:
-            self.writer.add_text("train/generated_text", " | ".join(generated_text), self.global_step)
+            self.writer.add_text(
+                "train/generated_text",
+                " | ".join(generated_text),
+                self.global_step,
+            )
         if ground_truth_text:
             self.writer.add_text(
                 "train/ground_truth_text",
@@ -292,7 +298,7 @@ class MyTrainer:
         output_dir = self.args.output_dir
         if output_dir and len(rows) > 0:
             os.makedirs(output_dir, exist_ok=True)
-            save_path = os.path.join(output_dir, "compressed_embeddings.pt")
+            save_path = os.path.join(output_dir, "compression_token_embeddings.pt")
             torch.save(compression_token_embeddings, save_path)
             save_path = os.path.join(output_dir, subdir_name)
             ds = Dataset.from_list(rows)
@@ -337,13 +343,8 @@ class MyTrainer:
 
             optimizer, lr_scheduler = self._build_optimizer_and_scheduler(compression_token_embeddings)
 
-            (
-                loss,
-                alignment_loss,
-                convergence_per_sample,
-                generated_text,
-                ground_truth_text,
-            ) = (None, None, None, None, None)
+            loss = None
+            convergence_per_sample = None
             prev_convergence = None
             total_per_sample_convergence = torch.zeros(
                 [
@@ -432,11 +433,13 @@ class MyTrainer:
                         ground_truth_text,
                     )
 
+                # Maybe change to >=?
                 total_per_sample_convergence[step_i, :] = convergence_per_sample < 1.0
                 total_per_sample_convergence_099[step_i, :] = convergence_per_sample < 0.99
                 total_per_sample_convergence_095[step_i, :] = convergence_per_sample < 0.95
-                prev_convergence = convergence_per_sample == 1.0
-                if (convergence_per_sample == 1.0).all():
+                # !!! WARNING !!!
+                prev_convergence = convergence_per_sample >= 0.99  # 1.0
+                if prev_convergence.all():
                     print(f"Early stopping: compression converged in {step_i} steps")
                     break
 
@@ -464,21 +467,23 @@ class MyTrainer:
                 last_convergence_per_sample = convergence_per_sample.cpu()
                 compression_token_embeddings_cpu = compression_token_embeddings.detach().cpu()
                 for j in range(batch_size):
-                    sample_attention_mask = attention_mask[j].bool()
-                    sample_input_ids = input_ids[j][sample_attention_mask]
+                    sample_attention_mask = attention_mask[j]
+                    sample_input_ids = input_ids[j][sample_attention_mask.bool()]
                     sample_text = tokenizer.decode(sample_input_ids, skip_special_tokens=True)
-                    embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
+                    # Cast to specified dtype
+                    embedding = compression_token_embeddings_cpu[j].to(token_embeddings.dtype).numpy().tolist()
                     compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
                     compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
-                    item_convergence_per_sample = total_per_sample_convergence_sum[j].item()
                     collected_rows.append(
                         {
                             "sample_id": sample_id_counter,
                             "text": sample_text,
+                            "input_ids": sample_input_ids.numpy().tolist(),  # [sequence]
+                            "attention_mask": sample_attention_mask.numpy().tolist(),  # [sequence]
                             "embedding": embedding,  # [mem, hidden]
                             "final_loss": last_loss,
                             "final_convergence": last_convergence_per_sample[j].item(),
-                            "convergence_after_steps": item_convergence_per_sample,
+                            "convergence_after_steps": int(total_per_sample_convergence_sum[j].item()),
                             "convergence_0.99_after_steps": int(total_per_sample_convergence_099_sum[j].item()),
                             "convergence_0.95_after_steps": int(total_per_sample_convergence_095_sum[j].item()),
                             "compression_tokens_mean": compression_token_embeddings_mean,
