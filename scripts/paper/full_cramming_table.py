@@ -1,7 +1,13 @@
 import glob
 import os
 
-from scripts.results.results import aggregate_non_progressive, aggregate_progressive, load_dataset_rows
+from scripts.results.results import (
+    aggregate_non_progressive,
+    aggregate_progressive,
+    load_dataset_rows,
+    to_mean_std_cell,
+)
+from tabulate import tabulate
 from tqdm.auto import tqdm
 
 
@@ -27,9 +33,11 @@ def main():
         full_exp_name = glob.glob(f"artifacts/experiments/*{ds_paths_hashe}/")
         assert len(full_exp_name) == 1, f"experiments hashes must be unique: {full_exp_name}"
         full_exp_name = full_exp_name[0]
+        full_exp_name = os.path.join(full_exp_name, "compressed_prefixes")
 
-        rows = load_dataset_rows(os.path.join(full_exp_name, "compressed_prefixes"))
-        summary = aggregate_non_progressive(ds_paths_hashe, rows)
+        rows = load_dataset_rows(full_exp_name)
+        summary = aggregate_non_progressive(full_exp_name, rows)
+        assert summary is not None
 
         summaries.append(summary)
 
@@ -48,11 +56,53 @@ def main():
         full_ds_path = f"artifacts/experiments_progressive/{ds_path}/progressive_prefixes/"
         rows = load_dataset_rows(full_ds_path)
         summary = aggregate_progressive(full_ds_path, rows)
+        assert summary is not None
+
         summaries_progressive.append(summary)
 
-    # TODO fill the table and print it
-    # columns = ["Experiment", "Info Gain", "Max Tokens", "Accuracy"]
-    # result_table_rows = []
+    columns = ["Experiment", "Info Gain", "Max Tokens", "Accuracy"]
+
+    def format_experiment_label(summary, fallback_label: str) -> str:
+        parts = []
+        if summary.model_checkpoint:
+            parts.append(str(summary.model_checkpoint))
+        if summary.max_sequence_length:
+            parts.append(f"sl{summary.max_sequence_length}")
+        if summary.dataset_type == "progressive_prefixes":
+            parts.append("prog")
+        label = "-".join(parts).strip()
+        if not label:
+            label = fallback_label
+
+        return label
+
+    all_summaries = summaries + summaries_progressive
+
+    result_table_rows = []
+    for summary in all_summaries:
+        experiment = format_experiment_label(summary, fallback_label=str(summary.run_hash or ""))
+        info_gain = to_mean_std_cell(
+            summary.information_gain_bits_mean,
+            summary.information_gain_bits_std,
+            use_latex=False,
+        )
+        if summary.dataset_type != "progressive_prefixes":
+            accuracy = to_mean_std_cell(
+                summary.final_convergence_mean,
+                summary.final_convergence_std,
+                use_latex=False,
+            )
+        else:
+            accuracy = "1.0"
+
+        max_tokens = to_mean_std_cell(
+            summary.max_sequence_length,
+            summary.information_gain_bits_std,
+            use_latex=False,
+        )
+        result_table_rows.append([experiment, info_gain, max_tokens, accuracy])
+
+    print(tabulate(result_table_rows, headers=columns, tablefmt="plain"))
 
 
 if __name__ == "__main__":
