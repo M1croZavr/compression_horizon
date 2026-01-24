@@ -44,7 +44,8 @@ class RunSummary:
     hybrid_alpha: Optional[str] = None
     embedding_init_method: Optional[str] = None
     max_sequence_length: Optional[int] = None
-    number_of_mem_tokens: Optional[int] = None
+    number_of_compressed_tokens: Optional[float] = None
+    number_of_compressed_tokens_std: Optional[float] = None
     num_alignment_layers: Optional[int] = None
     inverted_alignment: Optional[bool] = None
     fix_position_ids: Optional[bool] = None
@@ -294,11 +295,10 @@ def aggregate_non_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         dtype=(props_from_rows.get("dtype")),
         embedding_init_method=embedding_init_method,
         max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
-        number_of_mem_tokens=(
-            int(props_from_rows["num_compression_tokens"])
-            if props_from_rows.get("num_compression_tokens") is not None
-            else None
+        number_of_compressed_tokens=(
+            int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None
         ),
+        number_of_compressed_tokens_std=None,
         # num_alignment_layers=(
         #     int(props_from_rows["num_alignment_layers"]) if props_from_rows.get("num_alignment_layers") is not None else None
         # ),
@@ -394,9 +394,10 @@ def aggregate_prefix_tuning(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         dtype=(props_from_rows.get("dtype")),
         embedding_init_method=embedding_init_method,
         max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
-        number_of_mem_tokens=(
-            int(props_from_rows["num_virtual_tokens"]) if props_from_rows.get("num_virtual_tokens") is not None else None
+        number_of_compressed_tokens=(
+            int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None
         ),
+        number_of_compressed_tokens_std=None,
         # num_alignment_layers=(
         #     int(props_from_rows["num_alignment_layers"]) if props_from_rows.get("num_alignment_layers") is not None else None
         # ),
@@ -449,6 +450,7 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
     fin_loss = [r.get("final_loss") for r in last_rows if r.get("final_loss") is not None]
     steps_taken = [r.get("steps_taken") for r in last_rows if r.get("steps_taken") is not None]
     info_gain_bits = [r.get("information_gain_bits") for r in last_rows if r.get("information_gain_bits") is not None]
+    num_embeddings = [len(rows) for rows in by_sample.values()]
 
     # Extract a few more properties if present in rows
     props_from_rows: Dict[str, Optional[object]] = {}
@@ -498,11 +500,8 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
         embedding_init_method=embedding_init_method,
         dtype=(props_from_rows.get("dtype")),
         max_sequence_length=(int(parsed["max_sequence_length"]) if parsed.get("max_sequence_length") is not None else None),
-        number_of_mem_tokens=(
-            int(props_from_rows["num_compression_tokens"])
-            if props_from_rows.get("num_compression_tokens") is not None
-            else None
-        ),
+        number_of_compressed_tokens=safe_mean([float(x) for x in num_embeddings]),
+        number_of_compressed_tokens_std=safe_std([float(x) for x in num_embeddings]),
         # num_alignment_layers=None,
         inverted_alignment=None,
         fix_position_ids=None,
@@ -569,7 +568,7 @@ def build_latex_table(
         ("hybrid_alpha", "Hybrid $\\alpha$"),
         ("embedding_init_method", "Init"),
         ("max_sequence_length", "SeqLen"),
-        ("number_of_mem_tokens", "MemT"),
+        ("number_of_compressed_tokens", "MemT"),
         ("num_alignment_layers", "AlignL"),
         ("fix_position_ids", "FixPosIds"),
         ("model_checkpoint", "Model"),
@@ -610,7 +609,21 @@ def build_latex_table(
         # Properties
         for field_name, _hdr in prop_cols:
             val = getattr(s, field_name)
-            if isinstance(val, bool):
+            if field_name == "number_of_compressed_tokens":
+                if (
+                    s.dataset_type == "progressive_prefixes"
+                    and s.number_of_compressed_tokens is not None
+                    and s.number_of_compressed_tokens_std is not None
+                ):
+                    cell = to_mean_std_cell(
+                        s.number_of_compressed_tokens,
+                        s.number_of_compressed_tokens_std,
+                        is_int=True,
+                        use_latex=use_latex,
+                    )
+                else:
+                    cell = "" if val is None else str(int(round(val)))
+            elif isinstance(val, bool):
                 cell = "True" if val else "False"
             else:
                 cell = "" if val is None else str(val)
@@ -733,7 +746,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         help="Specify which columns to include in the table. Available columns: "
         "run_hash, loss_type, hybrid_alpha, embedding_init_method, max_sequence_length, "
-        "number_of_mem_tokens, num_alignment_layers, fix_position_ids, model_checkpoint, "
+        "number_of_compressed_tokens, num_alignment_layers, fix_position_ids, model_checkpoint, "
         "dtype, max_optimization_steps_per_sample, learning_rate, low_dim_size, "
         "num_alignment_layers, "
         "convergence_after_steps_mean, "
@@ -811,7 +824,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             str(s.loss_type or ""),
             str(s.embedding_init_method or ""),
             int(s.max_sequence_length or 0),
-            int(s.number_of_mem_tokens or 0),
+            int(s.number_of_compressed_tokens or 0),
         )
 
     summaries_sorted = sorted(summaries, key=sort_key)
@@ -827,10 +840,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         if embedding_init_filter is not None and (s.embedding_init_method or "").lower() != embedding_init_filter.lower():
             return False
         if args.seq_len is not None and (s.max_sequence_length is None or int(s.max_sequence_length) != int(args.seq_len)):
-            return False
-        if args.mem_tokens is not None and (
-            s.number_of_mem_tokens is None or int(s.number_of_mem_tokens) != int(args.mem_tokens)
-        ):
             return False
         if args.align_layers is not None and (
             s.num_alignment_layers is None or int(s.num_alignment_layers) != int(args.align_layers)

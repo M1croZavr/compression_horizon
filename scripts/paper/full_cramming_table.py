@@ -1,3 +1,4 @@
+import argparse
 import glob
 import os
 
@@ -11,7 +12,18 @@ from tabulate import tabulate
 from tqdm.auto import tqdm
 
 
-def main():
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build full cramming results table.")
+    parser.add_argument(
+        "--tablefmt",
+        default="plain",
+        help="Tabulate table format (e.g., plain, github, latex, grid).",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
 
     # Full metrics
     ds_paths_hashes = [
@@ -66,10 +78,7 @@ def main():
         parts = []
         if summary.model_checkpoint:
             parts.append(str(summary.model_checkpoint))
-        if summary.max_sequence_length:
-            parts.append(f"sl{summary.max_sequence_length}")
-        if summary.dataset_type == "progressive_prefixes":
-            parts.append("prog")
+
         label = "-".join(parts).strip()
         if not label:
             label = fallback_label
@@ -92,17 +101,18 @@ def main():
                 summary.final_convergence_std,
                 use_latex=False,
             )
+            max_tokens = summary.max_sequence_length
         else:
             accuracy = "1.0"
+            max_tokens = to_mean_std_cell(
+                summary.number_of_compressed_tokens,
+                summary.number_of_compressed_tokens_std,
+                use_latex=False,
+            )
 
-        max_tokens = to_mean_std_cell(
-            summary.max_sequence_length,
-            summary.information_gain_bits_std,
-            use_latex=False,
-        )
         result_table_rows.append([experiment, info_gain, max_tokens, accuracy])
 
-    print(tabulate(result_table_rows, headers=columns, tablefmt="plain"))
+    print(tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt))
 
 
 if __name__ == "__main__":
