@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -27,37 +26,50 @@ def flatten_embedding(row: Dict[str, Any]) -> np.ndarray:
     return emb.reshape(-1).detach().cpu().numpy()
 
 
-def get_experiment_cache_file(dataset_path: str, model_checkpoint: str) -> str:
-    cache_dir = os.path.join(os.path.dirname(dataset_path), ".cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_key = f"{dataset_path}:{model_checkpoint}"
-    cache_hash = hashlib.md5(cache_key.encode()).hexdigest()
-    return os.path.join(cache_dir, f"visualize_multiple_trajectories_{cache_hash}.json")
+CACHE_VERSION = 1
+CACHE_FILENAME = "low_dimensional_cache.json"
 
 
-def load_experiment_cache(dataset_path: Optional[str], model_checkpoint: Optional[str]) -> Tuple[Dict[str, Any], Optional[str]]:
-    if not dataset_path or not model_checkpoint:
-        return {}, None
-    cache_file = get_experiment_cache_file(dataset_path, model_checkpoint)
+def get_experiment_cache_file(dataset_path: str) -> str:
+    return os.path.join(dataset_path, CACHE_FILENAME)
+
+
+def load_experiment_cache(dataset_path: Optional[str]) -> Tuple[Dict[str, Any], Optional[str], bool]:
+    if not dataset_path:
+        return {}, None, False
+    cache_file = get_experiment_cache_file(dataset_path)
     if not os.path.exists(cache_file):
-        return {}, cache_file
+        return {}, cache_file, False
     try:
         with open(cache_file, "r") as f:
             cache_data = json.load(f)
-            return cache_data if isinstance(cache_data, dict) else {}, cache_file
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"Warning: Failed to load cache file {cache_file}: {e}")
-        return {}, cache_file
+            if not isinstance(cache_data, dict):
+                return {}, cache_file, False
+            cache_version = cache_data.get("cache_version")
+            if cache_version != CACHE_VERSION:
+                raise ValueError(f"Cache version mismatch for {cache_file}: expected {CACHE_VERSION}, got {cache_version}")
+            return cache_data, cache_file, True
+    except (json.JSONDecodeError, IOError, ValueError) as e:
+        raise ValueError(f"Failed to load cache file {cache_file}: {e}") from e
 
 
 def save_experiment_cache(cache_file: Optional[str], cache_data: Dict[str, Any]) -> None:
     if cache_file is None:
         return
     try:
+        cache_data["cache_version"] = CACHE_VERSION
         with open(cache_file, "w") as f:
             json.dump(cache_data, f, indent=2)
     except IOError as e:
         print(f"Warning: Failed to save cache file {cache_file}: {e}")
+
+
+def serialize_array(array: np.ndarray) -> List[Any]:
+    return array.tolist()
+
+
+def deserialize_array(values: List[Any]) -> np.ndarray:
+    return np.array(values, dtype=float)
 
 
 def get_cache_metrics(cache_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -203,15 +215,14 @@ def filter_records(
                 model_checkpoint = ds[0].get("model_checkpoint")
             except Exception:
                 model_checkpoint = None
-
         sample_ids_list = get_sample_ids(ds)
         if model_checkpoint is not None and sample_ids_list:
-            cache_data, _ = load_experiment_cache(dataset_path, model_checkpoint)
+            cache_data, _, cache_loaded = load_experiment_cache(dataset_path)
             require_random_proj = os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_RAND_PROJ") == "1"
             require_info_gain = os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_IG") == "1"
             require_emb_stats = os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_EMB_STATS") == "1"
             allow_info_gain_from_dataset = "information_gain_bits" in ds.column_names
-            if cache_has_metrics(
+            if cache_loaded and cache_has_metrics(
                 cache_data,
                 sample_ids_list,
                 require_random_proj=require_random_proj,
@@ -762,6 +773,24 @@ def extract_trajectory(
         All stats are formatted as mean ± std across all samples in the dataset.
         final_embedding is the last embedding in the trajectory (for the selected sample)
     """
+    cache_data, cache_file, cache_loaded = load_experiment_cache(dataset_path)
+    if cache_loaded:
+        cached_stats = cache_data.get("stats")
+        cached_traj = cache_data.get("trajectory")
+        if not isinstance(cached_stats, dict) or not isinstance(cached_traj, dict):
+            raise ValueError(f"Cache file {cache_file} is missing required fields. Delete it to rebuild.")
+        cached_sample_id = cached_traj.get("sample_id")
+        if sample_id is not None and cached_sample_id is not None and int(cached_sample_id) != int(sample_id):
+            raise ValueError(f"Cache file {cache_file} was built for sample_id={cached_sample_id}. Delete it to rebuild.")
+        cached_embeddings = cached_traj.get("embeddings")
+        cached_labels = cached_traj.get("labels")
+        cached_final_embedding = cached_traj.get("final_embedding")
+        if not cached_embeddings or not cached_labels or cached_final_embedding is None:
+            raise ValueError(f"Cache file {cache_file} is incomplete. Delete it to rebuild.")
+        embeddings = deserialize_array(cached_embeddings)
+        final_embedding = deserialize_array(cached_final_embedding)
+        return embeddings, list(cached_labels), cached_stats, final_embedding
+
     ds = load_progressive_dataset(dataset_path)
     # Get model_checkpoint from dataset if available (for cache checking)
     model_checkpoint_for_cache = None
@@ -771,7 +800,6 @@ def extract_trajectory(
             model_checkpoint_for_cache = first_row.get("model_checkpoint")
         except Exception:
             pass
-    cache_data, cache_file = load_experiment_cache(dataset_path, model_checkpoint_for_cache)
 
     # Load all rows to compute statistics across all samples
     all_rows = filter_records(
@@ -939,6 +967,14 @@ def extract_trajectory(
 
     X = np.stack(embeddings, axis=0)
     final_embedding = embeddings[-1]  # Last embedding
+
+    cache_data["stats"] = stats
+    cache_data["trajectory"] = {
+        "sample_id": int(vis_sample_id),
+        "embeddings": serialize_array(X),
+        "labels": labels,
+        "final_embedding": serialize_array(final_embedding),
+    }
 
     save_experiment_cache(cache_file, cache_data)
 
