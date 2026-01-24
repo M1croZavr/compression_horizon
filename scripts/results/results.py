@@ -533,17 +533,22 @@ def is_latex_tablefmt(tablefmt: str) -> bool:
     return tablefmt.startswith("latex")
 
 
-def to_mean_std_cell(val_mean: Optional[float], val_std: Optional[float], is_int: bool = False, use_latex: bool = True) -> str:
+def to_mean_std_cell(
+    val_mean: Optional[float], val_std: Optional[float], is_int: bool = False, use_latex: bool = True, float_precision=4
+) -> str:
     if val_mean is None:
         return ""
     if is_int:
         mean_str = f"{int(round(val_mean))}"
         std_str = f"{int(round(val_std))}" if val_std is not None else "0"
     else:
-        mean_str = f"{val_mean:.4f}".rstrip("0").rstrip(".")
-        std_str = f"{val_std:.4f}".rstrip("0").rstrip(".") if val_std is not None else "0"
+        mean_round = round(val_mean, -float_precision)
+        std_round = round(val_std, -float_precision)
+        mean_str = f"{mean_round:.3f}".rstrip("0").rstrip(".")
+        std_str = f"{std_round:.3f}".rstrip("0").rstrip(".") if val_std is not None else "0"
+
     if use_latex:
-        return f"{mean_str} $\\pm$ {std_str}"
+        return f"{mean_str} {{\small $\\pm$ {std_str}}}"
     return f"{mean_str} ± {std_str}"
 
 

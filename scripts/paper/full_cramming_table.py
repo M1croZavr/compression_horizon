@@ -97,7 +97,8 @@ def main() -> None:
         info_gain = to_mean_std_cell(
             summary.information_gain_bits_mean,
             summary.information_gain_bits_std,
-            use_latex=False,
+            use_latex=(args.tablefmt == "latex"),
+            float_precision=0,
         )
         is_progressive = summary.dataset_type == "progressive_prefixes"
         train_type = "progr" if is_progressive else "full"
@@ -105,7 +106,8 @@ def main() -> None:
             accuracy = to_mean_std_cell(
                 summary.final_convergence_mean,
                 summary.final_convergence_std,
-                use_latex=False,
+                use_latex=(args.tablefmt == "latex"),
+                float_precision=3,
             )
             max_tokens = summary.max_sequence_length
         else:
@@ -113,12 +115,18 @@ def main() -> None:
             max_tokens = to_mean_std_cell(
                 summary.number_of_compressed_tokens,
                 summary.number_of_compressed_tokens_std,
-                use_latex=False,
+                use_latex=(args.tablefmt == "latex"),
+                float_precision=0,
             )
 
         result_table_rows.append([experiment, train_type, max_tokens, info_gain, accuracy])
 
-    print(tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt))
+    result = tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt)
+    result = result.replace("\\textbackslash{}", "\\")
+    result = result.replace("\$", "$")
+    result = result.replace("\\{", "{")
+    result = result.replace("\\}", "}")
+    print(result)
 
 
 if __name__ == "__main__":
