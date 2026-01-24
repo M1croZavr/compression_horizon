@@ -82,7 +82,7 @@ def main() -> None:
 
         summaries_progressive.append(summary)
 
-    columns = ["Experiment", "Info Gain", "Max Tokens", "Accuracy"]
+    columns = ["Experiment", "Max Tokens", "Info Gain", "Accuracy"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
@@ -120,7 +120,7 @@ def main() -> None:
                 use_latex=False,
             )
 
-        result_table_rows.append([experiment, info_gain, max_tokens, accuracy])
+        result_table_rows.append([experiment, max_tokens, info_gain, accuracy])
 
     print(tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt))
 
