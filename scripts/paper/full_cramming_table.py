@@ -53,7 +53,7 @@ def main() -> None:
         {"train": "full", "id": "a1e58eb5"},  # 256
     ]
 
-    columns = ["Experiment", "Type", "Max Tokens", "Info Gain", "Accuracy"]
+    columns = ["Exp", "Type", "Tokens", "Info Gain", "Acc"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
@@ -116,7 +116,7 @@ def main() -> None:
                 summary.number_of_compressed_tokens,
                 summary.number_of_compressed_tokens_std,
                 use_latex=(args.tablefmt == "latex"),
-                float_precision=0,
+                float_precision=3,
             )
 
         result_table_rows.append([experiment, train_type, max_tokens, info_gain, accuracy])
