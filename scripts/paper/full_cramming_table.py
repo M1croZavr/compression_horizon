@@ -57,7 +57,7 @@ def main() -> None:
         {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
     ]
 
-    columns = ["Type", "Tokens", "Info Gain", "Acc"]
+    columns = ["Type", "Tokens", "Info Gain", "Accuracy"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
