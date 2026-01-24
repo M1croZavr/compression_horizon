@@ -34,9 +34,17 @@ def main() -> None:
         "7359e14b",  # 512
         "ef2ea924",  # 1024
         # Llama-3.1-8B
-        # '', # 256
-        # '', # 512
+        # '', # 1024
         # '', # 1568
+        # Pythia 160M
+        "dbced9cc",  # 32
+        "6a93af63",  # 64
+        # Pythia 410M
+        "328bdbfb",  # 96
+        "22d7b7db",  # 128
+        # Pythia 1.7B
+        "f3296f56",  # 160
+        "a1e58eb5",  # 256
     ]
 
     summaries = []
@@ -55,12 +63,14 @@ def main() -> None:
 
     # Progressive metrics
     ds_paths_progressive = [
-        # Llama-3.2-1B
-        "sl_4096_Llama-3.2-1B",
-        # Llama-3.2-3B
-        "sl_4096_Llama-3.2-3B",
-        # Llama-3.1-8B
-        "sl_4096_Meta-Llama-3.1-8B",
+        # Llama3
+        "sl_4096_Llama-3.2-1B_lr_0.1",
+        "sl_4096_Llama-3.2-3B_lr_0.1",
+        "sl_4096_Meta-Llama-3.1-8B_lr_0.1",
+        # pythia
+        "sl_4096_pythia-160m_lr_0.5",
+        "sl_4096_pythia-410m_lr_0.5",
+        "sl_4096_pythia-1.4b_lr_0.5",
     ]
 
     summaries_progressive = []
