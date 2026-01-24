@@ -1,3 +1,5 @@
+--
+
 RunHash    Hybrid $\alpha$      SeqLen    AlignL  Model      LR  LowDim    ConvSteps    FinalConv (mean $\pm$ std)    InfoGain (bits)
 20e12878   None                     32         0  P-160m   0.1             10000 ± 0    0.7188 ± 0.1472               111.6105 ± 19.5205
 48d2cfc4   None                     32         0  P-160m   1               9994 ± 17    0.6312 ± 0.131                86.7285 ± 23.9511
