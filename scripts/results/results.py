@@ -542,13 +542,22 @@ def to_mean_std_cell(
         mean_str = f"{int(round(val_mean))}"
         std_str = f"{int(round(val_std))}" if val_std is not None else "0"
     else:
-        mean_round = round(val_mean, -float_precision)
-        std_round = round(val_std, -float_precision)
-        mean_str = f"{mean_round:.3f}".rstrip("0").rstrip(".")
-        std_str = f"{std_round:.3f}".rstrip("0").rstrip(".") if val_std is not None else "0"
+        if float_precision == 0:
+            mean_round = round(val_mean)
+            std_round = round(val_std)
+        else:
+            mean_round = round(val_mean, float_precision)
+            std_round = round(val_std, float_precision)
+
+        mean_str = f"{mean_round}".rstrip("0").rstrip(".")
+        std_str = f"{std_round}".rstrip("0").rstrip(".") if val_std is not None else "0"
 
     if use_latex:
         return f"{mean_str} {{\small $\\pm$ {std_str}}}"
+
+    if float(std_str) == 0:
+        return mean_str
+
     return f"{mean_str} ± {std_str}"
 
 

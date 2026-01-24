@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build full cramming results table.")
     parser.add_argument(
         "--tablefmt",
-        default="plain",
+        default="latex",
         help="Tabulate table format (e.g., plain, github, latex, grid).",
     )
     return parser.parse_args()
@@ -52,13 +52,12 @@ def main() -> None:
         {"train": "full", "id": "22d7b7db"},  # 128
         {"train": "progr", "id": "sl_4096_pythia-410m_lr_0.5"},
         # Pythia 1.4B
-        {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
-        # Pythia 1.7B
         {"train": "full", "id": "f3296f56"},  # 160
         {"train": "full", "id": "a1e58eb5"},  # 256
+        {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
     ]
 
-    columns = ["Exp", "Type", "Tokens", "Info Gain", "Acc"]
+    columns = ["Type", "Tokens", "Info Gain", "Acc"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
@@ -152,7 +151,8 @@ def main() -> None:
         ordered_summaries.append(summary)
 
     result_table_rows = []
-    for summary in ordered_summaries:
+    prev_exp = None
+    for i, summary in enumerate(ordered_summaries):
         experiment = format_experiment_label(summary, fallback_label=str(summary.run_hash or ""))
         info_gain = to_mean_std_cell(
             summary.information_gain_bits_mean,
@@ -161,7 +161,6 @@ def main() -> None:
             float_precision=0,
         )
         is_progressive = summary.dataset_type == "progressive_prefixes"
-        train_type = "progr" if is_progressive else "full"
         if not is_progressive:
             accuracy = to_mean_std_cell(
                 summary.final_convergence_mean,
@@ -172,20 +171,40 @@ def main() -> None:
             max_tokens = summary.max_sequence_length
         else:
             accuracy = "1.0"
+            # max_tokens = summary.number_of_compressed_tokens
             max_tokens = to_mean_std_cell(
                 summary.number_of_compressed_tokens,
                 summary.number_of_compressed_tokens_std,
                 use_latex=(args.tablefmt == "latex"),
-                float_precision=3,
+                float_precision=0,
             )
 
-        result_table_rows.append([experiment, train_type, max_tokens, info_gain, accuracy])
+        if prev_exp is None or prev_exp != experiment:
+            result_table_rows.append([f"\multicolumn{{4}}{{l}}{{\\textbf{{{experiment}}}}} \\\\ REMOVE"])
+
+        exp_type = "Progr." if is_progressive else "Full"
+        result_table_rows.append([exp_type, max_tokens, info_gain, accuracy])
+        if is_progressive and i != len(ordered_summaries) - 1:
+            if "L3.1" in experiment:
+                result_table_rows.append(["\midrule \midrule REMOVE "])
+            else:
+                result_table_rows.append(["\midrule REMOVE "])
+
+        prev_exp = experiment
 
     result = tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt)
     result = result.replace("\\textbackslash{}", "\\")
     result = result.replace("\$", "$")
     result = result.replace("\\{", "{")
     result = result.replace("\\}", "}")
+    result = result.replace("P-", "Pythia")
+    result = result.replace("L3.2-", "Llama-3.2-")
+    result = result.replace("L3.1-", "Llama-3.1-")
+
+    import re
+
+    result = re.sub(r"REMOVE.+", "", result)
+
     print(result)
 
 
