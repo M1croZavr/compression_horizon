@@ -1,6 +1,7 @@
 import argparse
+import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,24 +17,11 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
-def plot_pca_components_vs_sequence_length_aggregate(
+def compute_pca_components_sequence_length_stats(
     by_sid: Dict[int, List[Dict[str, Any]]],
-    outfile: str,
-    target_seq_lengths: List[int] = [4, 16, 32, 48, 64, 96, 128],
-):
-    """Plot number of PCA components explaining 99% variance vs sequence length aggregated across all samples.
-
-    Shows quantiles (10th-90th percentile, 25th-75th IQR) and mean across samples.
-
-    Args:
-        by_sid: Dictionary mapping sample_id to list of stage records
-        outfile: Output file path
-        target_seq_lengths: List of sequence lengths to analyze
-    """
-    # Collect PCA component counts for each sequence length across all samples
-    components_by_seq_len: Dict[int, List[int]] = {}
-    for seq_len in target_seq_lengths:
-        components_by_seq_len[seq_len] = []
+    target_seq_lengths: List[int],
+) -> Optional[Dict[str, Any]]:
+    components_by_seq_len: Dict[int, List[int]] = {seq_len: [] for seq_len in target_seq_lengths}
 
     for sid, stages in tqdm(by_sid.items(), desc="Computing PCA components per sample"):
         results = compute_pca_components_for_sample(stages, target_seq_lengths)
@@ -41,7 +29,6 @@ def plot_pca_components_vs_sequence_length_aggregate(
             if n_components is not None:
                 components_by_seq_len[seq_len].append(n_components)
 
-    # Filter out sequence lengths with no data
     seq_lengths: List[int] = []
     all_components_per_seq_len: List[List[int]] = []
 
@@ -51,19 +38,55 @@ def plot_pca_components_vs_sequence_length_aggregate(
             all_components_per_seq_len.append(components_by_seq_len[seq_len])
 
     if len(seq_lengths) == 0:
-        print("No valid data points for aggregate PCA components vs sequence length")
-        return
+        return None
 
-    # Compute statistics for plotting
     mean_components = [np.mean(comps) for comps in all_components_per_seq_len]
     q25_components = [np.percentile(comps, 25) for comps in all_components_per_seq_len]
     q75_components = [np.percentile(comps, 75) for comps in all_components_per_seq_len]
     q10_components = [np.percentile(comps, 10) for comps in all_components_per_seq_len]
     q90_components = [np.percentile(comps, 90) for comps in all_components_per_seq_len]
 
+    return {
+        "seq_lengths": seq_lengths,
+        "all_components": all_components_per_seq_len,
+        "mean": mean_components,
+        "q25": q25_components,
+        "q75": q75_components,
+        "q10": q10_components,
+        "q90": q90_components,
+    }
+
+
+def plot_pca_components_vs_sequence_length_aggregate(
+    by_sid: Dict[int, List[Dict[str, Any]]],
+    outfile: str,
+    target_seq_lengths: List[int] = [4, 16, 32, 48, 64, 96, 128],
+):
+    """Plot number of PCA components explaining 99% variance vs sequence length aggregated across all samples.
+
+    Shows quantiles (10th-90th percentile, 25th-75th IQR) and mean across samples.
+    """
+    stats = compute_pca_components_sequence_length_stats(by_sid, target_seq_lengths)
+    if stats is None:
+        print("No valid data points for aggregate PCA components vs sequence length")
+        return
+
+    plot_pca_components_vs_sequence_length_stats(stats, outfile)
+
+
+def plot_pca_components_vs_sequence_length_stats(
+    stats: Dict[str, Any],
+    outfile: str,
+):
+    seq_lengths = stats["seq_lengths"]
+    all_components_per_seq_len = stats["all_components"]
+    mean_components = stats["mean"]
+    q25_components = stats["q25"]
+    q75_components = stats["q75"]
+    q10_components = stats["q10"]
+    q90_components = stats["q90"]
+
     plt.figure(figsize=(10, 7))
-    # Plot shaded regions showing distribution
-    # Outer region: 10th-90th percentile
     plt.fill_between(
         seq_lengths,
         q10_components,
@@ -72,7 +95,6 @@ def plot_pca_components_vs_sequence_length_aggregate(
         color="blue",
         label="10th-90th percentile",
     )
-    # Inner region: 25th-75th percentile (IQR)
     plt.fill_between(
         seq_lengths,
         q25_components,
@@ -81,7 +103,6 @@ def plot_pca_components_vs_sequence_length_aggregate(
         color="blue",
         label="Interquartile range (25th-75th)",
     )
-    # Plot mean line
     plt.plot(
         seq_lengths,
         mean_components,
@@ -91,7 +112,6 @@ def plot_pca_components_vs_sequence_length_aggregate(
         color="darkblue",
         label="Mean",
     )
-    # Plot individual points with transparency to show density
     for seq_len, comps in zip(seq_lengths, all_components_per_seq_len):
         plt.scatter([seq_len] * len(comps), comps, alpha=0.2, s=20, color="blue", zorder=0)
 
@@ -105,6 +125,125 @@ def plot_pca_components_vs_sequence_length_aggregate(
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
     print(f"plot_pca_components_vs_sequence_length_aggregate: {outfile}")
+    plt.close()
+
+
+def infer_checkpoint_label(rows: List[Dict[str, Any]], dataset_path: str) -> str:
+    checkpoints = [str(r.get("model_checkpoint", "")).strip() for r in rows]
+    checkpoints = [ckpt for ckpt in checkpoints if ckpt]
+    if checkpoints:
+        counts: Dict[str, int] = {}
+        for ckpt in checkpoints:
+            counts[ckpt] = counts.get(ckpt, 0) + 1
+        most_common = max(counts.items(), key=lambda kv: kv[1])[0]
+        if len(counts) == 1:
+            return most_common
+        return f"{most_common} (+{len(counts) - 1} others)"
+
+    parent = os.path.basename(os.path.dirname(dataset_path))
+    if parent:
+        return parent
+    return os.path.basename(dataset_path)
+
+
+def get_experiment_dir(dataset_path: str) -> str:
+    return os.path.dirname(dataset_path)
+
+
+def make_cache_key(
+    dataset_path: str,
+    stage_index: Optional[int],
+    target_seq_lengths: List[int],
+) -> Dict[str, Any]:
+    return {
+        "dataset_path": dataset_path,
+        "stage_index": stage_index,
+        "target_seq_lengths": target_seq_lengths,
+    }
+
+
+def load_cached_stats(cache_path: str, cache_key: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, "r") as f:
+            cache_data = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(cache_data, dict):
+        return None
+    entries = cache_data.get("entries", [])
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if entry.get("key") == cache_key:
+            stats = entry.get("stats")
+            if isinstance(stats, dict):
+                return stats
+    return None
+
+
+def save_cached_stats(cache_path: str, cache_key: Dict[str, Any], stats: Dict[str, Any]) -> None:
+    cache_data = {"version": 1, "entries": []}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r") as f:
+                existing = json.load(f)
+            if isinstance(existing, dict) and isinstance(existing.get("entries"), list):
+                cache_data = existing
+        except Exception:
+            cache_data = {"version": 1, "entries": []}
+    cache_data["entries"] = [entry for entry in cache_data.get("entries", []) if entry.get("key") != cache_key]
+    cache_data["entries"].append({"key": cache_key, "stats": stats})
+    with open(cache_path, "w") as f:
+        json.dump(cache_data, f, indent=2)
+
+
+def plot_pca_components_vs_sequence_length_multi(
+    stats_by_label: List[Tuple[str, Dict[str, Any]]],
+    outfile: str,
+):
+    if len(stats_by_label) == 0:
+        print("No valid data points for aggregate PCA components vs sequence length")
+        return
+
+    plt.figure(figsize=(10, 7))
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["blue"])
+
+    for idx, (label, stats) in enumerate(stats_by_label):
+        color = color_cycle[idx % len(color_cycle)]
+        seq_lengths = stats["seq_lengths"]
+        mean_components = stats["mean"]
+        q25_components = stats["q25"]
+        q75_components = stats["q75"]
+
+        plt.fill_between(
+            seq_lengths,
+            q25_components,
+            q75_components,
+            alpha=0.15,
+            color=color,
+        )
+        plt.plot(
+            seq_lengths,
+            mean_components,
+            marker="o",
+            linewidth=2.5,
+            markersize=6,
+            color=color,
+            label=label,
+        )
+
+    plt.xlabel("Sequence Length", fontsize=14)
+    plt.ylabel("Number of PCA Components", fontsize=14)
+    plt.title("PCA Components Explaining 99% Variance vs Sequence Length (All Samples)", fontsize=16)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="best", fontsize=11)
+    plt.xlim(left=0)
+    plt.ylim(bottom=0)
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150)
+    print(f"plot_pca_components_vs_sequence_length_multi: {outfile}")
     plt.close()
 
 
@@ -421,8 +560,9 @@ def main():
     parser.add_argument(
         "--dataset_path",
         type=str,
+        nargs="+",
         required=True,
-        help="Path to progressive_prefixes dataset",
+        help="Path(s) to progressive_prefixes dataset",
     )
     parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
     parser.add_argument("--stage_index", type=int, default=None, help="Optional stage filter")
@@ -481,25 +621,67 @@ def main():
         default=2,
         help="Limit number of PCA component pairs to compute landscape for (default: 2)",
     )
+    parser.add_argument(
+        "--target_seq_lengths",
+        type=int,
+        nargs="+",
+        default=[4, 16, 32, 48, 64, 96, 128, 256, 512, 1024],
+        help="Sequence lengths to analyze",
+    )
+    parser.add_argument(
+        "--out_file_suffix",
+        type=str,
+        default="",
+    )
 
     args = parser.parse_args()
 
     out_dir = args.output_dir
     os.makedirs(out_dir, exist_ok=True)
 
-    ds = load_progressive_dataset(args.dataset_path)
-    rows = filter_records(ds, stage_index=args.stage_index)
-    if not rows:
-        raise ValueError("No records found with given filters.")
+    dataset_paths = args.dataset_path
+    stats_by_label: List[Tuple[str, Dict[str, Any]]] = []
 
-    # Group by sample and build stage-wise matrices
-    by_sid = collate_stages_by_sample(rows)
+    for dataset_path in dataset_paths:
+        experiment_dir = get_experiment_dir(dataset_path)
+        cache_path = os.path.join(experiment_dir, "pca_seq_len_cache.json")
+        cache_key = make_cache_key(dataset_path, args.stage_index, args.target_seq_lengths)
+        stats = load_cached_stats(cache_path, cache_key)
+        rows: List[Dict[str, Any]] = []
+        if stats is None:
+            ds = load_progressive_dataset(dataset_path)
+            rows = filter_records(ds, stage_index=args.stage_index)
+            if not rows:
+                raise ValueError(f"No records found with given filters in {dataset_path}.")
 
-    plot_pca_components_vs_sequence_length_aggregate(
-        by_sid,
-        outfile=os.path.join(out_dir, "aggregate_pca_components_vs_seq_len.png"),
-        target_seq_lengths=[4, 16, 32, 48, 64, 96, 128, 256, 512, 1024],
-    )
+            by_sid = collate_stages_by_sample(rows)
+            stats = compute_pca_components_sequence_length_stats(
+                by_sid,
+                target_seq_lengths=args.target_seq_lengths,
+            )
+            if stats is None:
+                print(f"No valid data points for {dataset_path}")
+                continue
+            save_cached_stats(cache_path, cache_key, stats)
+        else:
+            ds = load_progressive_dataset(dataset_path)
+            rows = filter_records(ds, stage_index=args.stage_index)
+            if not rows:
+                raise ValueError(f"No records found with given filters in {dataset_path}.")
+        label = infer_checkpoint_label(rows, dataset_path)
+        stats_by_label.append((label, stats))
+
+    if len(stats_by_label) == 0:
+        raise ValueError("No valid data points for any dataset path.")
+
+    out_file_suffix = args.out_file_suffix
+    if out_file_suffix != "":
+        out_file_suffix = "_" + out_file_suffix
+    outfile = os.path.join(out_dir, f"aggregate_pca_components_vs_seq_len{out_file_suffix}.png")
+    if len(stats_by_label) == 1:
+        plot_pca_components_vs_sequence_length_stats(stats_by_label[0][1], outfile=outfile)
+    else:
+        plot_pca_components_vs_sequence_length_multi(stats_by_label, outfile=outfile)
 
 
 if __name__ == "__main__":
