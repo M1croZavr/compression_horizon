@@ -25,64 +25,35 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    # Full metrics
-    ds_paths_hashes = [
+    experiments_list = [
         # Llama-3.2-1B
-        "4e378cf3",  # 256
-        "af92266e",  # 512
+        {"train": "full", "id": "4e378cf3"},  # 256
+        {"train": "full", "id": "af92266e"},  # 512
+        {"train": "progr", "id": "sl_4096_Llama-3.2-1B_lr_0.1"},
         # Llama-3.2-3B
-        "7359e14b",  # 512
-        "ef2ea924",  # 1024
+        {"train": "full", "id": "7359e14b"},  # 512
+        {"train": "full", "id": "ef2ea924"},  # 1024
+        {"train": "progr", "id": "sl_4096_Llama-3.2-3B_lr_0.1"},
         # Llama-3.1-8B
-        "dfbe32b8",  # 1024
-        "b5aef07e",  # 1568
+        {"train": "full", "id": "dfbe32b8"},  # 1024
+        {"train": "full", "id": "b5aef07e"},  # 1568
+        {"train": "progr", "id": "sl_4096_Meta-Llama-3.1-8B_lr_0.1"},
         # Pythia 160M
-        "dbced9cc",  # 32
-        "6a93af63",  # 64
+        {"train": "full", "id": "dbced9cc"},  # 32
+        {"train": "full", "id": "6a93af63"},  # 64
+        {"train": "progr", "id": "sl_4096_pythia-160m_lr_0.5"},
         # Pythia 410M
-        "328bdbfb",  # 96
-        "22d7b7db",  # 128
+        {"train": "full", "id": "328bdbfb"},  # 96
+        {"train": "full", "id": "22d7b7db"},  # 128
+        {"train": "progr", "id": "sl_4096_pythia-410m_lr_0.5"},
+        # Pythia 1.4B
+        {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
         # Pythia 1.7B
-        "f3296f56",  # 160
-        "a1e58eb5",  # 256
+        {"train": "full", "id": "f3296f56"},  # 160
+        {"train": "full", "id": "a1e58eb5"},  # 256
     ]
 
-    summaries = []
-    for ds_paths_hashe in tqdm(ds_paths_hashes, desc="Processing Runs"):
-
-        full_exp_name = glob.glob(f"artifacts/experiments/*{ds_paths_hashe}/")
-        assert len(full_exp_name) == 1, f"experiments hashes must be unique: {full_exp_name}"
-        full_exp_name = full_exp_name[0]
-        full_exp_name = os.path.join(full_exp_name, "compressed_prefixes")
-
-        rows = load_dataset_rows(full_exp_name)
-        summary = aggregate_non_progressive(full_exp_name, rows)
-        assert summary is not None
-
-        summaries.append(summary)
-
-    # Progressive metrics
-    ds_paths_progressive = [
-        # Llama3
-        "sl_4096_Llama-3.2-1B_lr_0.1",
-        "sl_4096_Llama-3.2-3B_lr_0.1",
-        "sl_4096_Meta-Llama-3.1-8B_lr_0.1",
-        # pythia
-        "sl_4096_pythia-160m_lr_0.5",
-        "sl_4096_pythia-410m_lr_0.5",
-        "sl_4096_pythia-1.4b_lr_0.5",
-    ]
-
-    summaries_progressive = []
-    for ds_path in tqdm(ds_paths_progressive, desc="Processing Runs"):
-        full_ds_path = f"artifacts/experiments_progressive/{ds_path}/progressive_prefixes/"
-        rows = load_dataset_rows(full_ds_path)
-        summary = aggregate_progressive(full_ds_path, rows)
-        assert summary is not None
-
-        summaries_progressive.append(summary)
-
-    columns = ["Experiment", "Train", "Max Tokens", "Info Gain", "Accuracy"]
+    columns = ["Experiment", "Type", "Max Tokens", "Info Gain", "Accuracy"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
@@ -95,10 +66,33 @@ def main() -> None:
 
         return label
 
-    all_summaries = summaries + summaries_progressive
+    ordered_summaries = []
+    for experiment in tqdm(experiments_list, desc="Processing Runs"):
+        rows = None
+        summary = None
+        if experiment["train"] == "full":
+            full_exp_name = glob.glob(f"artifacts/experiments/*{experiment['id']}/")
+            assert len(full_exp_name) == 1, f"experiments hashes must be unique: {full_exp_name}"
+            full_exp_name = os.path.join(full_exp_name[0], "compressed_prefixes")
+            if os.path.isdir(full_exp_name):
+                rows = load_dataset_rows(full_exp_name)
+                summary = aggregate_non_progressive(full_exp_name, rows)
+        elif experiment["train"] == "progr":
+            full_ds_path = f"artifacts/experiments_progressive/{experiment['id']}/progressive_prefixes/"
+            if os.path.isdir(full_ds_path):
+                rows = load_dataset_rows(full_ds_path)
+                summary = aggregate_progressive(full_ds_path, rows)
+        else:
+            raise ValueError(f"Unknown train type: {experiment['train']}")
+
+        if summary is None:
+            print("Failed to load:", experiment)
+            continue
+
+        ordered_summaries.append(summary)
 
     result_table_rows = []
-    for summary in all_summaries:
+    for summary in ordered_summaries:
         experiment = format_experiment_label(summary, fallback_label=str(summary.run_hash or ""))
         info_gain = to_mean_std_cell(
             summary.information_gain_bits_mean,
