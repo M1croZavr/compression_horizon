@@ -1260,6 +1260,7 @@ def format_embedding_statistics(
 def print_statistics_table(
     checkpoint_names: List[str],
     statistics: List[Dict[str, Any]],
+    midrule_indicies,
     tablefmt: str = "grid",
 ):
     """Print a statistics table using tabulate.
@@ -1296,7 +1297,7 @@ def print_statistics_table(
             ]
         )
 
-        if i in [2, 5, 8]:
+        if midrule_indicies is not None and i in midrule_indicies:
             table_data.append(["\midrule REMOVE"])
 
         i += 1
@@ -1486,6 +1487,7 @@ def main():
         default="grid",
         help="Tabulate table format for printed statistics (e.g., grid, simple, github). Default: grid.",
     )
+    parser.add_argument("--midrule_indicies", nargs="+", type=int)
 
     args = parser.parse_args()
 
@@ -1540,7 +1542,9 @@ def main():
 
     # Print statistics table
     if len(statistics_list) > 0:
-        print_statistics_table(checkpoint_names, statistics_list, tablefmt=args.tablefmt)
+        print_statistics_table(
+            checkpoint_names, statistics_list, midrule_indicies=args.midrule_indicies, tablefmt=args.tablefmt
+        )
 
     if args.only_stat_table:
         return

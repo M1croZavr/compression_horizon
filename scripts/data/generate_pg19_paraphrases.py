@@ -11,12 +11,26 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Example run:
 # python scripts/data/generate_pg19_paraphrases.py \
-#     --tokenizer HuggingFaceTB/SmolLM2-135M \
+#     --tokenizer unsloth/Meta-Llama-3.1-8B \
 #     --model openai/gpt-oss-120b \
-#     --max_tokens 256 \
+#     --max_tokens 4096 \
 #     --prefix_tokens 64 \
-#     --limit 100 \
-#     --output_dir artifacts/pg19_paraphrases --push_to_hub --hub_dataset_id_full mrsndmn/pg19-full-paraphrases-256-tokens --hub_dataset_id_partial mrsndmn/pg19-partial-paraphrases-256-tokens
+#     --limit 10 \
+#     --push_to_hub \
+#     --datasets lowercased_partial \
+#     --output_dir artifacts/pg19_paraphrases \
+#     --hub_dataset_id_lowercased_partial mrsndmn/pg19-partial-lowercased-4096-tokens
+
+# python scripts/data/generate_pg19_paraphrases.py \
+#     --tokenizer unsloth/Meta-Llama-3.1-8B \
+#     --model openai/gpt-oss-120b \
+#     --max_tokens 4096 \
+#     --prefix_tokens 64 \
+#     --limit 10 \
+#     --push_to_hub \
+#     --datasets random_suffix_shuffle \
+#     --output_dir artifacts/pg19_paraphrases \
+#     --hub_dataset_id_random_suffix_shuffle mrsndmn/pg19-random-suffix-shuffle-4096
 
 
 def load_and_tokenize_dataset(

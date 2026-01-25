@@ -74,7 +74,7 @@ def load_or_create_tokenized_dataset(
 
     # Create dataset if not cached
     print("Tokenizing dataset (this may take a while)...")
-    if dataset_name == "mrsndmn/pg19-model-sampled-llama3.1-8B-prefix-64-max_len-2048":
+    if dataset_name in ["mrsndmn/pg19-model-sampled-llama3.1-8B-prefix-64-max_len-2048"]:
         split = "train"
 
     kwargs = {

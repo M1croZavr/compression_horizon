@@ -950,15 +950,25 @@ def plot_pca_trajectories(
                 y_data = traj_transformed[:, j]
 
                 # Plot trajectory line (without label)
-                ax.plot(x_data, y_data, color=color, alpha=0.5, linewidth=1.5, linestyle="--")
+                # ax.plot(x_data, y_data, color=color, alpha=0.5, linewidth=1.5, linestyle="--")
 
                 # Plot points
-                ax.scatter(x_data, y_data, c=[color], s=60, alpha=0.3, linewidths=0)
+                ax.scatter(x_data, y_data, c=[color], s=60, alpha=0.3, linewidths=0, edgecolors="none")
 
                 # Create legend handle with scatter marker (only for first subplot)
+
+                legend_name = name
+                legend_name = legend_name.replace("sl_256_Meta-Llama-3.1-8B_ds_pg19_limit_1", "Base")
+                legend_name = legend_name.replace("limit_1", "")
+                legend_name = legend_name.replace("_lr_0.1", "")
+                legend_name = legend_name.replace("sl_256_Meta-Llama-3.1-8B_", "")
+                legend_name = legend_name.replace("ds_pg19-model-sampled-llama3.1-8B-prefix-64-max_len-2048_", "Sampled")
+                legend_name = legend_name.replace("ds_pg19-lowercased-partial-64_", "Lowercase")
+                legend_name = legend_name.replace("ds_pg19-random-suffix-shuffle-64_", "Random")
+
                 if pair_idx == 0:
                     legend_handles.append(
-                        ax.scatter([], [], c=color, s=60, alpha=0.7, edgecolors="black", linewidths=0.5, label=name)
+                        ax.scatter([], [], c=color, s=60, alpha=0.7, linewidths=0, edgecolors="none", label=legend_name)
                     )
 
                 # Mark start and end points
@@ -972,7 +982,7 @@ def plot_pca_trajectories(
             ax.grid(True, alpha=0.3)
             ax.axis("equal")
             if pair_idx == 0:
-                ax.legend(handles=legend_handles, loc="best", fontsize=16)
+                ax.legend(handles=legend_handles, loc="best", fontsize=14)
 
         # Hide unused subplots
         for idx in range(n_pairs, len(axes)):

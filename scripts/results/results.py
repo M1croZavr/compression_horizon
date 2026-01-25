@@ -25,6 +25,7 @@ from pathlib import Path
 from statistics import mean, pstdev
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import numpy as np
 from datasets import load_from_disk
 from tabulate import tabulate
 from tqdm.auto import tqdm
@@ -203,6 +204,8 @@ def safe_mean(values: List[float]) -> Optional[float]:
 
 def safe_std(values: List[float]) -> Optional[float]:
     # population std (to keep deterministic for small N), use pstdev
+    if np.isnan(values[0]):
+        return None
     return pstdev(values) if values else None
 
 
