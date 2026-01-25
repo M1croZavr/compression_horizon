@@ -9,6 +9,9 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_pythia-160m_lr_0.5/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-410m_lr_0.5/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_lr_0.5/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-360M_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-135M_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lr_0.1/progressive_prefixes \
   --output /tmp/trajectories_comparison.png \
   --n_components 4 \
   --sample_id 0 \
@@ -26,6 +29,7 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --n_components 4 \
   --sample_id 0 \
   --show_labels --only_stat_table --tablefmt latex
+
 
 PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --checkpoints \

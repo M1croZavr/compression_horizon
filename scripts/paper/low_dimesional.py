@@ -9,6 +9,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
+from scripts.results.results import (
+    to_mean_std_cell,
+)
 from sklearn.decomposition import PCA
 from tabulate import tabulate
 from tqdm.auto import tqdm
@@ -759,6 +762,7 @@ def compute_embedding_statistics(
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
+    tablefmt="latex",
 ) -> Tuple[np.ndarray, List[str], Dict[str, Any], np.ndarray]:
     """Extract embedding trajectory from a dataset.
 
@@ -909,23 +913,28 @@ def extract_trajectory(
             return "nan"
         mean_val = np.mean(values)
         std_val = np.std(values)
-        return f"{mean_val:.{precision}f}±{std_val:.{precision}f}"
+        return to_mean_std_cell(
+            mean_val,
+            std_val,
+            use_latex=(tablefmt == "latex"),
+            float_precision=precision,
+        )
 
     stats = {
-        "num_embeddings": format_mean_std(all_num_embeddings, precision=2),
+        "num_embeddings": format_mean_std(all_num_embeddings, precision=1),
         "total_steps": format_mean_std(all_total_steps, precision=2),
         "steps_taken": format_mean_std(all_total_steps, precision=2),
-        "trajectory_length": format_mean_std(all_trajectory_lengths, precision=2),
+        "trajectory_length": format_mean_std(all_trajectory_lengths, precision=0),
         "num_pca_for99_var": format_mean_std(all_num_pca_for99_var, precision=2) if len(all_num_pca_for99_var) > 0 else "nan",
         "num_pca_for99_var_all_embeds": num_pca_explained_99_var_all_embeds,
         "num_random_projections_for99_var": (
-            format_mean_std(all_num_random_projections_for99_var, precision=2)
+            format_mean_std(all_num_random_projections_for99_var, precision=1)
             if len(all_num_random_projections_for99_var) > 0
             else "nan"
         ),
-        "information_gain": format_mean_std(information_gains, precision=4) if len(information_gains) > 0 else "nan",
+        "information_gain": format_mean_std(information_gains, precision=0) if len(information_gains) > 0 else "nan",
         "information_gain_from_dataset": (
-            format_mean_std(information_gains_from_dataset, precision=4) if len(information_gains_from_dataset) > 0 else "nan"
+            format_mean_std(information_gains_from_dataset, precision=0) if len(information_gains_from_dataset) > 0 else "nan"
         ),
         "embedding_statistics": embedding_statistics,
     }
@@ -1214,9 +1223,15 @@ def print_statistics_table(
     # Prepare table data
     table_data = []
     for name, stats in zip(checkpoint_names, statistics):
+
+        table_name = name
+        table_name = table_name.replace("sl_4096_", "")
+        table_name = table_name.replace("Meta-", "")
+        table_name = table_name.replace("_lr_", " lr=")
+
         table_data.append(
             [
-                name,
+                table_name,
                 stats.get("num_embeddings", "nan"),
                 stats.get("trajectory_length", "nan"),
                 # stats.get("steps_taken", "nan"),
@@ -1431,7 +1446,7 @@ def main():
     final_embeddings = []
 
     for idx, checkpoint_path in tqdm(enumerate(args.checkpoints)):
-        traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
+        traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id, tablefmt=args.tablefmt)
         trajectories.append(traj)
         labels_list.append(labels)
         statistics_list.append(stats)
