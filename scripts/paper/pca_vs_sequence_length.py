@@ -626,7 +626,7 @@ def main():
     out_file_suffix = args.out_file_suffix
     if out_file_suffix != "":
         out_file_suffix = "_" + out_file_suffix
-    outfile = os.path.join(out_dir, f"aggregate_pca_components_vs_seq_len{out_file_suffix}.png")
+    outfile = os.path.join(out_dir, f"aggregate_pca_components_vs_seq_len{out_file_suffix}.pdf")
 
     plot_pca_components_vs_sequence_length_multi(stats_by_label, outfile=outfile)
 
