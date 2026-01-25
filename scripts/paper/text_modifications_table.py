@@ -4,12 +4,15 @@ import json
 import os
 from types import SimpleNamespace
 
+import numpy as np
+from datasets import load_from_disk
 from scripts.results.results import (
     aggregate_non_progressive,
     aggregate_progressive,
     load_dataset_rows,
     to_mean_std_cell,
 )
+from sklearn.decomposition import PCA
 from tabulate import tabulate
 from tqdm.auto import tqdm
 
@@ -28,7 +31,7 @@ def main() -> None:
     args = parse_args()
 
     cache_filename = "full_cramming_table_cache.json"
-    cache_version = 1
+    cache_version = 2
 
     experiments_list = [
         # Llama-3.2-1B
@@ -42,7 +45,7 @@ def main() -> None:
         {"train": "progr", "type": "Lowercased", "id": "sl_2048_Meta-Llama-3.1-8B_ds_pg19-lowercased-partial-64_lr_0.1"},
     ]
 
-    columns = ["Experiment", "Tokens", "Info Gain"]
+    columns = ["Experiment", "Tokens", "Trajectory Length", "PCA 99%", "Info Gain"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
@@ -67,6 +70,10 @@ def main() -> None:
             "number_of_compressed_tokens": summary.number_of_compressed_tokens,
             "number_of_compressed_tokens_std": summary.number_of_compressed_tokens_std,
             "max_sequence_length": summary.max_sequence_length,
+            "trajectory_length_mean": getattr(summary, "trajectory_length_mean", None),
+            "trajectory_length_std": getattr(summary, "trajectory_length_std", None),
+            "pca_99_mean": getattr(summary, "pca_99_mean", None),
+            "pca_99_std": getattr(summary, "pca_99_std", None),
         }
 
     def summary_from_cache(data: dict) -> SimpleNamespace:
@@ -100,6 +107,97 @@ def main() -> None:
         with open(cache_path, "w", encoding="utf-8") as cache_file:
             json.dump(payload, cache_file)
 
+    def flatten_embedding(embedding) -> np.ndarray:
+        emb = np.asarray(embedding, dtype=np.float32)
+        return emb.reshape(-1)
+
+    def compute_trajectory_length(embeddings: list[np.ndarray]) -> float:
+        if len(embeddings) < 2:
+            return 0.0
+        trajectory_length = 0.0
+        for i in range(len(embeddings) - 1):
+            dist = np.linalg.norm(embeddings[i + 1] - embeddings[i])
+            trajectory_length += dist
+        return float(trajectory_length)
+
+    def compute_num_pca_explained_99_var(embeddings: list[np.ndarray]) -> float:
+        if len(embeddings) < 2:
+            return float("nan")
+        X = np.stack(embeddings, axis=0)
+        if X.shape[0] < 2:
+            return float("nan")
+        n_samples, n_features = X.shape
+        max_pca_components = min(512, n_samples - 1, n_features)
+        if max_pca_components < 1:
+            return float("nan")
+        pca = PCA(n_components=max_pca_components, random_state=42)
+        pca.fit(X)
+        explained_var_ratio = pca.explained_variance_ratio_
+        cumulative_var = np.cumsum(explained_var_ratio)
+        num_pca_for99_var = (cumulative_var < 0.99).sum()
+        if num_pca_for99_var == max_pca_components:
+            num_pca_for99_var = -1
+        return float(num_pca_for99_var)
+
+    def summarize_values(values: list[float]) -> dict | None:
+        if len(values) == 0:
+            return None
+        return {"mean": float(np.mean(values)), "std": float(np.std(values))}
+
+    def compute_progressive_trajectory_metrics(ds_path: str) -> dict | None:
+        try:
+            ds = load_from_disk(ds_path)
+        except Exception:
+            return None
+        if "embedding" not in ds.column_names:
+            return None
+
+        rows = [dict(r) for r in ds]
+        by_sample: dict[int, list[dict]] = {}
+        for row in rows:
+            sample_id = row.get("sample_id")
+            if sample_id is None:
+                continue
+            by_sample.setdefault(int(sample_id), []).append(row)
+
+        trajectory_lengths = []
+        pca_99_values = []
+
+        for sample_rows in by_sample.values():
+            sample_rows.sort(key=lambda x: int(x.get("stage_index", 0)))
+            sample_embeddings = []
+            has_embeddings = True
+            for row in sample_rows:
+                embedding = row.get("embedding")
+                if embedding is None:
+                    has_embeddings = False
+                    break
+                sample_embeddings.append(flatten_embedding(embedding))
+            if not has_embeddings or len(sample_embeddings) == 0:
+                continue
+            trajectory_lengths.append(compute_trajectory_length(sample_embeddings))
+            pca_99 = compute_num_pca_explained_99_var(sample_embeddings)
+            if not np.isnan(pca_99):
+                pca_99_values.append(pca_99)
+
+        if len(trajectory_lengths) == 0 and len(pca_99_values) == 0:
+            return None
+
+        return {
+            "trajectory_length": summarize_values(trajectory_lengths),
+            "pca_99_var": summarize_values(pca_99_values),
+        }
+
+    def format_metric_cell(mean_val: float | None, std_val: float | None, precision: int) -> str:
+        if mean_val is None or std_val is None:
+            return "nan"
+        return to_mean_std_cell(
+            mean_val,
+            std_val,
+            use_latex=(args.tablefmt == "latex"),
+            float_precision=precision,
+        )
+
     ordered_summaries = []
     for experiment in tqdm(experiments_list, desc="Processing Runs"):
         rows = None
@@ -124,14 +222,41 @@ def main() -> None:
                 if summary is None:
                     rows = load_dataset_rows(full_ds_path)
                     summary = aggregate_progressive(full_ds_path, rows)
-                    if summary is not None:
-                        save_cache(run_dir, full_ds_path, summary)
         else:
             raise ValueError(f"Unknown train type: {experiment['train']}")
 
         if summary is None:
             print("Failed to load:", experiment)
             continue
+
+        if summary.dataset_type == "progressive_prefixes":
+            full_ds_path = os.path.join(summary.run_dir, "progressive_prefixes")
+            has_metrics = (
+                getattr(summary, "trajectory_length_mean", None) is not None
+                and getattr(summary, "trajectory_length_std", None) is not None
+                and getattr(summary, "pca_99_mean", None) is not None
+                and getattr(summary, "pca_99_std", None) is not None
+            )
+            if not has_metrics:
+                metrics = compute_progressive_trajectory_metrics(full_ds_path)
+                if metrics is not None:
+                    traj_stats = metrics.get("trajectory_length")
+                    pca_stats = metrics.get("pca_99_var")
+                    summary.trajectory_length_mean = None if not traj_stats else traj_stats.get("mean")
+                    summary.trajectory_length_std = None if not traj_stats else traj_stats.get("std")
+                    summary.pca_99_mean = None if not pca_stats else pca_stats.get("mean")
+                    summary.pca_99_std = None if not pca_stats else pca_stats.get("std")
+                else:
+                    summary.trajectory_length_mean = None
+                    summary.trajectory_length_std = None
+                    summary.pca_99_mean = None
+                    summary.pca_99_std = None
+                save_cache(summary.run_dir, full_ds_path, summary)
+        else:
+            summary.trajectory_length_mean = None
+            summary.trajectory_length_std = None
+            summary.pca_99_mean = None
+            summary.pca_99_std = None
 
         ordered_summaries.append(summary)
 
@@ -159,7 +284,9 @@ def main() -> None:
             )
 
         # exp_type = "Progr." if is_progressive else "Full"
-        result_table_rows.append([exp_data["type"], max_tokens, info_gain])
+        traj_length = format_metric_cell(summary.trajectory_length_mean, summary.trajectory_length_std, precision=0)
+        pca_99 = format_metric_cell(summary.pca_99_mean, summary.pca_99_std, precision=2)
+        result_table_rows.append([exp_data["type"], max_tokens, traj_length, pca_99, info_gain])
 
     result = tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt)
     result = result.replace("\\textbackslash{}", "\\")

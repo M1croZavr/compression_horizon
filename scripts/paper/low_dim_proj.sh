@@ -14,6 +14,7 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-270m_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-1b-pt_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lr_0.1/progressive_prefixes \
   --output /tmp/trajectories_comparison.png \
   --n_components 4 \
   --sample_id 0 \
