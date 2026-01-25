@@ -1022,10 +1022,10 @@ def plot_pca_trajectories(
             y_data = traj_transformed[:, 1]
 
             # Plot trajectory line (without label)
-            plt.plot(x_data, y_data, color=color, alpha=0.5, linewidth=1.5, linestyle="--")
+            # plt.plot(x_data, y_data, color=color, alpha=0.1, linewidth=1.5, linestyle="--")
 
             # Plot points
-            plt.scatter(x_data, y_data, c=[color], s=60, alpha=0.7, edgecolors="black", linewidths=0.5)
+            plt.scatter(x_data, y_data, c=[color], s=30, alpha=0.2, linewidths=0.5)
 
             # Create legend handle with scatter marker
             legend_handles.append(plt.scatter([], [], c=color, s=60, alpha=0.7, edgecolors="black", linewidths=0.5, label=name))
