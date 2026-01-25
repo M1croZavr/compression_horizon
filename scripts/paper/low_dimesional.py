@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -29,7 +30,7 @@ def flatten_embedding(row: Dict[str, Any]) -> np.ndarray:
     return emb.reshape(-1).detach().cpu().numpy()
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CACHE_FILENAME = "low_dimensional_cache.json"
 
 
@@ -50,6 +51,12 @@ def load_experiment_cache(dataset_path: Optional[str]) -> Tuple[Dict[str, Any], 
                 return {}, cache_file, False
             cache_version = cache_data.get("cache_version")
             if cache_version != CACHE_VERSION:
+                if cache_version is None or cache_version < CACHE_VERSION:
+                    try:
+                        os.remove(cache_file)
+                    except OSError as e:
+                        raise ValueError(f"Failed to remove outdated cache {cache_file}: {e}") from e
+                    return {}, cache_file, False
                 raise ValueError(f"Cache version mismatch for {cache_file}: expected {CACHE_VERSION}, got {cache_version}")
             return cache_data, cache_file, True
     except (json.JSONDecodeError, IOError, ValueError) as e:
@@ -646,7 +653,7 @@ def compute_embedding_statistics(
     model_checkpoint: Optional[str] = None,
     device: Optional[torch.device] = None,
     cache_data: Optional[Dict[str, Any]] = None,
-) -> str:
+) -> Optional[Dict[str, float]]:
     """Compute norm statistics (mean ± std of L2 norms) for compression embeddings vs regular vocab tokens.
 
     Args:
@@ -656,13 +663,13 @@ def compute_embedding_statistics(
         cache_data: Optional cache dictionary for the experiment.
 
     Returns:
-        Formatted string with "comp_norm_avg±comp_norm_std / vocab_norm_avg±vocab_norm_std" or "nan" if not computable
+        Dict with comp/vocab mean and std, or None if not computable
     """
     if os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_EMB_STATS") != "1":
-        return "nan"
+        return None
 
     if len(rows) == 0:
-        return "nan"
+        return None
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -671,12 +678,12 @@ def compute_embedding_statistics(
     if model_checkpoint is None:
         model_checkpoint = rows[0].get("model_checkpoint")
         if not model_checkpoint:
-            return "nan"
+            return None
 
     if cache_data is not None:
         cached_result = get_metric_value(cache_data, "embedding_statistics")
-        if cached_result is not None:
-            return str(cached_result)
+        if isinstance(cached_result, dict):
+            return cached_result
 
     # Load model and tokenizer
     try:
@@ -688,7 +695,7 @@ def compute_embedding_statistics(
         model.eval()
     except Exception as e:
         print(f"Warning: Failed to load model for embedding statistics: {e}")
-        return "nan"
+        return None
 
     # Get all vocab token embeddings
     vocab_size = len(tokenizer)
@@ -735,7 +742,7 @@ def compute_embedding_statistics(
         compression_token_embeddings.append(embedding_tensor.numpy())
 
     if len(compression_token_embeddings) == 0:
-        return "nan"
+        return None
 
     # Stack compression token embeddings: [total_tokens, hidden_size]
     compression_token_embeddings_np = np.vstack(compression_token_embeddings)  # [total_compression_tokens, hidden_size]
@@ -750,8 +757,12 @@ def compute_embedding_statistics(
     vocab_norm_avg = np.mean(vocab_norms)
     vocab_norm_std = np.std(vocab_norms)
 
-    # Format as "comp_norm_avg±comp_norm_std / vocab_norm_avg±vocab_norm_std"
-    result = f"{comp_norm_avg:.4f}±{comp_norm_std:.4f} / {vocab_norm_avg:.4f}±{vocab_norm_std:.4f}"
+    result = {
+        "comp_norm_avg": float(comp_norm_avg),
+        "comp_norm_std": float(comp_norm_std),
+        "vocab_norm_avg": float(vocab_norm_avg),
+        "vocab_norm_std": float(vocab_norm_std),
+    }
 
     if cache_data is not None:
         set_metric_value(cache_data, "embedding_statistics", result)
@@ -762,7 +773,6 @@ def compute_embedding_statistics(
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
-    tablefmt="latex",
 ) -> Tuple[np.ndarray, List[str], Dict[str, Any], np.ndarray]:
     """Extract embedding trajectory from a dataset.
 
@@ -773,8 +783,8 @@ def extract_trajectory(
 
     Returns:
         Tuple of (embeddings array [n_stages, n_features], labels list, statistics dict, final_embedding)
-        Statistics dict contains: 'num_embeddings', 'total_steps', 'trajectory_length', 'num_pca_for99_var', 'num_random_projections_for99_var'
-        All stats are formatted as mean ± std across all samples in the dataset.
+        Statistics dict contains: 'num_embeddings', 'total_steps', 'trajectory_length', 'num_pca_for99_var',
+        'num_random_projections_for99_var', etc. Each metric stores raw mean/std/count (no formatting).
         final_embedding is the last embedding in the trajectory (for the selected sample)
     """
     cache_data, cache_file, cache_loaded = load_experiment_cache(dataset_path)
@@ -906,36 +916,27 @@ def extract_trajectory(
     else:
         num_pca_explained_99_var_all_embeds = float("nan")
 
-    # Compute mean and std for all metrics
-    def format_mean_std(values: List[float], precision: int = 4) -> str:
-        """Format mean ± std as string."""
+    def summarize_values(values: List[float]) -> Optional[Dict[str, Any]]:
         if len(values) == 0:
-            return "nan"
-        mean_val = np.mean(values)
-        std_val = np.std(values)
-        return to_mean_std_cell(
-            mean_val,
-            std_val,
-            use_latex=(tablefmt == "latex"),
-            float_precision=precision,
-        )
+            return None
+        return {
+            "mean": float(np.mean(values)),
+            "std": float(np.std(values)),
+            "count": int(len(values)),
+        }
 
     stats = {
-        "num_embeddings": format_mean_std(all_num_embeddings, precision=1),
-        "total_steps": format_mean_std(all_total_steps, precision=2),
-        "steps_taken": format_mean_std(all_total_steps, precision=2),
-        "trajectory_length": format_mean_std(all_trajectory_lengths, precision=0),
-        "num_pca_for99_var": format_mean_std(all_num_pca_for99_var, precision=2) if len(all_num_pca_for99_var) > 0 else "nan",
-        "num_pca_for99_var_all_embeds": num_pca_explained_99_var_all_embeds,
-        "num_random_projections_for99_var": (
-            format_mean_std(all_num_random_projections_for99_var, precision=1)
-            if len(all_num_random_projections_for99_var) > 0
-            else "nan"
+        "num_embeddings": summarize_values(all_num_embeddings),
+        "total_steps": summarize_values(all_total_steps),
+        "steps_taken": summarize_values(all_total_steps),
+        "trajectory_length": summarize_values(all_trajectory_lengths),
+        "num_pca_for99_var": summarize_values(all_num_pca_for99_var),
+        "num_pca_for99_var_all_embeds": (
+            float(num_pca_explained_99_var_all_embeds) if not np.isnan(num_pca_explained_99_var_all_embeds) else None
         ),
-        "information_gain": format_mean_std(information_gains, precision=0) if len(information_gains) > 0 else "nan",
-        "information_gain_from_dataset": (
-            format_mean_std(information_gains_from_dataset, precision=0) if len(information_gains_from_dataset) > 0 else "nan"
-        ),
+        "num_random_projections_for99_var": summarize_values(all_num_random_projections_for99_var),
+        "information_gain": summarize_values(information_gains),
+        "information_gain_from_dataset": summarize_values(information_gains_from_dataset),
         "embedding_statistics": embedding_statistics,
     }
 
@@ -1206,6 +1207,56 @@ def compute_pairwise_distances(final_embeddings: List[np.ndarray]) -> Tuple[np.n
     return l2_distances, l1_distances, cosine_distances
 
 
+def format_mean_std_cell(
+    stat: Optional[Dict[str, Any]],
+    precision: int,
+    tablefmt: str,
+) -> str:
+    if not stat:
+        return "nan"
+    mean_val = stat.get("mean")
+    std_val = stat.get("std")
+    if mean_val is None or std_val is None:
+        return "nan"
+    return to_mean_std_cell(
+        mean_val,
+        std_val,
+        use_latex=(tablefmt == "latex"),
+        float_precision=precision,
+    )
+
+
+def format_embedding_statistics(
+    stat: Optional[Dict[str, Any]],
+    precision: int,
+    tablefmt: str,
+) -> str:
+    if not stat:
+        return "nan"
+    if (
+        stat.get("comp_norm_avg") is None
+        or stat.get("comp_norm_std") is None
+        or stat.get("vocab_norm_avg") is None
+        or stat.get("vocab_norm_std") is None
+    ):
+        return "nan"
+    comp = to_mean_std_cell(
+        stat.get("comp_norm_avg"),
+        stat.get("comp_norm_std"),
+        use_latex=(tablefmt == "latex"),
+        float_precision=precision,
+    )
+    vocab = to_mean_std_cell(
+        stat.get("vocab_norm_avg"),
+        stat.get("vocab_norm_std"),
+        use_latex=(tablefmt == "latex"),
+        float_precision=precision,
+    )
+    if "nan" in (comp, vocab):
+        return "nan"
+    return f"{comp} / {vocab}"
+
+
 def print_statistics_table(
     checkpoint_names: List[str],
     statistics: List[Dict[str, Any]],
@@ -1222,46 +1273,62 @@ def print_statistics_table(
 
     # Prepare table data
     table_data = []
+    i = 0
     for name, stats in zip(checkpoint_names, statistics):
 
         table_name = name
         table_name = table_name.replace("sl_4096_", "")
         table_name = table_name.replace("Meta-", "")
-        table_name = table_name.replace("_lr_", " lr=")
+        table_name = re.sub(r"_lr_(.+)", r" {\\small lr=\1}", table_name)
 
         table_data.append(
             [
                 table_name,
-                stats.get("num_embeddings", "nan"),
-                stats.get("trajectory_length", "nan"),
-                # stats.get("steps_taken", "nan"),
-                stats.get("num_pca_for99_var", "nan"),
+                format_mean_std_cell(stats.get("num_embeddings"), precision=1, tablefmt=tablefmt),
+                format_mean_std_cell(stats.get("trajectory_length"), precision=0, tablefmt=tablefmt),
+                # format_mean_std_cell(stats.get("steps_taken"), precision=2, tablefmt=tablefmt),
+                format_mean_std_cell(stats.get("num_pca_for99_var"), precision=2, tablefmt=tablefmt),
                 # stats.get("num_pca_for99_var_all_embeds", "nan"),
-                # stats.get("num_random_projections_for99_var", "nan"),
-                # stats.get("information_gain", "nan"),
-                stats.get("information_gain_from_dataset", "nan"),
-                # stats.get("embedding_statistics", "nan"),
+                # format_mean_std_cell(stats.get("num_random_projections_for99_var"), precision=1, tablefmt=tablefmt),
+                # format_mean_std_cell(stats.get("information_gain"), precision=0, tablefmt=tablefmt),
+                format_mean_std_cell(stats.get("information_gain_from_dataset"), precision=0, tablefmt=tablefmt),
+                # format_embedding_statistics(stats.get("embedding_statistics"), precision=4, tablefmt=tablefmt),
             ]
         )
 
+        if i in [2, 5, 8]:
+            table_data.append(["\midrule REMOVE"])
+
+        i += 1
+
     headers = [
-        "Experiment",
-        "# Compr. Tok",
-        "Traj. Len",
+        "Model",
+        "Compressed Tokens",
+        "Trajectory Length",
         # "Steps Taken",
         "PCA 99%",
         # "PCA ALL 99%",
         # "Rand. Proj. 99%",
         # "Info Gain",
-        "Info Gain (Dataset)",
+        "Information Gain",
         # "Emb. Stats (Comp/Vocab)",
     ]
-    table = tabulate(table_data, headers=headers, tablefmt=tablefmt, numalign="right", stralign="left")
+    result = tabulate(table_data, headers=headers, tablefmt=tablefmt, numalign="right", stralign="left")
+
+    result = result.replace("\\textbackslash{}", "\\")
+    result = result.replace("\$", "$")
+    result = result.replace("\\{", "{")
+    result = result.replace("\\}", "}")
+    result = result.replace("P-", "Pythia")
+    result = result.replace("L3.2-", "Llama-3.2-")
+    result = result.replace("L3.1-", "Llama-3.1-")
+
+    result = re.sub(r"REMOVE.+", "", result)
 
     print("\n" + "=" * 80)
     print("Progressive Embeddings Statistics")
     print("=" * 80)
-    print(table)
+    print(result)
     print("=" * 80 + "\n")
 
 
@@ -1446,7 +1513,7 @@ def main():
     final_embeddings = []
 
     for idx, checkpoint_path in tqdm(enumerate(args.checkpoints)):
-        traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id, tablefmt=args.tablefmt)
+        traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
         trajectories.append(traj)
         labels_list.append(labels)
         statistics_list.append(stats)
