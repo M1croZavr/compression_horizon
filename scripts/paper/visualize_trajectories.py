@@ -748,7 +748,7 @@ def compute_embedding_statistics(
 def extract_trajectory(
     dataset_path: str,
     sample_id: Optional[int] = None,
-) -> Tuple[np.ndarray, List[str], Dict[str, Any], np.ndarray]:
+) -> np.ndarray:
     """Extract embedding trajectory from a dataset.
 
     Args:
@@ -757,150 +757,17 @@ def extract_trajectory(
                    but computes statistics across all samples in the dataset.
 
     Returns:
-        Tuple of (embeddings array [n_stages, n_features], labels list, statistics dict, final_embedding)
-        Statistics dict contains: 'num_embeddings', 'total_steps', 'trajectory_length', 'num_pca_for99_var', 'num_random_projections_for99_var'
-        All stats are formatted as mean ± std across all samples in the dataset.
-        final_embedding is the last embedding in the trajectory (for the selected sample)
+        Embeddings array of shape [n_stages, n_features]
     """
     ds = load_progressive_dataset(dataset_path)
-    # Get model_checkpoint from dataset if available (for cache checking)
-    model_checkpoint_for_cache = None
-    if len(ds) > 0:
-        try:
-            first_row = ds[0]
-            model_checkpoint_for_cache = first_row.get("model_checkpoint")
-        except Exception:
-            pass
-    cache_data, cache_file = load_experiment_cache(dataset_path, model_checkpoint_for_cache)
-
     # Load all rows to compute statistics across all samples
-    all_rows = filter_records(
-        ds, sample_id=None, dataset_path=dataset_path, model_checkpoint=model_checkpoint_for_cache, check_cache=True
-    )
+    all_rows = filter_records(ds, sample_id=None, dataset_path=dataset_path, model_checkpoint=None, check_cache=True)
 
     if not all_rows:
         raise ValueError(f"No records found in {dataset_path}")
 
     # Group all rows by sample_id
     all_by_sid = collate_stages_by_sample(all_rows)
-
-    # Compute statistics for all samples
-    all_num_embeddings = []
-    all_total_steps = []
-    all_trajectory_lengths = []
-    all_num_pca_for99_var = []
-    all_num_random_projections_for99_var = []
-
-    all_embeds = []
-
-    # Extract information gain from dataset (if available)
-    information_gains_from_dataset = extract_information_gain_from_dataset(all_rows)
-
-    # Compute information gain for all samples (by loading model and computing)
-    # Only compute if not available from dataset
-    model_checkpoint = None
-    if len(all_rows) > 0:
-        model_checkpoint = all_rows[0].get("model_checkpoint")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if len(information_gains_from_dataset) == 0:
-        information_gains = compute_information_gain(
-            all_rows, model_checkpoint=model_checkpoint, device=device, cache_data=cache_data
-        )
-    else:
-        information_gains = []
-
-    # Compute embedding statistics (compression vs vocab)
-    embedding_statistics = compute_embedding_statistics(
-        all_rows, model_checkpoint=model_checkpoint, device=device, cache_data=cache_data
-    )
-
-    for sid, stages in all_by_sid.items():
-        # Extract embeddings for this sample (if available)
-        sample_embeddings = []
-        sample_total_steps = 0
-        has_embeddings = True
-        for stage in stages:
-            if "embedding" not in stage or stage.get("embedding") is None:
-                has_embeddings = False
-                break
-            emb = flatten_embedding(stage)
-            sample_embeddings.append(emb)
-            steps = int(stage.get("steps_taken", 0))
-            sample_total_steps += steps
-
-        # Compute metrics that don't require embeddings
-        all_num_embeddings.append(len(stages))
-        all_total_steps.append(sample_total_steps)
-
-        # Compute metrics that require embeddings (use cache if embeddings missing)
-        if has_embeddings and len(sample_embeddings) > 0:
-            trajectory_length = compute_trajectory_length(sample_embeddings, cache_data=cache_data, cache_key_suffix=sid)
-            all_trajectory_lengths.append(trajectory_length)
-
-            all_embeds.extend(sample_embeddings)
-            num_pca_explained_99_var = compute_num_pca_explained_99_var(
-                sample_embeddings, cache_data=cache_data, cache_key_suffix=sid
-            )
-            if not np.isnan(num_pca_explained_99_var):
-                all_num_pca_for99_var.append(num_pca_explained_99_var)
-
-            if os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_RAND_PROJ") == "1":
-                num_random_projections = compute_num_random_projections_explained_99_var(
-                    sample_embeddings, cache_data=cache_data, cache_key_suffix=sid
-                )
-                if not np.isnan(num_random_projections):
-                    all_num_random_projections_for99_var.append(num_random_projections)
-        else:
-            cached_traj = get_metric_map(cache_data, "trajectory_length").get(str(sid))
-            if cached_traj is not None:
-                all_trajectory_lengths.append(float(cached_traj))
-
-            cached_pca = get_metric_map(cache_data, "pca_99_var").get(str(sid))
-            if cached_pca is not None and not np.isnan(float(cached_pca)):
-                all_num_pca_for99_var.append(float(cached_pca))
-
-            if os.environ.get("VISUALIZE_MULTIPLE_TRAJECTORIES_COMPUTE_RAND_PROJ") == "1":
-                cached_rand = get_metric_map(cache_data, "random_proj_99_var").get(str(sid))
-                if cached_rand is not None and not np.isnan(float(cached_rand)):
-                    all_num_random_projections_for99_var.append(float(cached_rand))
-
-    # Compute PCA for all embeddings (use cache if embeddings missing)
-    cached_all_embeds = get_metric_value(cache_data, "pca_99_var_all_embeds")
-    if cached_all_embeds is not None:
-        num_pca_explained_99_var_all_embeds = float(cached_all_embeds)
-    elif len(all_embeds) > 0:
-        num_pca_explained_99_var_all_embeds = compute_num_pca_explained_99_var(all_embeds)
-        set_metric_value(cache_data, "pca_99_var_all_embeds", num_pca_explained_99_var_all_embeds)
-    else:
-        num_pca_explained_99_var_all_embeds = float("nan")
-
-    # Compute mean and std for all metrics
-    def format_mean_std(values: List[float], precision: int = 4) -> str:
-        """Format mean ± std as string."""
-        if len(values) == 0:
-            return "nan"
-        mean_val = np.mean(values)
-        std_val = np.std(values)
-        return f"{mean_val:.{precision}f}±{std_val:.{precision}f}"
-
-    stats = {
-        "num_embeddings": format_mean_std(all_num_embeddings, precision=2),
-        "total_steps": format_mean_std(all_total_steps, precision=2),
-        "steps_taken": format_mean_std(all_total_steps, precision=2),
-        "trajectory_length": format_mean_std(all_trajectory_lengths, precision=2),
-        "num_pca_for99_var": format_mean_std(all_num_pca_for99_var, precision=2) if len(all_num_pca_for99_var) > 0 else "nan",
-        "num_pca_for99_var_all_embeds": num_pca_explained_99_var_all_embeds,
-        "num_random_projections_for99_var": (
-            format_mean_std(all_num_random_projections_for99_var, precision=2)
-            if len(all_num_random_projections_for99_var) > 0
-            else "nan"
-        ),
-        "information_gain": format_mean_std(information_gains, precision=4) if len(information_gains) > 0 else "nan",
-        "information_gain_from_dataset": (
-            format_mean_std(information_gains_from_dataset, precision=4) if len(information_gains_from_dataset) > 0 else "nan"
-        ),
-        "embedding_statistics": embedding_statistics,
-    }
 
     # Now extract trajectory for visualization (use specified sample_id or first available)
     if sample_id is not None:
@@ -925,24 +792,17 @@ def extract_trajectory(
 
     # Extract embeddings in order for visualization
     embeddings = []
-    labels = []
     for stage in stages:
         if "embedding" not in stage or stage.get("embedding") is None:
             raise ValueError(f"Embeddings not available for sample {vis_sample_id} in {dataset_path}")
         emb = flatten_embedding(stage)
         embeddings.append(emb)
-        stage_seq_len = int(stage.get("stage_seq_len", -1))
-        labels.append(f"L{stage_seq_len}")
 
     if len(embeddings) == 0:
         raise ValueError(f"No embeddings found for sample {sample_id} in {dataset_path}")
 
     X = np.stack(embeddings, axis=0)
-    final_embedding = embeddings[-1]  # Last embedding
-
-    save_experiment_cache(cache_file, cache_data)
-
-    return X, labels, stats, final_embedding
+    return X
 
 
 def plot_pca_trajectories(
@@ -1073,9 +933,9 @@ def plot_pca_trajectories(
         n_pairs = len(pairs)
 
         n_cols = 3
-        n_rows = (n_pairs + n_cols - 1) // n_cols
+        n_rows = 2
 
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 6))
         if n_pairs == 1:
             axes = [axes]
         else:
@@ -1093,7 +953,7 @@ def plot_pca_trajectories(
                 ax.plot(x_data, y_data, color=color, alpha=0.5, linewidth=1.5, linestyle="--")
 
                 # Plot points
-                ax.scatter(x_data, y_data, c=[color], s=60, alpha=0.7, edgecolors="black", linewidths=0.5)
+                ax.scatter(x_data, y_data, c=[color], s=60, alpha=0.3, linewidths=0)
 
                 # Create legend handle with scatter marker (only for first subplot)
                 if pair_idx == 0:
@@ -1118,10 +978,6 @@ def plot_pca_trajectories(
         for idx in range(n_pairs, len(axes)):
             axes[idx].axis("off")
 
-        plt.suptitle(
-            f"PCA Trajectories Comparison (4 components, cumulative variance: {explained_var.sum():.4f})",
-            fontsize=18,
-        )
         plt.tight_layout()
         plt.savefig(outfile, dpi=300)
         plt.close()
@@ -1390,16 +1246,9 @@ def main():
     # Extract trajectories from each checkpoint
     trajectories = []
     checkpoint_names = []
-    labels_list = []
-    statistics_list = []
-    final_embeddings = []
-
     for idx, checkpoint_path in tqdm(enumerate(args.checkpoints)):
-        traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
+        traj = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
         trajectories.append(traj)
-        labels_list.append(labels)
-        statistics_list.append(stats)
-        final_embeddings.append(final_emb)
 
         # Determine name for this checkpoint
         if positional_names is not None:
@@ -1430,7 +1279,7 @@ def main():
         outfile=args.output,
         n_components=args.n_components,
         show_labels=args.show_labels,
-        labels_list=labels_list if args.show_labels else None,
+        labels_list=None,
     )
 
     print(f"Visualization complete. Saved to: {args.output}")
