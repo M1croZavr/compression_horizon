@@ -1286,13 +1286,13 @@ def print_statistics_table(
             [
                 table_name,
                 format_mean_std_cell(stats.get("num_embeddings"), precision=1, tablefmt=tablefmt),
+                format_mean_std_cell(stats.get("information_gain_from_dataset"), precision=0, tablefmt=tablefmt),
                 format_mean_std_cell(stats.get("trajectory_length"), precision=0, tablefmt=tablefmt),
                 # format_mean_std_cell(stats.get("steps_taken"), precision=2, tablefmt=tablefmt),
                 format_mean_std_cell(stats.get("num_pca_for99_var"), precision=2, tablefmt=tablefmt),
                 # stats.get("num_pca_for99_var_all_embeds", "nan"),
                 # format_mean_std_cell(stats.get("num_random_projections_for99_var"), precision=1, tablefmt=tablefmt),
                 # format_mean_std_cell(stats.get("information_gain"), precision=0, tablefmt=tablefmt),
-                format_mean_std_cell(stats.get("information_gain_from_dataset"), precision=0, tablefmt=tablefmt),
                 # format_embedding_statistics(stats.get("embedding_statistics"), precision=4, tablefmt=tablefmt),
             ]
         )
@@ -1305,13 +1305,13 @@ def print_statistics_table(
     headers = [
         "Model",
         "Compressed Tokens",
+        "Information Gain",
         "Trajectory Length",
         # "Steps Taken",
         "PCA 99%",
         # "PCA ALL 99%",
         # "Rand. Proj. 99%",
         # "Info Gain",
-        "Information Gain",
         # "Emb. Stats (Comp/Vocab)",
     ]
     result = tabulate(table_data, headers=headers, tablefmt=tablefmt, numalign="right", stralign="left")

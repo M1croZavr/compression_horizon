@@ -45,7 +45,7 @@ def main() -> None:
         {"train": "progr", "type": "Lowercased", "id": "sl_2048_Meta-Llama-3.1-8B_ds_pg19-lowercased-partial-64_lr_0.1"},
     ]
 
-    columns = ["Experiment", "Tokens", "Trajectory Length", "PCA 99%", "Info Gain"]
+    columns = ["Experiment", "Tokens", "Info Gain", "PCA 99%"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
@@ -230,7 +230,8 @@ def main() -> None:
             continue
 
         if summary.dataset_type == "progressive_prefixes":
-            full_ds_path = os.path.join(summary.run_dir, "progressive_prefixes")
+            run_dir_for_metrics = getattr(summary, "run_dir", run_dir)
+            full_ds_path = os.path.join(run_dir_for_metrics, "progressive_prefixes")
             has_metrics = (
                 getattr(summary, "trajectory_length_mean", None) is not None
                 and getattr(summary, "trajectory_length_std", None) is not None
@@ -251,7 +252,7 @@ def main() -> None:
                     summary.trajectory_length_std = None
                     summary.pca_99_mean = None
                     summary.pca_99_std = None
-                save_cache(summary.run_dir, full_ds_path, summary)
+                save_cache(run_dir_for_metrics, full_ds_path, summary)
         else:
             summary.trajectory_length_mean = None
             summary.trajectory_length_std = None
@@ -284,9 +285,10 @@ def main() -> None:
             )
 
         # exp_type = "Progr." if is_progressive else "Full"
-        traj_length = format_metric_cell(summary.trajectory_length_mean, summary.trajectory_length_std, precision=0)
-        pca_99 = format_metric_cell(summary.pca_99_mean, summary.pca_99_std, precision=2)
-        result_table_rows.append([exp_data["type"], max_tokens, traj_length, pca_99, info_gain])
+        # traj_length = format_metric_cell(summary.trajectory_length_mean, summary.trajectory_length_std, precision=0)
+        pca_99 = format_metric_cell(summary.pca_99_mean, summary.pca_99_std, precision=0)
+        result_table_rows.append([exp_data["type"], max_tokens, info_gain, pca_99])
+        # result_table_rows.append([exp_data["type"], max_tokens, traj_length, pca_99, info_gain])
 
     result = tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt)
     result = result.replace("\\textbackslash{}", "\\")
