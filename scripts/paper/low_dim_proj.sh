@@ -34,3 +34,37 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --show_labels --only_stat_table --tablefmt latex
 
 
+# Full Llama31-8B
+PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
+  --checkpoints \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1*/progressive_prefixes \
+  --n_components 4 \
+  --sample_id 0 \
+  --show_labels --only_stat_table --tablefmt latex
+
+# Full pythia-1.4b
+PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
+  --checkpoints \
+    artifacts/experiments_progressive/sl_4096_pythia-1.4b*/progressive_prefixes \
+  --n_components 4 \
+  --sample_id 0 \
+  --show_labels --only_stat_table --tablefmt latex
+
+# Full SmalLM2
+PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
+  --checkpoints \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B*/progressive_prefixes \
+  --n_components 4 \
+  --sample_id 0 \
+  --show_labels --only_stat_table --tablefmt latex
+
+# Full Qwen3-4B
+PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
+  --checkpoints \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B*/progressive_prefixes \
+  --n_components 4 \
+  --sample_id 0 \
+  --show_labels --only_stat_table --tablefmt latex
+
+
+

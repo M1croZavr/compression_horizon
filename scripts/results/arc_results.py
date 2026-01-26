@@ -45,12 +45,18 @@ class ARCRunSummary:
     random_seed: Optional[int] = None
     # Metrics
     baseline_accuracy: Optional[float] = None
+    baseline_token_accuracy: Optional[float] = None
+    baseline_char_accuracy: Optional[float] = None
     baseline_correct: Optional[int] = None
     baseline_total: Optional[int] = None
     compressed_accuracy: Optional[float] = None
+    compressed_token_accuracy: Optional[float] = None
+    compressed_char_accuracy: Optional[float] = None
     compressed_correct: Optional[int] = None
     compressed_total: Optional[int] = None
     accuracy_difference: Optional[float] = None
+    token_accuracy_difference: Optional[float] = None
+    char_accuracy_difference: Optional[float] = None
 
 
 LATEX_ESCAPE_MAP = {
@@ -228,10 +234,20 @@ def aggregate_results(results_file: str) -> Optional[ARCRunSummary]:
         loss_type = abbreviation["loss_type"][loss_type]
 
     baseline_accuracy = baseline.get("accuracy")
+    baseline_token_accuracy = baseline.get("token_normalized_accuracy")
+    baseline_char_accuracy = baseline.get("char_normalized_accuracy")
     compressed_accuracy = compressed.get("accuracy")
+    compressed_token_accuracy = compressed.get("token_normalized_accuracy")
+    compressed_char_accuracy = compressed.get("char_normalized_accuracy")
     accuracy_difference = None
     if baseline_accuracy is not None and compressed_accuracy is not None:
         accuracy_difference = compressed_accuracy - baseline_accuracy
+    token_accuracy_difference = None
+    if baseline_token_accuracy is not None and compressed_token_accuracy is not None:
+        token_accuracy_difference = compressed_token_accuracy - baseline_token_accuracy
+    char_accuracy_difference = None
+    if baseline_char_accuracy is not None and compressed_char_accuracy is not None:
+        char_accuracy_difference = compressed_char_accuracy - baseline_char_accuracy
 
     summary = ARCRunSummary(
         run_dir=run_dir,
@@ -250,12 +266,18 @@ def aggregate_results(results_file: str) -> Optional[ARCRunSummary]:
         inverted_alignment=args.get("inverted_alignment"),
         random_seed=args.get("random_seed"),
         baseline_accuracy=baseline_accuracy,
+        baseline_token_accuracy=baseline_token_accuracy,
+        baseline_char_accuracy=baseline_char_accuracy,
         baseline_correct=baseline.get("correct_predictions"),
         baseline_total=baseline.get("total_predictions"),
         compressed_accuracy=compressed_accuracy,
+        compressed_token_accuracy=compressed_token_accuracy,
+        compressed_char_accuracy=compressed_char_accuracy,
         compressed_correct=compressed.get("correct_predictions"),
         compressed_total=compressed.get("total_predictions"),
         accuracy_difference=accuracy_difference,
+        token_accuracy_difference=token_accuracy_difference,
+        char_accuracy_difference=char_accuracy_difference,
     )
     return summary
 
@@ -300,8 +322,14 @@ def build_latex_table(summaries: List[ARCRunSummary], selected_columns: Optional
     # Metric columns
     metric_cols = [
         ("baseline_accuracy", "Baseline Acc"),
+        ("baseline_token_accuracy", "Baseline Tok Acc"),
+        ("baseline_char_accuracy", "Baseline Char Acc"),
         ("compressed_accuracy", "Compressed Acc"),
+        ("compressed_token_accuracy", "Compressed Tok Acc"),
+        ("compressed_char_accuracy", "Compressed Char Acc"),
         ("accuracy_difference", "Diff"),
+        ("token_accuracy_difference", "Tok Diff"),
+        ("char_accuracy_difference", "Char Diff"),
     ]
 
     # Filter columns if selected_columns is provided
@@ -326,7 +354,17 @@ def build_latex_table(summaries: List[ARCRunSummary], selected_columns: Optional
         # Metrics
         for field_name, _hdr in metric_cols:
             val = getattr(s, field_name)
-            if field_name in ("baseline_accuracy", "compressed_accuracy", "accuracy_difference"):
+            if field_name in (
+                "baseline_accuracy",
+                "baseline_token_accuracy",
+                "baseline_char_accuracy",
+                "compressed_accuracy",
+                "compressed_token_accuracy",
+                "compressed_char_accuracy",
+                "accuracy_difference",
+                "token_accuracy_difference",
+                "char_accuracy_difference",
+            ):
                 row.append(to_percentage_cell(val))
             else:
                 row.append(to_float_cell(val))
@@ -368,7 +406,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "run_name, arc_split, model_checkpoint, limit_samples, num_compression_tokens, "
         "max_optimization_steps, learning_rate, batch_size, dtype, loss_type, "
         "hybrid_alpha, num_alignment_layers, inverted_alignment, random_seed, "
-        "baseline_accuracy, compressed_accuracy, accuracy_difference. "
+        "baseline_accuracy, baseline_token_accuracy, baseline_char_accuracy, "
+        "compressed_accuracy, compressed_token_accuracy, compressed_char_accuracy, "
+        "accuracy_difference, token_accuracy_difference, char_accuracy_difference. "
         "If not specified, all columns are included.",
     )
 

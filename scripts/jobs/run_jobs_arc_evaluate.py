@@ -5,6 +5,14 @@ import time
 
 from mls.manager.job.utils import training_job_api_from_profile
 
+# python scripts/jobs/run_jobs_arc_evaluate.py \
+#   --limit_samples 128 \
+#   --num_compression_tokens 1 \
+#   --max_optimization_steps 1000 \
+#   --learning_rate 0.1 \
+#   --batch_size 32 \
+#   --model Llama-3.1 SmolLM2-1.7B gemma-3-4b-pt EleutherAI/pythia-1.4b
+
 
 def get_in_progress_jobs(client, region, statuses=None):
     """
@@ -157,6 +165,7 @@ if __name__ == "__main__":
         "allenai/Olmo-3-1025-7B",
         "google/gemma-3-4b-pt",
         "google/gemma-3-1b-pt",
+        "EleutherAI/pythia-1.4b",
     ]
 
     # Filter checkpoints by --model flag if provided

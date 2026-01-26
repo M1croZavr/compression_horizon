@@ -19,16 +19,16 @@
 
 set -x
 
-python scripts/paper/visualize_trajectories.py \
-  --checkpoints \
-    artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19_limit_1/progressive_prefixes \
-    artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19-random-suffix-shuffle-64_limit_1/progressive_prefixes \
-    artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19-model-sampled-llama3.1-8B-prefix-64-max_len-2048_limit_1/progressive_prefixes \
-    artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19-lowercased-partial-64_limit_1/progressive_prefixes \
-  --output artifacts/paper/Llama3.1-8B-text-modifications.pdf \
-  --n_components 4 \
-  --sample_id 0 \
-  --show_labels --only_stat_table --tablefmt plain
+# python scripts/paper/visualize_trajectories.py \
+#   --checkpoints \
+#     artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19_limit_1/progressive_prefixes \
+#     artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19-random-suffix-shuffle-64_limit_1/progressive_prefixes \
+#     artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19-model-sampled-llama3.1-8B-prefix-64-max_len-2048_limit_1/progressive_prefixes \
+#     artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19-lowercased-partial-64_limit_1/progressive_prefixes \
+#   --output artifacts/paper/Llama3.1-8B-text-modifications.pdf \
+#   --n_components 4 \
+#   --sample_id 0 \
+#   --show_labels --only_stat_table --tablefmt plain
 
 
 python scripts/paper/visualize_trajectories.py \
@@ -39,5 +39,16 @@ python scripts/paper/visualize_trajectories.py \
     artifacts/experiments_progressive/sl_256_Meta-Llama-3.1-8B_ds_pg19-lowercased-partial-64_limit_1_lr_0.1/progressive_prefixes \
   --output artifacts/paper/Llama3.1-8B-text-modifications_lr-0p1.pdf \
   --n_components 4 \
+  --sample_id 0 \
+  --show_labels --only_stat_table --tablefmt plain
+
+
+python scripts/paper/visualize_trajectories.py \
+  --checkpoints \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_5.0/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_1.0/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.1/progressive_prefixes \
+  --output artifacts/paper/Llama3.1-8B-all-lrs.pdf \
+  --n_components 2 \
   --sample_id 0 \
   --show_labels --only_stat_table --tablefmt plain

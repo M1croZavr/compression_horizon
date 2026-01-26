@@ -1450,12 +1450,6 @@ def main():
         action="store_true",
     )
     parser.add_argument(
-        "--output",
-        type=str,
-        required=True,
-        help="Output file path for the plot",
-    )
-    parser.add_argument(
         "--sample_id",
         type=int,
         default=None,
@@ -1514,7 +1508,7 @@ def main():
     statistics_list = []
     final_embeddings = []
 
-    for idx, checkpoint_path in tqdm(enumerate(args.checkpoints)):
+    for idx, checkpoint_path in tqdm(enumerate(args.checkpoints), desc="Checkpoints", total=len(args.checkpoints)):
         traj, labels, stats, final_emb = extract_trajectory(checkpoint_path, sample_id=args.sample_id)
         trajectories.append(traj)
         labels_list.append(labels)
@@ -1548,20 +1542,6 @@ def main():
 
     if args.only_stat_table:
         return
-
-    # Create output directory if needed
-    # os.makedirs(os.path.dirname(args.output) if os.path.dirname(args.output) else ".", exist_ok=True)
-
-    # # Plot trajectories
-    # plot_pca_trajectories(
-    #     trajectories=trajectories,
-    #     checkpoint_names=checkpoint_names,
-    #     outfile=args.output,
-    #     n_components=args.n_components,
-    #     show_labels=args.show_labels,
-    #     labels_list=labels_list if args.show_labels else None,
-    # )
-    # print(f"Visualization complete. Saved to: {args.output}")
 
 
 if __name__ == "__main__":

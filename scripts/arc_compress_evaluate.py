@@ -23,6 +23,17 @@ from compression_horizon.train.loss import compute_hybrid_cross_entropy_and_alig
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 
+def count_text_tokens(tokenizer: AutoTokenizer, text: str) -> int:
+    """Count tokens in text using the provided tokenizer."""
+    encoded = tokenizer(text, truncation=True, padding=False, return_tensors=None)
+    return len(encoded["input_ids"])
+
+
+def count_text_characters(text: str) -> int:
+    """Count characters in text."""
+    return len(text)
+
+
 def estimate_token_perplexity(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> float:
     """Compute perplexity from logits, labels, and attention mask."""
     # logits: [B, T, V], labels: [B, T], mask: [B, T]
@@ -697,6 +708,12 @@ def main():
     correct_predictions_compressed = 0
     correct_predictions_baseline = 0
     total_predictions = 0
+    total_tokens = 0
+    total_characters = 0
+    correct_tokens_baseline = 0
+    correct_tokens_compressed = 0
+    correct_characters_baseline = 0
+    correct_characters_compressed = 0
 
     # Process in batches
     batch_size = args.batch_size
@@ -816,6 +833,18 @@ def main():
                     correct_predictions_compressed += 1
 
             total_predictions += 1
+            correct_ending = endings[label]
+            full_text = context + correct_ending
+            token_count = count_text_tokens(tokenizer, full_text)
+            char_count = count_text_characters(full_text)
+            total_tokens += token_count
+            total_characters += char_count
+            if baseline_is_correct:
+                correct_tokens_baseline += token_count
+                correct_characters_baseline += char_count
+            if compressed_is_correct:
+                correct_tokens_compressed += token_count
+                correct_characters_compressed += char_count
 
             # Store result
             result = {
@@ -823,6 +852,10 @@ def main():
                 "context": context,
                 "endings": endings,
                 "label": label,
+                "lengths": {
+                    "tokens": token_count,
+                    "characters": char_count,
+                },
                 "baseline": {
                     "predicted_label": baseline_predicted_label,
                     "is_correct": baseline_is_correct,
@@ -848,6 +881,10 @@ def main():
     # Compute final accuracies
     baseline_accuracy = correct_predictions_baseline / total_predictions if total_predictions > 0 else 0.0
     compressed_accuracy = correct_predictions_compressed / total_predictions if total_predictions > 0 else 0.0
+    baseline_token_accuracy = correct_tokens_baseline / total_tokens if total_tokens > 0 else 0.0
+    compressed_token_accuracy = correct_tokens_compressed / total_tokens if total_tokens > 0 else 0.0
+    baseline_char_accuracy = correct_characters_baseline / total_characters if total_characters > 0 else 0.0
+    compressed_char_accuracy = correct_characters_compressed / total_characters if total_characters > 0 else 0.0
 
     # Save results
     results_file = os.path.join(args.output_dir, "results.json")
@@ -858,13 +895,21 @@ def main():
                 "arc_split": args.arc_split,
                 "baseline": {
                     "accuracy": baseline_accuracy,
+                    "token_normalized_accuracy": baseline_token_accuracy,
+                    "char_normalized_accuracy": baseline_char_accuracy,
                     "correct_predictions": correct_predictions_baseline,
                     "total_predictions": total_predictions,
+                    "total_tokens": total_tokens,
+                    "total_characters": total_characters,
                 },
                 "compressed": {
                     "accuracy": compressed_accuracy,
+                    "token_normalized_accuracy": compressed_token_accuracy,
+                    "char_normalized_accuracy": compressed_char_accuracy,
                     "correct_predictions": correct_predictions_compressed,
                     "total_predictions": total_predictions,
+                    "total_tokens": total_tokens,
+                    "total_characters": total_characters,
                 },
                 "results": results,
             },
@@ -882,9 +927,13 @@ def main():
     print("\nBaseline (without compression):")
     print(f"  Correct predictions: {correct_predictions_baseline}")
     print(f"  Accuracy: {baseline_accuracy:.4f}")
+    print(f"  Token-normalized Accuracy: {baseline_token_accuracy:.4f}")
+    print(f"  Character-normalized Accuracy: {baseline_char_accuracy:.4f}")
     print("\nCompressed (with compression tokens):")
     print(f"  Correct predictions: {correct_predictions_compressed}")
     print(f"  Accuracy: {compressed_accuracy:.4f}")
+    print(f"  Token-normalized Accuracy: {compressed_token_accuracy:.4f}")
+    print(f"  Character-normalized Accuracy: {compressed_char_accuracy:.4f}")
     print(f"\nDifference: {compressed_accuracy - baseline_accuracy:+.4f}")
     print(f"Results saved to: {results_file}")
     print("=" * 50)
