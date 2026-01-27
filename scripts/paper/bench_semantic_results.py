@@ -139,12 +139,21 @@ def main() -> int:
     all_models = sorted(set(hs_by_model.keys()) | set(arc_by_model.keys()))
 
     rows = []
+    model_mapping = {
+        "Meta-Llama-3.1-8B": "Llama-3.1-8B",
+        # "Meta-Llama-3.1-8B": "L-3.1-8B",
+        # "SmolLM2-1.7B": "SML2-1.7B",
+        # "pythia-1.4b": "p-1.4b",
+    }
+
     for model in all_models:
         hs_best = pick_best_run(hs_by_model.get(model, []))
         arc_best = pick_best_run(arc_by_model.get(model, []))
+        model_slug = model.split("/")[-1]
+        model_slug = model_mapping.get(model_slug, model_slug)
         rows.append(
             [
-                model,
+                model_slug,
                 to_percentage_cell(hs_best.baseline_token_accuracy if hs_best else None),
                 to_percentage_cell(hs_best.compressed_token_accuracy if hs_best else None),
                 to_percentage_cell(arc_best.baseline_token_accuracy if arc_best else None),
@@ -154,12 +163,16 @@ def main() -> int:
 
     headers = [
         "Model",
-        "HS Baseline Tok Acc",
-        "HS Compressed Tok Acc",
-        "ARC Baseline Tok Acc",
-        "ARC Compressed Tok Acc",
+        "Base",
+        "Cram",
+        "Base",
+        "Cram",
     ]
-    print(tabulate(rows, headers=headers, tablefmt=args.tablefmt))
+    result = tabulate(rows, headers=headers, tablefmt=args.tablefmt)
+    result = result.split("\n")
+    result.insert(2, "                   & \multicolumn{2}{c}{\\textbf{HellaSwag}} & \multicolumn{2}{c}{\\textbf{ARC-E}} \\\\")
+    result = "\n".join(result)
+    print(result)
     return 0
 
 
