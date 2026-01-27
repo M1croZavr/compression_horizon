@@ -1,6 +1,11 @@
 
 # For full and progressive checkpoints
+# tab:full_vs_progressive
 python scripts/paper/full_cramming_table.py
+
+# tab:full_vs_progressive_appendix
+python scripts/paper/full_cramming_table.py --type full_cramming_apendix
+
 
 # For prefix tuned checkpoints tab:prefix_tuning_accuracy
 python scripts/paper/full_cramming_table.py --type prefix_tuning

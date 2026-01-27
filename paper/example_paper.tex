@@ -364,41 +364,23 @@ Because autoregressive decoding is brittle to early errors (Section~\ref{sec:pri
 
 \begin{table}[]
     \centering
-    \caption{Full vs. progressive cramming on PG19. ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}\label{tab:full_vs_progressive}
+    \caption{Full vs. progressive cramming on PG19. ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}
+    \label{tab:full_vs_progressive}
 
     \begin{tabular}{llll}
         \hline
          Type                                           & Tokens                  & Info Gain                & Accuracy                   \\
         \hline
-         \multicolumn{4}{l}{\textbf{Llama-3.2-1B}} \\
-         Full                                           & 512                     & 1965 {\small $\pm$ 244}  & 0.998 {\small $\pm$ 0}     \\
-         Progr.                                         & 402 {\small $\pm$ 85}   & 1500 {\small $\pm$ 282}  & 1.0                        \\
-         \midrule
-         \multicolumn{4}{l}{\textbf{Llama-3.2-3B}} \\
-         Full                                           & 1024                    & 3572 {\small $\pm$ 549}  & 0.996 {\small $\pm$ 0.007} \\
-         Progr.                                         & 902 {\small $\pm$ 207}  & 3074 {\small $\pm$ 527}  & 1.0                        \\
-         \midrule
          \multicolumn{4}{l}{\textbf{Llama-3.1-8B}} \\
          Full                                           & 1568                    & 5002 {\small $\pm$ 850}  & 0.997 {\small $\pm$ 0.003} \\
          Progr.                                         & 1064 {\small $\pm$ 394} & 3028 {\small $\pm$ 1321} & 1.0                        \\
          \midrule \midrule
-         \multicolumn{4}{l}{\textbf{Pythia160m}} \\
-         Full                                           & 32                      & 105 {\small $\pm$ 20}    & 0.684 {\small $\pm$ 0.175} \\
-         Progr.                                         & 11 {\small $\pm$ 2}     & 19 {\small $\pm$ 26}     & 1.0                        \\
-         \midrule
-         \multicolumn{4}{l}{\textbf{Pythia410m}} \\
-         Full                                           & 128                     & 365 {\small $\pm$ 40}    & 0.891 {\small $\pm$ 0.062} \\
-         Progr.                                         & 102 {\small $\pm$ 41}   & 323 {\small $\pm$ 105}   & 1.0                        \\
-         \midrule
          \multicolumn{4}{l}{\textbf{Pythia1.4b}} \\
          Full                                           & 256                     & 802 {\small $\pm$ 113}   & 0.985 {\small $\pm$ 0.031} \\
          Progr.                                         & 544 {\small $\pm$ 57}   & 1694 {\small $\pm$ 125}  & 1.0                        \\
         \hline
         \end{tabular}
 
-
-
-    \label{tab:full_vs_progressive}
 \end{table}
 
 
@@ -449,6 +431,7 @@ Table~\ref{tab:pca_models} further highlights two qualitative patterns: (i) larg
 \end{table*}
 
 
+% TODO may be make image shorter in heigth?
 \begin{figure}[t]
     \centering
     \centerline{\includegraphics[width=\columnwidth]{aggregate_pca_components_vs_seq_len_Llama3.1-8B_all_lrs.pdf}}
@@ -677,7 +660,48 @@ which we feel must be specifically highlighted here.
 \section{You \emph{can} have an appendix here.}
 
 
-\subsection{Dataset Modifications}
+\section{Full cramming vs progressive.}
+
+In Table~\ref{tab:full_vs_progressive_appendix} we present results from section~\ref{sec:experiments} for full and compressive cramming comparison for different model sizes of Llama and Pythia families.
+
+\begin{table}
+    \caption{Full vs. progressive cramming on PG19. ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}
+    \label{tab:full_vs_progressive_appendix}
+
+    \begin{tabular}{llll}
+        \hline
+         Type                                           & Tokens                  & Info Gain                & Accuracy                   \\
+        \hline
+         \multicolumn{4}{l}{\textbf{Llama-3.2-1B}} \\
+         Full                                           & 512                     & 1965 {\small $\pm$ 244}  & 0.998 {\small $\pm$ 0}     \\
+         Progr.                                         & 402 {\small $\pm$ 85}   & 1500 {\small $\pm$ 282}  & 1.0                        \\
+         \midrule
+         \multicolumn{4}{l}{\textbf{Llama-3.2-3B}} \\
+         Full                                           & 1024                    & 3572 {\small $\pm$ 549}  & 0.996 {\small $\pm$ 0.007} \\
+         Progr.                                         & 902 {\small $\pm$ 207}  & 3074 {\small $\pm$ 527}  & 1.0                        \\
+         \midrule
+         \multicolumn{4}{l}{\textbf{Llama-3.1-8B}} \\
+         Full                                           & 1568                    & 5002 {\small $\pm$ 850}  & 0.997 {\small $\pm$ 0.003} \\
+         Progr.                                         & 1064 {\small $\pm$ 394} & 3028 {\small $\pm$ 1321} & 1.0                        \\
+         \midrule \midrule
+         \multicolumn{4}{l}{\textbf{Pythia160m}} \\
+         Full                                           & 32                      & 105 {\small $\pm$ 20}    & 0.684 {\small $\pm$ 0.175} \\
+         Progr.                                         & 11 {\small $\pm$ 2}     & 19 {\small $\pm$ 26}     & 1.0                        \\
+         \midrule
+         \multicolumn{4}{l}{\textbf{Pythia410m}} \\
+         Full                                           & 128                     & 365 {\small $\pm$ 40}    & 0.891 {\small $\pm$ 0.062} \\
+         Progr.                                         & 102 {\small $\pm$ 41}   & 323 {\small $\pm$ 105}   & 1.0                        \\
+         \midrule
+         \multicolumn{4}{l}{\textbf{Pythia1.4b}} \\
+         Full                                           & 256                     & 802 {\small $\pm$ 113}   & 0.985 {\small $\pm$ 0.031} \\
+         Progr.                                         & 544 {\small $\pm$ 57}   & 1694 {\small $\pm$ 125}  & 1.0                        \\
+        \hline
+        \end{tabular}
+
+\end{table}
+
+
+\section{Dataset Modifications}
 
 To probe sensitivity to surface form, we create controlled variants of PG19 samples and compare their progressive trajectories (Figure~\ref{fig:trajectories_text_modifications}).
 Each variant shares an identical 64-token prefix and modifies the suffix in one of three ways: random word permutation, greedy decoding from Llama-3.1-8B (``Sampled''), or lowercasing.
