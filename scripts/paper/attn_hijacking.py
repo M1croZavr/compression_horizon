@@ -173,8 +173,8 @@ def compute_checkpoint_attention_mass_data(
     # Load model and tokenizer
     print(f"Loading model on device: {device}")
 
-    if model_checkpoint.startswith("google/"):
-        model_checkpoint = model_checkpoint.replace("google/", "unsloth/")
+    if model_checkpoint.startswith("unsloth/"):
+        model_checkpoint = model_checkpoint.replace("unsloth/", "unsloth/")
 
     try:
         model = AutoModelForCausalLM.from_pretrained(

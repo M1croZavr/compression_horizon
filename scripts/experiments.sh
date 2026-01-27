@@ -22,6 +22,9 @@ set -x
 # MODEL_NAME=EleutherAI/pythia-1.4b
 # SEQ_LENGTHS=(64 96 128 160 256)
 
+# MODEL_NAME=unsloth/gemma-3-4b-pt
+# SEQ_LENGTHS=(32 64 96 128 160 256)
+
 
 # LR check
 python scripts/jobs/run_jobs.py --model_checkpoint $MODEL_NAME --limit_dataset_items 10 --per_device_train_batch_size 10 --max_optimization_steps_per_sample 10000 --learning_rate 0.01 --max_sequence_lengths $SEQ_LENGTHS

@@ -144,8 +144,8 @@ if __name__ == "__main__":
         "EleutherAI/pythia-1.4b",
         "allenai/OLMo-1B-hf",
         "allenai/Olmo-3-1025-7B",
-        "google/gemma-3-4b-pt",
-        "google/gemma-3-1b-pt",
+        "unsloth/gemma-3-4b-pt",
+        "unsloth/gemma-3-1b-pt",
     ]
 
     if args.model:
