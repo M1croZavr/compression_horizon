@@ -425,7 +425,7 @@ We record the sequence of optimized embeddings $\{\mathbf{e}^{(k)}\}_{k=1}^{n}$ 
 Across model families, the trajectories are well-approximated by surprisingly low-dimensional structure: only a modest number of principal components explains 99\% of the trajectory variance, even when hundreds (or thousands) of tokens are reconstructed (Table~\ref{tab:all_progressive_modifications}).
 
 Figure~\ref{fig:pca_from_seq_length} shows that, for Llama-3.1-8B, the number of components required for 99\% variance grows sublinearly with prefix length and is consistent with a slow (approximately logarithmic) trend across learning rates.
-Table~\ref{tab:all_progressive_modifications} further highlights that Gemma~3 achieves noticeably lower information gain at comparable or smaller token counts, consistent with optimization constraints induced by logits softcapping \cite{gemma2}.
+Table~\ref{tab:all_progressive_modifications} further suggests that Gemma~3 achieves noticeably lower information gain at smaller reconstructed lengths than Llama and Pythia, consistent with additional optimization constraints such as logits softcapping \cite{gemma2}.
 
 {\color{red} TODO - reconstruction from PCA components}
 
@@ -451,12 +451,11 @@ Empirically, this can improve stability and alter the effective capacity:
     \item It can reduce the intrinsic dimensionality of trajectories (PCA 99\%) while preserving, or sometimes increasing, information gain.
 \end{itemize}
 
-Table~\ref{tab:all_progressive_modifications} ablates projection dimension across model families.
-Three takeaways stand out:
+Table~\ref{tab:all_progressive_modifications} compares baseline progressive cramming to a representative low-dimensional projection setting (``dim'') for each family.
+Two takeaways stand out:
 \begin{itemize}
     \item For Llama-3.1-8B and SmolLM2-1.7B, projection can substantially increase achievable token counts and information gain compared to the unconstrained baseline.
-    % \item Increasing projection dimension does not reliably increase PCA 99\% (and can even decrease it), but it often increases the measured trajectory length, suggesting longer optimization paths within a similarly low-dimensional subspace.
-    \item For Pythia-1.4B, small projection dimensions strongly reduce PCA 99\% and trajectory length, but also reduce capacity; adding a larger projection partially recovers information gain.
+    \item For Pythia-1.4B, projection can reduce token count and information gain relative to the baseline; combining projection with activation alignment partially recovers performance compared to projection alone. For Gemma in our setting, projection reduces token count and information gain relative to the baseline.
 \end{itemize}
 
 
@@ -481,7 +480,7 @@ In contrast, Llama and Gemma show much lower \texttt{[mem]} attention mass than 
 
 \begin{table*}[]
     \centering
-    \caption{Attention hijacking summary. ``Compression Token'' is attention mass to position 0 for \texttt{[mem]} in the crammed input; ``BOS Token'' is attention mass to position 0 for the uncompressed baseline; ``Diff'' is (Compression$-$BOS). ``Correlation'' is the Pearson correlation between per-layer attention-mass profiles. Values are mean $\pm$ standard deviation over samples.}
+    \caption{Attention hijacking summary. ``Compression Token'' is attention mass to position 0 for \texttt{[mem]} in the crammed input; ``BOS Token'' is attention mass to position 0 for the uncompressed baseline; ``Diff'' is (Compression$-$BOS). ``Correlation'' is the Pearson correlation between per-layer attention-mass profiles.}
     \label{tab:attn_hijacking}
 
 \begin{tabular}{llllr}
@@ -733,7 +732,7 @@ Compared to cramming, prefix tuning typically attracts less attention mass than 
 
 \begin{table*}[]
     \centering
-    \caption{Prefix-tuning attention mass, computed with the same metric as Table~\ref{tab:attn_hijacking} but for learned prefix tokens instead of \texttt{[mem]}. Values are mean $\pm$ standard deviation over samples.}
+    \caption{Prefix-tuning attention mass, computed with the same metric as Table~\ref{tab:attn_hijacking} but for learned prefix tokens instead of \texttt{[mem]}.}
     \label{tab:prefix_tuning_attention_hijacking}
 \begin{tabular}{llllr}
 \hline
