@@ -204,9 +204,11 @@ def safe_mean(values: List[float]) -> Optional[float]:
 
 def safe_std(values: List[float]) -> Optional[float]:
     # population std (to keep deterministic for small N), use pstdev
+    if not values:
+        return None
     if np.isnan(values[0]):
         return None
-    return pstdev(values) if values else None
+    return pstdev(values)
 
 
 abbreviation = {

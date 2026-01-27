@@ -32,7 +32,7 @@ PYTHONPATH=./src:. python scripts/paper/attn_hijacking.py \
   --tablefmt latex
 
 
-# Prefix Tuning
+# Prefix Tuning tab:prefix_tuning_attention_hijacking
 PYTHONPATH=./src:. python scripts/paper/attn_hijacking.py \
   --checkpoints \
     artifacts/experiments_prefix_tuning/pt_sl_1024_SmolLM2-135M/prefix_tuning_prefixes \

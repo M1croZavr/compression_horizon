@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from scripts.results.results import (
     aggregate_non_progressive,
+    aggregate_prefix_tuning,
     aggregate_progressive,
     load_dataset_rows,
     to_mean_std_cell,
@@ -21,43 +22,73 @@ def parse_args() -> argparse.Namespace:
         default="latex",
         help="Tabulate table format (e.g., plain, github, latex, grid).",
     )
+    parser.add_argument(
+        "--type",
+        choices=["full_cramming", "prefix_tuning"],
+        default="full_cramming",
+        help="Tabulate table format (e.g., plain, github, latex, grid).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    cache_filename = "full_cramming_table_cache.json"
-    cache_version = 1
+    if args.type == "full_cramming":
+        cache_filename = "full_cramming_table_cache.json"
+        cache_version = 1
 
-    experiments_list = [
-        # Llama-3.2-1B
-        {"train": "full", "id": "4e378cf3"},  # 256
-        {"train": "full", "id": "af92266e"},  # 512
-        {"train": "progr", "id": "sl_4096_Llama-3.2-1B_lr_0.1"},
-        # Llama-3.2-3B
-        {"train": "full", "id": "7359e14b"},  # 512
-        {"train": "full", "id": "ef2ea924"},  # 1024
-        {"train": "progr", "id": "sl_4096_Llama-3.2-3B_lr_0.1"},
-        # Llama-3.1-8B
-        {"train": "full", "id": "dfbe32b8"},  # 1024
-        {"train": "full", "id": "b5aef07e"},  # 1568
-        {"train": "progr", "id": "sl_4096_Meta-Llama-3.1-8B_lr_0.1"},
-        # Pythia 160M
-        {"train": "full", "id": "dbced9cc"},  # 32
-        {"train": "full", "id": "6a93af63"},  # 64
-        {"train": "progr", "id": "sl_4096_pythia-160m_lr_0.5"},
-        # Pythia 410M
-        {"train": "full", "id": "328bdbfb"},  # 96
-        {"train": "full", "id": "22d7b7db"},  # 128
-        {"train": "progr", "id": "sl_4096_pythia-410m_lr_0.5"},
-        # Pythia 1.4B
-        {"train": "full", "id": "f3296f56"},  # 160
-        {"train": "full", "id": "a1e58eb5"},  # 256
-        {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
-    ]
+        experiments_list = [
+            # Llama-3.2-1B
+            {"train": "full", "id": "4e378cf3"},  # 256
+            {"train": "full", "id": "af92266e"},  # 512
+            {"train": "progr", "id": "sl_4096_Llama-3.2-1B_lr_0.1"},
+            # Llama-3.2-3B
+            {"train": "full", "id": "7359e14b"},  # 512
+            {"train": "full", "id": "ef2ea924"},  # 1024
+            {"train": "progr", "id": "sl_4096_Llama-3.2-3B_lr_0.1"},
+            # Llama-3.1-8B
+            {"train": "full", "id": "dfbe32b8"},  # 1024
+            {"train": "full", "id": "b5aef07e"},  # 1568
+            {"train": "progr", "id": "sl_4096_Meta-Llama-3.1-8B_lr_0.1"},
+            # Pythia 160M
+            {"train": "full", "id": "dbced9cc"},  # 32
+            {"train": "full", "id": "6a93af63"},  # 64
+            {"train": "progr", "id": "sl_4096_pythia-160m_lr_0.5"},
+            # Pythia 410M
+            {"train": "full", "id": "328bdbfb"},  # 96
+            {"train": "full", "id": "22d7b7db"},  # 128
+            {"train": "progr", "id": "sl_4096_pythia-410m_lr_0.5"},
+            # Pythia 1.4B
+            {"train": "full", "id": "f3296f56"},  # 160
+            {"train": "full", "id": "a1e58eb5"},  # 256
+            {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
+        ]
+    elif args.type == "prefix_tuning":
+        cache_filename = "prefix_tuning_table_cache.json"
+        cache_version = 1
 
-    columns = ["Type", "Tokens", "Info Gain", "Accuracy"]
+        # TODO pythia
+
+        experiments_list = [
+            # Llama-3.2-1B
+            # TODO
+            {"train": "progr", "id": "sl_4096_Llama-3.2-1B_lr_0.1"},
+            # Llama-3.2-3B
+            {"train": "progr", "id": "sl_4096_Llama-3.2-3B_lr_0.1"},
+            {"train": "prefix", "id": "pt_sl_8192_Llama-3.2-3B"},
+            {"train": "prefix", "id": "pt_sl_16384_Llama-3.2-3B"},
+            # Llama-3.1-8B TODO
+            # Pythia TODO
+            {"train": "progr", "id": "sl_4096_pythia-160m_lr_0.5"},
+            {"train": "progr", "id": "sl_4096_pythia-410m_lr_0.5"},
+            {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
+        ]
+
+    if args.type == "prefix_tuning":
+        columns = ["Type", "Tokens", "Accuracy"]
+    else:
+        columns = ["Type", "Tokens", "Info Gain", "Accuracy"]
 
     def format_experiment_label(summary, fallback_label: str) -> str:
         parts = []
@@ -141,6 +172,16 @@ def main() -> None:
                     summary = aggregate_progressive(full_ds_path, rows)
                     if summary is not None:
                         save_cache(run_dir, full_ds_path, summary)
+        elif experiment["train"] == "prefix":
+            run_dir = f"artifacts/experiments_prefix_tuning/{experiment['id']}"
+            full_ds_path = os.path.join(run_dir, "prefix_tuning_prefixes")
+            if os.path.isdir(full_ds_path):
+                summary = load_cache(run_dir, full_ds_path)
+                if summary is None:
+                    rows = load_dataset_rows(full_ds_path)
+                    summary = aggregate_prefix_tuning(full_ds_path, rows)
+                    if summary is not None:
+                        save_cache(run_dir, full_ds_path, summary)
         else:
             raise ValueError(f"Unknown train type: {experiment['train']}")
 
@@ -161,6 +202,7 @@ def main() -> None:
             float_precision=0,
         )
         is_progressive = summary.dataset_type == "progressive_prefixes"
+        is_prefix_tuning = summary.dataset_type == "prefix_tuning_prefixes"
         if not is_progressive:
             accuracy = to_mean_std_cell(
                 summary.final_convergence_mean,
@@ -180,10 +222,19 @@ def main() -> None:
             )
 
         if prev_exp is None or prev_exp != experiment:
-            result_table_rows.append([f"\multicolumn{{4}}{{l}}{{\\textbf{{{experiment}}}}} \\\\ REMOVE"])
+            num_cols = len(columns)
+            result_table_rows.append([f"\multicolumn{{{num_cols}}}{{l}}{{\\textbf{{{experiment}}}}} \\\\ REMOVE"])
 
-        exp_type = "Progr." if is_progressive else "Full"
-        result_table_rows.append([exp_type, max_tokens, info_gain, accuracy])
+        if is_progressive:
+            exp_type = "Progr."
+        elif is_prefix_tuning:
+            exp_type = "Prefix"
+        else:
+            exp_type = "Full"
+        if args.type == "prefix_tuning":
+            result_table_rows.append([exp_type, max_tokens, accuracy])
+        else:
+            result_table_rows.append([exp_type, max_tokens, info_gain, accuracy])
         if is_progressive and i != len(ordered_summaries) - 1:
             if "L3.1" in experiment:
                 result_table_rows.append(["\midrule \midrule REMOVE "])
