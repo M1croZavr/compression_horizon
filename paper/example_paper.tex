@@ -592,6 +592,14 @@ Perfect reconstruction accuracy is insufficient; future work must evaluate capab
 
 \subsection{Limitations}
 
+{\color{red} TODO what if we remove bos token? will it be easier  to compress?}
+{\color{red} how much bos token is somilar to bos token?}
+{\color{red} looks like attention sliv (sink?)}
+% TODO что если убрать BOS токен для сжатия - будет ли так лучше сжиматься?
+% TODO на сколько похожи мем токены и BOS токены?
+% Это как слив аттеншна, только с насильной генерацией?
+
+
 % \begin{itemize}
 %     \item \todo{Models tested (only decoder-only? specific families?)}
 %     \item \todo{Sequence types (only English text? specific domains?)}
@@ -764,10 +772,6 @@ Compared to cramming, prefix tuning typically attracts less attention mass than 
 \hline
 \end{tabular}
 \end{table*}
-
-% TODO что если убрать BOS токен для сжатия - будет ли так лучше сжиматься?
-% TODO на сколько похожи мем токены и BOS токены?
-% Это как слив аттеншна, только с насильной генерацией?
 
 
 \begin{table}[]
