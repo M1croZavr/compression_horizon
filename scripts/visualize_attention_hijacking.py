@@ -1004,12 +1004,6 @@ def main():
         help="Model checkpoint path (if not provided, will try to infer from dataset)",
     )
     parser.add_argument(
-        "--sample_id",
-        type=int,
-        default=None,
-        help="Optional sample_id filter (if not provided, will process all samples)",
-    )
-    parser.add_argument(
         "--output_dir",
         type=str,
         default=None,
@@ -1030,7 +1024,7 @@ def main():
     parser.add_argument(
         "--save_per_sample_heatmaps",
         action="store_true",
-        help="Save individual heatmaps for each sample when processing all samples (ignored if --sample_id is provided).",
+        help="Save individual heatmaps for each sample.",
     )
     parser.add_argument(
         "--save_attention_weights_heatmaps",
@@ -1077,7 +1071,7 @@ def main():
         raise ValueError("Could not detect dataset type. Expected 'progressive' or 'prefix_tuning' dataset.")
 
     # Filter records
-    rows = filter_records(ds, sample_id=args.sample_id, dataset_type=dataset_type)
+    rows = filter_records(ds, sample_id=None, dataset_type=dataset_type)
     if not rows:
         raise ValueError("No records found with given filters.")
 
@@ -1131,25 +1125,24 @@ def main():
     all_original_attention_mass: List[List[float]] = []
     num_layers = model.config.num_hidden_layers
 
-    if args.sample_id is None:
-        # Average heatmaps over all samples, limiting to the minimum max sequence length across samples.
-        eligible_by_sid: Dict[int, List[Dict[str, Any]]] = {}
-        per_sample_max = []
-        for _sid, stages in by_sid.items():
-            if dataset_type == "prefix_tuning":
-                # For prefix tuning, get sequence length from tokenized text
-                stage_record = stages[0]
-                text = stage_record.get("text", "")
-                if not isinstance(text, str) or text.strip() == "":
-                    continue
-                enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
-                max_len = enc["input_ids"].shape[1]
-            else:
-                # Progressive: use stage_seq_len
-                max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
-            if max_len >= args.min_seq_length:
-                eligible_by_sid[_sid] = stages
-                per_sample_max.append(max_len)
+    # Average heatmaps over all samples, limiting to the minimum max sequence length across samples.
+    eligible_by_sid: Dict[int, List[Dict[str, Any]]] = {}
+    per_sample_max = []
+    for _sid, stages in by_sid.items():
+        if dataset_type == "prefix_tuning":
+            # For prefix tuning, get sequence length from tokenized text
+            stage_record = stages[0]
+            text = stage_record.get("text", "")
+            if not isinstance(text, str) or text.strip() == "":
+                continue
+            enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+            max_len = enc["input_ids"].shape[1]
+        else:
+            # Progressive: use stage_seq_len
+            max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
+        if max_len >= args.min_seq_length:
+            eligible_by_sid[_sid] = stages
+            per_sample_max.append(max_len)
         if not per_sample_max:
             raise ValueError(
                 f"No samples with max sequence length >= {args.min_seq_length} found. "
@@ -1245,93 +1238,6 @@ def main():
             sample_id=None,
             output_path=output_path,
         )
-    else:
-        for sample_id, stages in by_sid.items():
-            if dataset_type == "prefix_tuning":
-                # For prefix tuning, get sequence length from tokenized text
-                stage_record = stages[0]
-                text = stage_record.get("text", "")
-                if not isinstance(text, str) or text.strip() == "":
-                    print(f"\nSkipping sample {sample_id}: empty text")
-                    continue
-                enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
-                max_len = enc["input_ids"].shape[1]
-            else:
-                # Progressive: use stage_seq_len
-                max_len = max((int(s.get("stage_seq_len", -1)) for s in stages), default=-1)
-            if max_len < args.min_seq_length:
-                print(f"\nSkipping sample {sample_id}: max sequence length={max_len} < min_seq_length={args.min_seq_length}")
-                continue
-            stage_count = len(stages)
-            stage_label = "stages" if dataset_type == "progressive" else "entry"
-            print(f"\nProcessing sample {sample_id} with {stage_count} {stage_label}...")
-            results, attentions, text, num_compression_tokens = compute_attention_mass_for_stages(
-                model=model,
-                tokenizer=tokenizer,
-                stages=stages,
-                device=device,
-                attention_block_size=args.attention_block_size,
-                dataset_type=dataset_type,
-            )
-            output_path = os.path.join(output_dir, f"attention_hijacking_sample_{sample_id}.png")
-            plot_attention_hijacking_heatmap(
-                results=results,
-                sample_id=sample_id,
-                output_path=output_path,
-            )
-            # Save attention weights heatmap if flag is set
-            if (
-                args.save_attention_weights_heatmaps
-                and attentions is not None
-                and text is not None
-                and num_compression_tokens is not None
-            ):
-                output_path = os.path.join(output_dir, f"attention_weights_sample_{sample_id}.png")
-                plot_attention_weights_heatmap(
-                    attentions=attentions,
-                    num_compression_tokens=num_compression_tokens,
-                    tokenizer=tokenizer,
-                    text=text,
-                    sample_id=sample_id,
-                    output_path=output_path,
-                    layer_idx=args.attention_layer_idx,
-                    head_idx=args.attention_head_idx,
-                )
-
-                # Compute and save attention mass cache for compression embeddings
-            if results and text is not None:
-                # Get target sequence lengths from results
-                target_seq_lengths = sorted(results.keys())
-
-                avg_attention_mass_compression = compute_average_attention_mass_per_layer(
-                    results=results,
-                    num_layers=num_layers,
-                )
-
-                # Compute attention mass for original sequence (without compression)
-                print(f"Computing attention mass for original sequence (sample {sample_id})...")
-                avg_attention_mass_original = compute_attention_mass_for_original_sequence(
-                    model=model,
-                    tokenizer=tokenizer,
-                    text=text,
-                    device=device,
-                    target_seq_lengths=target_seq_lengths,
-                    num_layers=num_layers,
-                )
-
-                # Collect for summary
-                all_compression_attention_mass.append(avg_attention_mass_compression)
-                all_original_attention_mass.append(avg_attention_mass_original)
-
-                # Save to cache
-                cache_data = {
-                    "sample_id": sample_id,
-                    "num_layers": num_layers,
-                    "target_seq_lengths": target_seq_lengths,
-                    "avg_attention_mass_per_layer_compression": avg_attention_mass_compression,
-                    "avg_attention_mass_per_layer_original": avg_attention_mass_original,
-                }
-                save_attention_mass_cache(cache_data, output_dir, sample_id=sample_id)
 
     # Print summary of average attention mass
     if all_compression_attention_mass or all_original_attention_mass:
