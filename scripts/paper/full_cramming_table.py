@@ -86,7 +86,7 @@ def main() -> None:
         ]
 
     if args.type == "prefix_tuning":
-        columns = ["Type", "Tokens", "Accuracy"]
+        columns = ["Experiment", "Type", "Tokens", "Accuracy"]
     else:
         columns = ["Type", "Tokens", "Info Gain", "Accuracy"]
 
@@ -221,18 +221,19 @@ def main() -> None:
                 float_precision=0,
             )
 
-        if prev_exp is None or prev_exp != experiment:
-            num_cols = len(columns)
-            result_table_rows.append([f"\multicolumn{{{num_cols}}}{{l}}{{\\textbf{{{experiment}}}}} \\\\ REMOVE"])
+        if args.type != "prefix_tuning":
+            if prev_exp is None or prev_exp != experiment:
+                num_cols = len(columns)
+                result_table_rows.append([f"\multicolumn{{{num_cols}}}{{l}}{{\\textbf{{{experiment}}}}} \\\\ REMOVE"])
 
         if is_progressive:
             exp_type = "Progr."
         elif is_prefix_tuning:
-            exp_type = "Prefix"
+            exp_type = "Full PrefixT."
         else:
             exp_type = "Full"
         if args.type == "prefix_tuning":
-            result_table_rows.append([exp_type, max_tokens, accuracy])
+            result_table_rows.append([experiment, exp_type, max_tokens, accuracy])
         else:
             result_table_rows.append([exp_type, max_tokens, info_gain, accuracy])
         if is_progressive and i != len(ordered_summaries) - 1:
