@@ -40,27 +40,27 @@ def main() -> None:
 
         experiments_list = [
             # Llama-3.2-1B
-            {"train": "full", "id": "4e378cf3"},  # 256
+            # {"train": "full", "id": "4e378cf3"},  # 256
             {"train": "full", "id": "af92266e"},  # 512
             {"train": "progr", "id": "sl_4096_Llama-3.2-1B_lr_0.1"},
             # Llama-3.2-3B
-            {"train": "full", "id": "7359e14b"},  # 512
+            # {"train": "full", "id": "7359e14b"},  # 512
             {"train": "full", "id": "ef2ea924"},  # 1024
             {"train": "progr", "id": "sl_4096_Llama-3.2-3B_lr_0.1"},
             # Llama-3.1-8B
-            {"train": "full", "id": "dfbe32b8"},  # 1024
+            # {"train": "full", "id": "dfbe32b8"},  # 1024
             {"train": "full", "id": "b5aef07e"},  # 1568
             {"train": "progr", "id": "sl_4096_Meta-Llama-3.1-8B_lr_0.1"},
             # Pythia 160M
             {"train": "full", "id": "dbced9cc"},  # 32
-            {"train": "full", "id": "6a93af63"},  # 64
+            # {"train": "full", "id": "6a93af63"},  # 64
             {"train": "progr", "id": "sl_4096_pythia-160m_lr_0.5"},
             # Pythia 410M
-            {"train": "full", "id": "328bdbfb"},  # 96
+            # {"train": "full", "id": "328bdbfb"},  # 96
             {"train": "full", "id": "22d7b7db"},  # 128
             {"train": "progr", "id": "sl_4096_pythia-410m_lr_0.5"},
             # Pythia 1.4B
-            {"train": "full", "id": "f3296f56"},  # 160
+            # {"train": "full", "id": "f3296f56"},  # 160
             {"train": "full", "id": "a1e58eb5"},  # 256
             {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
         ]
