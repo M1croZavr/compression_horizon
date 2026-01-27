@@ -1221,6 +1221,40 @@ def plot_pca_reconstruction_accuracy(
         print(f"plot_pca_reconstruction_accuracy (first error index): {error_index_outfile}")
         plt.close()
 
+        # Create distribution plot of error indices for all reconstructed samples
+        all_error_indices = []
+        for indices in all_first_error_indices_per_component:
+            all_error_indices.extend(indices)
+
+        if len(all_error_indices) > 0:
+            plt.figure(figsize=(10, 7))
+            plt.hist(all_error_indices, bins=50, alpha=0.7, color="steelblue", edgecolor="black", linewidth=1.2)
+            plt.axvline(
+                np.mean(all_error_indices),
+                color="red",
+                linestyle="--",
+                linewidth=2,
+                label=f"Mean: {np.mean(all_error_indices):.2f}",
+            )
+            plt.axvline(
+                np.median(all_error_indices),
+                color="green",
+                linestyle="--",
+                linewidth=2,
+                label=f"Median: {np.median(all_error_indices):.2f}",
+            )
+            plt.xlabel("First Error Index (Sequence Position)", fontsize=14)
+            plt.ylabel("Frequency", fontsize=14)
+            plt.title(f"{title} - Distribution of Error Indices (All Samples, All Components)", fontsize=16)
+            plt.grid(True, alpha=0.3, axis="y")
+            plt.legend(loc="best", fontsize=11)
+            plt.xlim(left=0)
+            plt.tight_layout()
+            distribution_outfile = outfile.replace(".png", "_error_indices_distribution.png")
+            plt.savefig(distribution_outfile, dpi=150)
+            print(f"plot_pca_reconstruction_accuracy (error indices distribution): {distribution_outfile}")
+            plt.close()
+
 
 def plot_pca_components_similarity_across_samples(
     by_sid: Dict[int, List[Dict[str, Any]]],
