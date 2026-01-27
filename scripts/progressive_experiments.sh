@@ -47,3 +47,10 @@ python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 128
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 256
 
+
+# No BOS token
+python scripts/jobs/run_jobs_progressive.py --model unsloth/Meta-Llama-3.1-8B --limit_dataset_items 10 --learning_rate 0.1 --no_bos_token
+python scripts/jobs/run_jobs_progressive.py --model EleutherAI/pythia-1.4b --limit_dataset_items 10 --learning_rate 0.5 --no_bos_token
+python scripts/jobs/run_jobs_progressive.py --model HuggingFaceTB/SmolLM2-1.7B --limit_dataset_items 10 --learning_rate 0.1 --no_bos_token
+python scripts/jobs/run_jobs_progressive.py --model unsloth/gemma-3-4b-pt --limit_dataset_items 10 --learning_rate 0.1 --no_bos_token
+

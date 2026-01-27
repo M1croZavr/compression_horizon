@@ -28,6 +28,7 @@ def load_or_create_tokenized_dataset(
     tokenizer: AutoTokenizer,
     max_sequence_length: int,
     model_checkpoint: str,
+    no_bos_token: bool = False,
     limit_dataset_items: int | None = None,
     offset_dataset_items: int | None = None,
     cache_prefix: str = "dataset",
@@ -44,6 +45,7 @@ def load_or_create_tokenized_dataset(
         tokenizer: Tokenizer to use for tokenization
         max_sequence_length: Maximum sequence length for tokenization
         model_checkpoint: Model checkpoint name (for cache key)
+        no_bos_token: Disable BOS token insertion during tokenization
         limit_dataset_items: Optional limit on number of items to select
         offset_dataset_items: Optional offset for dataset items selection (applied before limit)
         cache_prefix: Prefix for cache file name (default: "dataset")
@@ -61,6 +63,7 @@ def load_or_create_tokenized_dataset(
         "offset_dataset_items": offset_dataset_items,
         "max_sequence_length": max_sequence_length,
         "model_checkpoint": model_checkpoint,
+        "no_bos_token": no_bos_token,
     }
     cache_key_json = json.dumps(cache_params, sort_keys=True, ensure_ascii=False, default=str)
     cache_key_hash = hashlib.sha256(cache_key_json.encode("utf-8")).hexdigest()[:16]
@@ -112,15 +115,24 @@ def load_or_create_tokenized_dataset(
     else:
         dataset = raw_dataset
 
+    add_bos_supported = hasattr(tokenizer, "add_bos_token")
+    original_add_bos = getattr(tokenizer, "add_bos_token", None)
+    if no_bos_token and add_bos_supported:
+        tokenizer.add_bos_token = False
+
     def _tokenize(example):
         # Important: do NOT use return_tensors="pt" here.
         # HF Datasets stores tensors as nested lists like [1, T] which makes __getitem__ very slow.
         # We'll instead store plain lists and set .with_format("torch") on the resulting dataset.
+        add_special_tokens = True
+        if no_bos_token and not add_bos_supported:
+            add_special_tokens = False
         return tokenizer(
             example["text"],
             truncation=True,
             padding="max_length",
             max_length=max_sequence_length,
+            add_special_tokens=add_special_tokens,
         )
 
     dataset = dataset.map(
@@ -128,6 +140,8 @@ def load_or_create_tokenized_dataset(
         num_proc=num_proc,
         remove_columns=dataset.column_names,
     )
+    if no_bos_token and add_bos_supported:
+        tokenizer.add_bos_token = original_add_bos
 
     # Save tokenized dataset to cache
     print(f"Saving tokenized dataset to cache: {cache_path}")
@@ -268,6 +282,7 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         max_sequence_length=training_args.max_sequence_length,
         model_checkpoint=training_args.model_checkpoint,
+        no_bos_token=training_args.no_bos_token,
         limit_dataset_items=getattr(training_args, "limit_dataset_items", None),
         offset_dataset_items=getattr(training_args, "offset_dataset_items", None),
         cache_prefix="dataset",
@@ -289,6 +304,7 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             max_sequence_length=eval_seq_length,
             model_checkpoint=training_args.model_checkpoint,
+            no_bos_token=training_args.no_bos_token,
             limit_dataset_items=getattr(training_args, "limit_dataset_items", None),
             offset_dataset_items=getattr(training_args, "offset_dataset_items", None),
             cache_prefix="eval_dataset",

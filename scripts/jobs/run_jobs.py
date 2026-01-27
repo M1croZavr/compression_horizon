@@ -177,6 +177,12 @@ def build_args() -> argparse.Namespace:
         default=5,
         help="num_alignment_layers to use when hybrid is enabled.",
     )
+    parser.add_argument(
+        "--no_bos_token",
+        action="store_true",
+        default=False,
+        help="Disable BOS token insertion during dataset tokenization.",
+    )
 
     # Infra
     parser.add_argument("--instance_type", default="a100.1gpu")
@@ -256,6 +262,8 @@ if __name__ == "__main__":
             f"--embedding_init_method {embedding_init_method}",
             f"--fix_position_ids {fix_position_ids}",
         ]
+        if args.no_bos_token:
+            args_parts.append("--no_bos_token")
         if args.low_dim_size is not None:
             args_parts.append(f"--low_dim_size {args.low_dim_size}")
         if args.low_dim_projection:
@@ -274,6 +282,8 @@ if __name__ == "__main__":
             prefix = f"{prefix}_lowdim_{args.low_dim_size}"
         if args.low_dim_projection:
             prefix = f"{prefix}_lowproj"
+        if args.no_bos_token:
+            prefix = f"{prefix}_nobos"
         cmd_hash8 = hashlib.sha1(args_for_hash.encode("utf-8")).hexdigest()[:8]
         output_dir = os.path.join("artifacts/experiments", f"{prefix}_{cmd_hash8}")
 

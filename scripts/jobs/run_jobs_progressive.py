@@ -123,6 +123,12 @@ if __name__ == "__main__":
         help="Disable optimization of the low-dimensional projection (freeze it). Default: projection is trained.",
     )
     parser.add_argument(
+        "--no_bos_token",
+        action="store_true",
+        default=False,
+        help="Disable BOS token insertion during dataset tokenization.",
+    )
+    parser.add_argument(
         "--embedding_init_path",
         type=str,
         default=None,
@@ -273,6 +279,8 @@ if __name__ == "__main__":
             f"--embedding_init_method {embedding_init_method}",
             f"--limit_dataset_items {limit_dataset_items}",
         ]
+        if args.no_bos_token:
+            cmd_args.append("--no_bos_token")
 
         # Add hybrid_alpha if specified
         if args.hybrid_alpha is not None:
@@ -303,6 +311,8 @@ if __name__ == "__main__":
         if args.low_dim_projection:
             cmd_args.append("--low_dim_projection")
             exp_suffix = f"{exp_suffix}_lowproj"
+        if args.no_bos_token:
+            exp_suffix = f"{exp_suffix}_nobos"
 
         # Add low_dim_proj_checkpoint if specified
         if args.low_dim_proj_checkpoint is not None:

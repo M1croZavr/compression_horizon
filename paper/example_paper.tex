@@ -482,6 +482,8 @@ SmolLM2 exhibits strong correlation between BOS and \texttt{[mem]} attention pro
 In contrast, Llama and Gemma show much lower \texttt{[mem]} attention mass than BOS on average and weak (or negative) correlation, suggesting that hijacking concentrates in specific layers rather than uniformly matching the BOS pattern.
 
 
+{\color{red} TODO move this table to appendix? }
+
 \begin{table*}[]
     \centering
     \caption{Attention hijacking summary. ``Compression Token'' is attention mass to position 0 for \texttt{[mem]} in the crammed input; ``BOS Token'' is attention mass to position 0 for the uncompressed baseline; ``Diff'' is (Compression$-$BOS). ``Correlation'' is the Pearson correlation between per-layer attention-mass profiles.}

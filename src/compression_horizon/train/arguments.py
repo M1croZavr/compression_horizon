@@ -170,6 +170,10 @@ class MyTrainingArguments(TrainingArguments):
         default=None,
         metadata={"help": "Offset for dataset items selection (applied before limit_dataset_items)."},
     )
+    no_bos_token: bool = field(
+        default=False,
+        metadata={"help": "Disable BOS token insertion during dataset tokenization."},
+    )
 
     # Overrides with changed defaults
     optim: str = field(
