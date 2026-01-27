@@ -9,7 +9,7 @@ import seaborn as sns
 import torch
 from datasets import Dataset
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, Gemma3Config
 
 
 def detect_dataset_type(ds: Dataset) -> str:
@@ -291,7 +291,10 @@ def compute_attention_mass_for_stages(
         compression_embeddings = torch.tensor(embedding, dtype=torch.float32)
 
     # Get model's hidden size for validation
-    model_hidden_size = model.config.hidden_size
+    if isinstance(model.config, Gemma3Config):
+        model_hidden_size = model.config.text_config.hidden_size
+    else:
+        model_hidden_size = model.config.hidden_size
 
     # For prefix tuning, embeddings are stored as PEFT module state and may need special handling
     if dataset_type == "prefix_tuning":
@@ -562,6 +565,8 @@ def plot_attention_hijacking_heatmap(
     results: Dict[int, Dict[int, float]],
     sample_id: Optional[int],
     output_path: str,
+    title_prefix: str = "Attention Hijacking: Compression Token Attention Mass %",
+    colorbar_label: str = "Attention Mass % on Compression Tokens",
 ):
     """
     Plot heatmap of attention mass percent vs sequence length vs layer.
@@ -570,6 +575,8 @@ def plot_attention_hijacking_heatmap(
         results: Dictionary mapping stage_seq_len to layer_index to attention_mass_percent
         sample_id: Optional sample ID for title
         output_path: Path to save the plot
+        title_prefix: Prefix for the plot title
+        colorbar_label: Label for the colorbar
     """
     if not results:
         print("No results to plot")
@@ -600,7 +607,7 @@ def plot_attention_hijacking_heatmap(
         cmap="viridis",
         annot=True,
         fmt=".1f",
-        cbar_kws={"label": "Attention Mass % on Compression Tokens"},
+        cbar_kws={"label": colorbar_label},
         vmin=0,
         vmax=100,
     )
@@ -608,7 +615,7 @@ def plot_attention_hijacking_heatmap(
     ax.invert_yaxis()
     plt.xlabel("Sequence Length", fontsize=12)
     plt.ylabel("Layer", fontsize=12)
-    title = "Attention Hijacking: Compression Token Attention Mass %"
+    title = title_prefix
     if sample_id is not None:
         title += f" (Sample {sample_id})"
     plt.title(title, fontsize=14, fontweight="bold")
@@ -871,23 +878,29 @@ def compute_attention_mass_for_original_sequence(
             if target_seq_len < 1 or target_seq_len > max_seq_len:
                 continue
 
-            # For each layer, compute attention mass on first token from positions 0 to target_seq_len-1
+            # For each layer, compute attention mass on first token from positions 1 to target_seq_len-1
+            # Exclude self-attention (position 0 attending to position 0) to avoid outlier
             for layer_idx in range(num_layers):
                 # Get attention for this layer: [batch_size, num_heads, seq_len, seq_len]
                 attn_layer = attentions[layer_idx]
                 # Average across heads and batch: [seq_len, seq_len]
                 attn_avg = attn_layer.mean(dim=1)[0]  # [seq_len, seq_len]
 
-                # Attention mass on first token (position 0) from positions 0 to target_seq_len-1
-                # Sum attention from all query positions to key position 0
-                attention_on_first_token = attn_avg[:target_seq_len, 0].sum().item()
-                # Normalize by number of query positions
-                attention_mass_percent = (attention_on_first_token / target_seq_len) * 100.0
-
+                # Attention mass on first token (position 0) from positions 1 to target_seq_len-1
+                # Exclude self-attention to avoid outlier when only BOS token is present
                 layer_sums.setdefault(layer_idx, 0.0)
                 layer_counts.setdefault(layer_idx, 0)
-                layer_sums[layer_idx] += attention_mass_percent
-                layer_counts[layer_idx] += 1
+                if target_seq_len > 1:
+                    # Sum attention from positions 1 to target_seq_len-1 to key position 0
+                    attention_on_first_token = attn_avg[1:target_seq_len, 0].sum().item()
+                    # Normalize by number of query positions (excluding position 0)
+                    attention_mass_percent = (attention_on_first_token / (target_seq_len - 1)) * 100.0
+
+                    layer_sums[layer_idx] += attention_mass_percent
+                    layer_counts[layer_idx] += 1
+                else:
+                    pass
+                    # do not consider bos token itself
 
         # Compute averages for each layer
         avg_per_layer = []
@@ -898,6 +911,84 @@ def compute_attention_mass_for_original_sequence(
                 avg_per_layer.append(0.0)
 
     return avg_per_layer
+
+
+def compute_attention_mass_for_original_sequence_per_seq_len(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    text: str,
+    device: torch.device,
+    target_seq_lengths: List[int],
+) -> Dict[int, Dict[int, float]]:
+    """
+    Compute attention mass for original sequence per sequence length (for visualization).
+
+    Returns results in the same format as compression embeddings: Dict[seq_len, Dict[layer_idx, attention_mass_percent]]
+
+    Args:
+        model: Language model
+        tokenizer: Tokenizer
+        text: Input text
+        device: Device to run on
+        target_seq_lengths: List of target sequence lengths to evaluate
+
+    Returns:
+        Dictionary mapping seq_len to layer_index to attention_mass_percent
+    """
+    if not text or not isinstance(text, str) or text.strip() == "":
+        return {}
+
+    model.eval()
+    with torch.no_grad():
+        # Tokenize text
+        enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+        input_ids = enc["input_ids"].to(device)
+        attention_mask = enc["attention_mask"].to(device)
+        max_seq_len = input_ids.shape[1]
+
+        # Forward pass with attention outputs
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_attentions=True,
+        )
+
+        # Extract attention weights
+        attentions = outputs.attentions
+        if attentions is None:
+            return {}
+
+        num_layers = len(attentions)
+        results: Dict[int, Dict[int, float]] = {}
+
+        for target_seq_len in target_seq_lengths:
+            if target_seq_len < 1 or target_seq_len > max_seq_len:
+                continue
+
+            layer_attention_mass: Dict[int, float] = {}
+            for layer_idx in range(num_layers):
+                # Get attention for this layer: [batch_size, num_heads, seq_len, seq_len]
+                attn_layer = attentions[layer_idx]
+                # Average across heads and batch: [seq_len, seq_len]
+                attn_avg = attn_layer.mean(dim=1)[0]  # [seq_len, seq_len]
+
+                # Attention mass on first token (position 0) from positions 1 to target_seq_len-1
+                # Exclude self-attention (position 0 attending to position 0) to avoid outlier
+                if target_seq_len > 1:
+                    # Sum attention from positions 1 to target_seq_len-1 to key position 0
+                    attention_on_first_token = attn_avg[1:target_seq_len, 0].sum().item()
+                    # Normalize by number of query positions (excluding position 0)
+                    attention_mass_percent = (attention_on_first_token / (target_seq_len - 1)) * 100.0
+                else:
+                    # If only one token, no other tokens to attend to BOS
+                    attention_mass_percent = 0.0
+
+                layer_attention_mass[layer_idx] = attention_mass_percent
+
+            if layer_attention_mass:
+                results[target_seq_len] = layer_attention_mass
+
+    return results
 
 
 def save_attention_mass_cache(
@@ -1143,100 +1234,125 @@ def main():
         if max_len >= args.min_seq_length:
             eligible_by_sid[_sid] = stages
             per_sample_max.append(max_len)
-        if not per_sample_max:
-            raise ValueError(
-                f"No samples with max sequence length >= {args.min_seq_length} found. "
-                "Lower --min_seq_length or check the dataset."
-            )
 
-        min_max_len = min(per_sample_max)
-        print(
-            f"\nAveraging over {len(eligible_by_sid)} samples; "
-            f"using target_seq_len in [{args.min_seq_length}, {min_max_len}]"
+    if not per_sample_max:
+        raise ValueError(
+            f"No samples with max sequence length >= {args.min_seq_length} found. "
+            "Lower --min_seq_length or check the dataset."
         )
-        target_seq_lengths_override = list(range(args.min_seq_length, min_max_len + 1))
 
-        all_results: List[Dict[int, Dict[int, float]]] = []
-        for sample_id, stages in eligible_by_sid.items():
-            stage_count = len(stages)
-            stage_label = "stages" if dataset_type == "progressive" else "entry"
-            print(f"\nProcessing sample {sample_id} with {stage_count} {stage_label}...")
-            results, attentions, text, num_compression_tokens = compute_attention_mass_for_stages(
-                model=model,
-                tokenizer=tokenizer,
-                stages=stages,
-                device=device,
-                attention_block_size=args.attention_block_size,
-                target_seq_lengths_override=target_seq_lengths_override,
-                dataset_type=dataset_type,
-            )
-            if results:
-                all_results.append(results)
-                # Save per-sample heatmap if flag is set
-                if args.save_per_sample_heatmaps:
-                    output_path = os.path.join(output_dir, f"attention_hijacking_sample_{sample_id}.png")
-                    plot_attention_hijacking_heatmap(
-                        results=results,
-                        sample_id=sample_id,
-                        output_path=output_path,
-                    )
-                # Save attention weights heatmap if flag is set
-                if (
-                    args.save_attention_weights_heatmaps
-                    and attentions is not None
-                    and text is not None
-                    and num_compression_tokens is not None
-                ):
-                    output_path = os.path.join(output_dir, f"attention_weights_sample_{sample_id}.png")
-                    plot_attention_weights_heatmap(
-                        attentions=attentions,
-                        num_compression_tokens=num_compression_tokens,
-                        tokenizer=tokenizer,
-                        text=text,
-                        sample_id=sample_id,
-                        output_path=output_path,
-                        layer_idx=args.attention_layer_idx,
-                        head_idx=args.attention_head_idx,
-                    )
+    min_max_len = min(per_sample_max)
+    print(
+        f"\nAveraging over {len(eligible_by_sid)} samples; " f"using target_seq_len in [{args.min_seq_length}, {min_max_len}]"
+    )
+    target_seq_lengths_override = list(range(args.min_seq_length, min_max_len + 1))
 
-                # Compute and save attention mass cache for compression embeddings
-                if text is not None:
-                    avg_attention_mass_compression = compute_average_attention_mass_per_layer(
-                        results=results,
-                        num_layers=num_layers,
-                    )
+    all_results: List[Dict[int, Dict[int, float]]] = []
+    all_original_results: List[Dict[int, Dict[int, float]]] = []
+    for sample_id, stages in eligible_by_sid.items():
+        stage_count = len(stages)
+        stage_label = "stages" if dataset_type == "progressive" else "entry"
+        print(f"\nProcessing sample {sample_id} with {stage_count} {stage_label}...")
+        results, attentions, text, num_compression_tokens = compute_attention_mass_for_stages(
+            model=model,
+            tokenizer=tokenizer,
+            stages=stages,
+            device=device,
+            attention_block_size=args.attention_block_size,
+            target_seq_lengths_override=target_seq_lengths_override,
+            dataset_type=dataset_type,
+        )
+        if results:
+            all_results.append(results)
+            # Save per-sample heatmap if flag is set
+            if args.save_per_sample_heatmaps:
+                output_path = os.path.join(output_dir, f"attention_hijacking_sample_{sample_id}.png")
+                plot_attention_hijacking_heatmap(
+                    results=results,
+                    sample_id=sample_id,
+                    output_path=output_path,
+                )
+            # Save attention weights heatmap if flag is set
+            if (
+                args.save_attention_weights_heatmaps
+                and attentions is not None
+                and text is not None
+                and num_compression_tokens is not None
+            ):
+                output_path = os.path.join(output_dir, f"attention_weights_sample_{sample_id}.png")
+                plot_attention_weights_heatmap(
+                    attentions=attentions,
+                    num_compression_tokens=num_compression_tokens,
+                    tokenizer=tokenizer,
+                    text=text,
+                    sample_id=sample_id,
+                    output_path=output_path,
+                    layer_idx=args.attention_layer_idx,
+                    head_idx=args.attention_head_idx,
+                )
 
-                    # Compute attention mass for original sequence (without compression)
-                    print(f"Computing attention mass for original sequence (sample {sample_id})...")
-                    avg_attention_mass_original = compute_attention_mass_for_original_sequence(
-                        model=model,
-                        tokenizer=tokenizer,
-                        text=text,
-                        device=device,
-                        target_seq_lengths=target_seq_lengths_override,
-                        num_layers=num_layers,
-                    )
+            # Compute and save attention mass cache for compression embeddings
+            if text is not None:
+                avg_attention_mass_compression = compute_average_attention_mass_per_layer(
+                    results=results,
+                    num_layers=num_layers,
+                )
 
-                    # Collect for summary
-                    all_compression_attention_mass.append(avg_attention_mass_compression)
-                    all_original_attention_mass.append(avg_attention_mass_original)
+                # Compute attention mass for original sequence (without compression)
+                print(f"Computing attention mass for original sequence (sample {sample_id})...")
+                # Compute per-sequence-length results for visualization
+                original_results = compute_attention_mass_for_original_sequence_per_seq_len(
+                    model=model,
+                    tokenizer=tokenizer,
+                    text=text,
+                    device=device,
+                    target_seq_lengths=target_seq_lengths_override,
+                )
+                if original_results:
+                    all_original_results.append(original_results)
 
-                    # Save to cache
-                    cache_data = {
-                        "sample_id": sample_id,
-                        "num_layers": num_layers,
-                        "target_seq_lengths": target_seq_lengths_override,
-                        "avg_attention_mass_per_layer_compression": avg_attention_mass_compression,
-                        "avg_attention_mass_per_layer_original": avg_attention_mass_original,
-                    }
-                    save_attention_mass_cache(cache_data, output_dir, sample_id=sample_id)
+                # Compute averaged per-layer for summary
+                avg_attention_mass_original = compute_attention_mass_for_original_sequence(
+                    model=model,
+                    tokenizer=tokenizer,
+                    text=text,
+                    device=device,
+                    target_seq_lengths=target_seq_lengths_override,
+                    num_layers=num_layers,
+                )
 
-        avg_results = average_attention_mass_results(all_results)
-        output_path = os.path.join(output_dir, "attention_hijacking_avg.png")
+                # Collect for summary
+                all_compression_attention_mass.append(avg_attention_mass_compression)
+                all_original_attention_mass.append(avg_attention_mass_original)
+
+                # Save to cache
+                cache_data = {
+                    "sample_id": sample_id,
+                    "num_layers": num_layers,
+                    "target_seq_lengths": target_seq_lengths_override,
+                    "avg_attention_mass_per_layer_compression": avg_attention_mass_compression,
+                    "avg_attention_mass_per_layer_original": avg_attention_mass_original,
+                }
+                save_attention_mass_cache(cache_data, output_dir, sample_id=sample_id)
+
+    avg_results = average_attention_mass_results(all_results)
+    output_path = os.path.join(output_dir, "attention_hijacking_avg.png")
+    plot_attention_hijacking_heatmap(
+        results=avg_results,
+        sample_id=None,
+        output_path=output_path,
+    )
+
+    # Average and plot original sequence attention mass
+    if all_original_results:
+        avg_original_results = average_attention_mass_results(all_original_results)
+        output_path_original = os.path.join(output_dir, "attention_hijacking_avg_original.png")
         plot_attention_hijacking_heatmap(
-            results=avg_results,
+            results=avg_original_results,
             sample_id=None,
-            output_path=output_path,
+            output_path=output_path_original,
+            title_prefix="Attention Hijacking: BOS Token Attention Mass % (Original Sequence)",
+            colorbar_label="Attention Mass % on BOS Token",
         )
 
     # Print summary of average attention mass

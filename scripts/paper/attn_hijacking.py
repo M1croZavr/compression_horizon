@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -40,12 +40,73 @@ def save_attention_mass_cache(
     print(f"Saved attention mass cache to: {cache_path}")
 
 
+def get_sample_ids_from_dataset(dataset_path: str) -> Tuple[List[int], str]:
+    """Get sample IDs from dataset without loading full rows.
+
+    Args:
+        dataset_path: Path to the dataset directory
+
+    Returns:
+        Tuple of (sample_ids list, dataset_type)
+    """
+    try:
+        ds, dataset_type = load_dataset(dataset_path)
+    except Exception as e:
+        raise ValueError(f"Error loading dataset: {e}")
+
+    if dataset_type == "unknown":
+        raise ValueError(f"Could not detect dataset type for {dataset_path}")
+
+    # Get sample IDs efficiently
+    if "sample_id" in ds.column_names:
+        try:
+            sample_ids = ds.unique("sample_id")
+            sample_ids = sorted({int(sid) for sid in sample_ids if sid is not None})
+        except Exception:
+            # Fallback: iterate through dataset
+            sample_ids = []
+            for i in range(len(ds)):
+                try:
+                    sid = ds[i].get("sample_id")
+                    if sid is not None:
+                        sample_ids.append(int(sid))
+                except Exception:
+                    continue
+            sample_ids = sorted(set(sample_ids))
+    else:
+        sample_ids = []
+
+    return sample_ids, dataset_type
+
+
+def check_all_cache_files_exist(dataset_path: str, sample_ids: List[int]) -> bool:
+    """Check if cache files exist for all sample IDs.
+
+    Args:
+        dataset_path: Path to the dataset directory
+        sample_ids: List of sample IDs to check
+
+    Returns:
+        True if cache files exist for all samples, False otherwise
+    """
+    if not sample_ids:
+        return False
+
+    output_dir = os.path.join(dataset_path, "attention_visualizations")
+    for sample_id in sample_ids:
+        cache_file = os.path.join(output_dir, f"attention_mass_cache_sample_{sample_id}.json")
+        if not os.path.exists(cache_file):
+            return False
+    return True
+
+
 def compute_checkpoint_attention_mass_data(
     dataset_path: str,
     model_checkpoint: Optional[str] = None,
     min_seq_length: int = 1,
     attention_block_size: int = 16,
     device: Optional[torch.device] = None,
+    force: bool = False,
 ) -> bool:
     """Compute and save attention mass data for a checkpoint.
 
@@ -55,12 +116,23 @@ def compute_checkpoint_attention_mass_data(
         min_seq_length: Minimum sequence length to consider
         attention_block_size: Block size for attention computation
         device: Device to run on (if None, uses CUDA if available)
+        force: If True, recompute even if cache files exist
 
     Returns:
         True if computation succeeded, False otherwise
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Check if we can skip loading dataset (if all cache files exist and not forcing)
+    if not force:
+        try:
+            sample_ids, dataset_type = get_sample_ids_from_dataset(dataset_path)
+            if sample_ids and check_all_cache_files_exist(dataset_path, sample_ids):
+                print(f"All cache files already exist for {len(sample_ids)} samples in {dataset_path}, skipping computation.")
+                return True
+        except Exception as e:
+            print(f"Warning: Could not check existing cache files: {e}, proceeding with computation...")
 
     # Load dataset
     print(f"Loading dataset from: {dataset_path}")
@@ -122,10 +194,11 @@ def compute_checkpoint_attention_mass_data(
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if isinstance(model, Gemma3Config):
-        num_layers = model.config.text_config.num_hidden_layers
-    else:
-        num_layers = model.config.num_hidden_layers
+    config = model.config
+    if isinstance(model.config, Gemma3Config):
+        config = model.config.text_config
+
+    num_layers = config.num_hidden_layers
 
     # Determine output directory
     output_dir = os.path.join(dataset_path, "attention_visualizations")
@@ -550,6 +623,7 @@ def main():
                 model_checkpoint=model_checkpoint,
                 min_seq_length=args.min_seq_length,
                 attention_block_size=args.attention_block_size,
+                force=args.force,
             )
             if not success:
                 print(f"Warning: Failed to compute attention mass data for {checkpoint_path}")
