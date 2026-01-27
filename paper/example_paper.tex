@@ -462,36 +462,11 @@ Three takeaways stand out:
 
 \subsection{Activation Alignment}
 
-Table~\ref{tab:alignment_and_lowdim_projection} studies activation alignment (Section~\ref{sec:activation_alignment}) and its interaction with low-dimensional projection.
+Table~\ref{tab:all_progressive_modifications} studies activation alignment (Section~\ref{sec:activation_alignment}) and its interaction with low-dimensional projection.
 Alignment acts as a regularizer: it can significantly reduce trajectory length and PCA 99\% (indicating smoother, more constrained optimization), but it may trade off against raw cramming capacity depending on the model family.
 In particular, for Llama-3.1-8B, alignment increases information gain and token count relative to the baseline, whereas for SmolLM2-1.7B and Pythia-1.4B alignment alone reduces capacity but can be combined with projection to recover part of the loss.
 Across settings, we observe that alignment qualitatively changes attention behavior, often pushing attention hijacking effects toward deeper layers.
 
-\begin{table*}[]
-    \centering
-    \caption{Activation alignment and low-dimensional projection ablations. ``$\alpha$'' controls alignment strength and ``$L$'' is the number of aligned layers (Section~\ref{sec:activation_alignment}); ``dim'' denotes projection dimension.}
-    \label{tab:alignment_and_lowdim_projection}
-
-\begin{tabular}{lllll}
-\hline
- Model                                                              & Compressed Tokens           & Information Gain         & Trajectory Length         & PCA 99\%                  \\
-\hline
- Llama-3.1-8B {\small lr=0.1}                                       & 1063.5 {\small $\pm$ 394.4} & 3028 {\small $\pm$ 1321} & 4861 {\small $\pm$ 1033}  & 74.4 {\small $\pm$ 7.94} \\
- Llama-3.1-8B {\small $\alpha=1.0$} {\small $L=8$}                  & 1633.3 {\small $\pm$ 275.4} & 5130 {\small $\pm$ 247}  & 1146 {\small $\pm$ 137}   & 40 {\small $\pm$ 1.26}   \\
- Llama-3.1-8B {\small dim=32} {\small $\alpha=1.0$} {\small $L=8$}  & 1804.8 {\small $\pm$ 297.8} & 5103 {\small $\pm$ 748}  & 13584 {\small $\pm$ 3823} & 34.7 {\small $\pm$ 5.37} \\
- \midrule
- SmolLM2-1.7B {\small lr=0.1}                                       & 370.2 {\small $\pm$ 113.1}  & 1119 {\small $\pm$ 350}  & 1027 {\small $\pm$ 167}   & 29.2 {\small $\pm$ 2.93} \\
- SmolLM2-1.7B {\small $\alpha=1.0$} {\small $L=4$}                  & 186.9 {\small $\pm$ 47.3}   & 530 {\small $\pm$ 104}   & 85 {\small $\pm$ 8}       & 13.3 {\small $\pm$ 1.73} \\
- SmolLM2-1.7B {\small dim=256} {\small $\alpha=1.0$} {\small $L=8$} & 468 {\small $\pm$ 243.7}    & 1350 {\small $\pm$ 621}  & 6544 {\small $\pm$ 9765}  & 11.6 {\small $\pm$ 3.61} \\
- \midrule
- pythia-1.4b {\small lr=0.5}                                        & 543.8 {\small $\pm$ 56.8}   & 1694 {\small $\pm$ 125}  & 6730 {\small $\pm$ 390}   & 49 {\small $\pm$ 3.32}   \\
- pythia-1.4b {\small $\alpha=1.0$} {\small $L=8$}                   & 178.7 {\small $\pm$ 33.1}   & 524 {\small $\pm$ 92}    & 80 {\small $\pm$ 13}      & 14.3 {\small $\pm$ 1.79} \\
- pythia-1.4b {\small dim=256} {\small $\alpha=1.0$} {\small $L=8$}  & 498.2 {\small $\pm$ 92.7}   & 1555 {\small $\pm$ 146}  & 5396 {\small $\pm$ 3309}  & 19.6 {\small $\pm$ 5.89} \\
- \midrule
-\hline
-\end{tabular}
-
-\end{table*}
 
 \subsection{Attention Hijacking}
 \label{sec:attention}
