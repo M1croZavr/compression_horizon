@@ -15,7 +15,6 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_gemma-3-270m_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-1b-pt_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lr_0.1/progressive_prefixes \
-  --output /tmp/trajectories_comparison.png \
   --n_components 4 \
   --sample_id 0 \
   --midrule_indicies 2 5 8 \
@@ -69,7 +68,7 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
 
 -----
 
-# Low dim projection experiments
+# Low dim projection experiments tab:low_dim_projection_results
 PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --checkpoints \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.1/progressive_prefixes \
@@ -89,6 +88,11 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_256_lowproj/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_512_lowproj/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_32_lowproj/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_64_lowproj/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_128_lowproj/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_256_lowproj/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_512_lowproj/progressive_prefixes \
   --n_components 4 \
   --sample_id 0 \
   --midrule_indicies 3 9 15 \
