@@ -18,6 +18,51 @@ from tabulate import tabulate
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+# This experiments finished before information gain was computed during experiment trainng. information gain computed with scripts/visualize_multiple_trajectories.py
+PRECOMPUTED_INFO_GAIN = {
+    "artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_ds_pg19_loss_cosine_hybrid_1.0_align_2/progressive_prefixes": {
+        "mean": 4694.2772,
+        "std": 340.5500,
+    },
+    "artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_ds_pg19_loss_cosine_hybrid_1.0_align_4/progressive_prefixes": {
+        "mean": 4960.7790,
+        "std": 603.0176,
+    },
+    "artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_ds_pg19_loss_cosine_hybrid_1.0_align_8/progressive_prefixes": {
+        "mean": 5130.3678,
+        "std": 247.0386,
+    },
+    "artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_ds_pg19_loss_cosine_hybrid_1.0_align_16/progressive_prefixes": {
+        "mean": 4686.1440,
+        "std": 276.0113,
+    },
+    "artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_ds_pg19_loss_cosine_hybrid_1.0_align_24/progressive_prefixes": {
+        "mean": 2094.5047,
+        "std": 246.6593,
+    },
+    "artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_ds_pg19_loss_cosine_hybrid_1.0_align_32/progressive_prefixes": {
+        "mean": 614.0741,
+        "std": 168.8271,
+    },
+}
+
+
+def _normalize_path(path: str) -> str:
+    return os.path.normpath(os.path.abspath(path))
+
+
+def apply_precomputed_info_gain(dataset_path: str, stats: Dict[str, Any]) -> bool:
+    normalized_path = _normalize_path(dataset_path)
+    for path, values in PRECOMPUTED_INFO_GAIN.items():
+        if normalized_path == _normalize_path(path):
+            stats["information_gain_from_dataset"] = {
+                "mean": float(values["mean"]),
+                "std": float(values["std"]),
+                "count": None,
+            }
+            return True
+    return False
+
 
 def load_progressive_dataset(dataset_path: str) -> Dataset:
     """Load a progressive embeddings dataset from disk."""
@@ -801,6 +846,9 @@ def extract_trajectory(
         cached_final_embedding = cached_traj.get("final_embedding")
         if not cached_embeddings or not cached_labels or cached_final_embedding is None:
             raise ValueError(f"Cache file {cache_file} is incomplete. Delete it to rebuild.")
+        if apply_precomputed_info_gain(dataset_path, cached_stats):
+            cache_data["stats"] = cached_stats
+            save_experiment_cache(cache_file, cache_data)
         embeddings = deserialize_array(cached_embeddings)
         final_embedding = deserialize_array(cached_final_embedding)
         return embeddings, list(cached_labels), cached_stats, final_embedding
@@ -939,6 +987,7 @@ def extract_trajectory(
         "information_gain_from_dataset": summarize_values(information_gains_from_dataset),
         "embedding_statistics": embedding_statistics,
     }
+    apply_precomputed_info_gain(dataset_path, stats)
 
     # Now extract trajectory for visualization (use specified sample_id or first available)
     if sample_id is not None:
