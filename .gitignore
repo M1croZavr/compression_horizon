@@ -10,6 +10,10 @@ __pycache__
 
 # Data and artifacts
 artifacts/
+datasets/
+hub/
+notebooks/Compression_reconstruction_accuracy.ipynb
+xet/
 
 # Environment
 .venv

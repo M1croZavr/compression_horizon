@@ -1,6 +1,7 @@
 import os
 import subprocess
 
+import torch
 import transformers
 from datasets import load_dataset
 from transformers import (
@@ -46,7 +47,7 @@ if __name__ == "__main__":
     # Determine output directory
     default_base = "artifacts/experiments"
     os.makedirs(default_base, exist_ok=True)
-    prefix = f"{training_args.model_checkpoint.split('/')[-1]}_{training_args.max_sequence_length}"
+    prefix = f"{training_args.model_checkpoint.split('/')[-1]}_{training_args.max_sequence_length}_2leading"
     output_dir = os.path.join(default_base, prefix)
     os.makedirs(output_dir, exist_ok=True)
     # Attach to args so trainer can save artifacts there (respecting any user-provided output_dir)
@@ -55,7 +56,9 @@ if __name__ == "__main__":
 
     # Initializing the model and its tokenizer
     torch_dtype = resolve_torch_dtype(training_args.dtype)
+    print("bfloat16 supported:", torch.cuda.is_bf16_supported())
     model = AutoModelForCausalLM.from_pretrained(training_args.model_checkpoint, dtype=torch_dtype)
+    print("Initialized dtype:", next(model.parameters()).dtype)
     tokenizer = AutoTokenizer.from_pretrained(training_args.model_checkpoint)
     tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
 

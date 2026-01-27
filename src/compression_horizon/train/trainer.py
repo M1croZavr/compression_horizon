@@ -89,12 +89,28 @@ class MyTrainer:
 
         # Cross entropy loss
         labels = input_ids.clone()
-        labels[attention_mask == 0] = -100
-        loss = F.cross_entropy(
+        # labels[:, 0] = -100  # ignore '<|begin_of_text|>'
+        labels[attention_mask == 0] = -100  # ignore padding
+        # loss = F.cross_entropy(
+        #     compression_outputs.logits[:, num_compression_tokens - 1 : -1].flatten(0, 1),
+        #     labels.flatten(),
+        #     reduction="mean",
+        # )
+        # per-token cross-entropy
+        per_token_loss = F.cross_entropy(
             compression_outputs.logits[:, num_compression_tokens - 1 : -1].flatten(0, 1),
             labels.flatten(),
-            reduction="mean",
-        )
+            reduction="none",
+            ignore_index=-100,
+        ).view_as(labels)
+        # Increase positional loss weight
+        pos_weights = torch.ones_like(per_token_loss)
+        pos_weights[:, 0] = 3.0  # BOS
+        pos_weights[:, 1] = 3.0  # First sequence token
+        # padding не участвует
+        pos_weights[labels == -100] = 0.0
+        # weighted mean
+        loss = (per_token_loss * pos_weights).sum() / pos_weights.sum()
 
         # Activation alignment loss
         loss_type = self.args.loss_type.lower()
@@ -150,7 +166,7 @@ class MyTrainer:
 
             # Accuracy by autoregressive generation
             # Generate tokens from compressed trained embedding
-            if self.global_step % 100 == 0:
+            if False:  # self.global_step % 100 == 0:
                 generated_text: Optional[list[str]] = generate_from_compression(
                     model,
                     self.processing_class,
@@ -294,17 +310,21 @@ class MyTrainer:
             self.writer.flush()
         self.global_step += 1
 
-    def _save_artifacts(self, compression_token_embeddings: torch.Tensor, rows, subdir_name):
+    def _save_artifacts(self, rows, subdir_name):
         output_dir = self.args.output_dir
         if output_dir and len(rows) > 0:
             os.makedirs(output_dir, exist_ok=True)
-            save_path = os.path.join(output_dir, "compression_token_embeddings.pt")
-            torch.save(compression_token_embeddings, save_path)
             save_path = os.path.join(output_dir, subdir_name)
             ds = Dataset.from_list(rows)
             ds.save_to_disk(save_path)
             return save_path
         return None
+    
+    def _save_compression_token_embeddings(self, compression_token_embeddings: torch.Tensor, filename: str) -> None:
+        output_dir = self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        save_path = os.path.join(output_dir, filename)
+        torch.save(compression_token_embeddings, save_path)
 
     def train(self):
         set_launch_seed(self.args.random_seed)
@@ -413,7 +433,6 @@ class MyTrainer:
 
                 # Log current step progress
                 with torch.no_grad():
-                    progress_bar.update(1)
                     alignment_loss_item = None
                     if alignment_loss is not None:
                         alignment_loss_item = alignment_loss.item()
@@ -438,7 +457,7 @@ class MyTrainer:
                 total_per_sample_convergence_099[step_i, :] = convergence_per_sample < 0.99
                 total_per_sample_convergence_095[step_i, :] = convergence_per_sample < 0.95
                 # !!! WARNING !!!
-                prev_convergence = convergence_per_sample >= 0.99  # 1.0
+                prev_convergence = convergence_per_sample >= 0.99  # >= 0.99  # 1.0
                 if prev_convergence.all():
                     print(f"Early stopping: compression converged in {step_i} steps")
                     break
@@ -471,15 +490,16 @@ class MyTrainer:
                     sample_input_ids = input_ids[j][sample_attention_mask.bool()]
                     sample_text = tokenizer.decode(sample_input_ids, skip_special_tokens=True)
                     # Cast to specified dtype
-                    embedding = compression_token_embeddings_cpu[j].to(token_embeddings.dtype).numpy().tolist()
+                    embedding = compression_token_embeddings_cpu[j].to(torch.float32).numpy().tolist()
+                    self._save_compression_token_embeddings(compression_token_embeddings_cpu[j], f"compression_token_embeddings_{sample_id_counter}.pt")
                     compression_token_embeddings_mean = float(compression_token_embeddings_cpu[j].mean().item())
                     compression_token_embeddings_std = float(compression_token_embeddings_cpu[j].std().item())
                     collected_rows.append(
                         {
                             "sample_id": sample_id_counter,
                             "text": sample_text,
-                            "input_ids": sample_input_ids.numpy().tolist(),  # [sequence]
-                            "attention_mask": sample_attention_mask.numpy().tolist(),  # [sequence]
+                            "input_ids": sample_input_ids.detach().cpu().numpy().tolist(),  # [sequence]
+                            "attention_mask": sample_attention_mask.detach().cpu().numpy().tolist(),  # [sequence]
                             "embedding": embedding,  # [mem, hidden]
                             "final_loss": last_loss,
                             "final_convergence": last_convergence_per_sample[j].item(),
@@ -508,7 +528,7 @@ class MyTrainer:
             self.writer.close()
 
         # Persist artifacts
-        save_path = self._save_artifacts(compression_token_embeddings_cpu, collected_rows, "compressed_prefixes")
+        save_path = self._save_artifacts(collected_rows, "compressed_prefixes")
         if save_path is not None:
             return save_path
         return None
