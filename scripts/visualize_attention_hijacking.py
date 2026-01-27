@@ -1077,6 +1077,21 @@ def print_attention_mass_summary(
     overall_avg_original = sum(avg_original_per_layer) / num_layers
     print("-" * 80)
     print(f"{'Overall Avg':<10} {overall_avg_compression:<30.2f} {overall_avg_original:<30.2f}")
+
+    # Compute correlation between compression and original attention mass across layers
+    if all_compression_attention_mass and all_original_attention_mass:
+        # Convert to numpy arrays for correlation computation
+        compression_array = np.array(avg_compression_per_layer)
+        original_array = np.array(avg_original_per_layer)
+        # Compute Pearson correlation coefficient
+        if len(compression_array) > 1 and np.std(compression_array) > 0 and np.std(original_array) > 0:
+            correlation = np.corrcoef(compression_array, original_array)[0, 1]
+            print("-" * 80)
+            print(f"Correlation (across layers): {correlation:.4f}")
+        else:
+            print("-" * 80)
+            print("Correlation (across layers): N/A (insufficient variance)")
+
     print("=" * 80)
 
 

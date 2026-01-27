@@ -343,6 +343,9 @@ def compute_checkpoint_attention_mass(checkpoint_dir: str) -> Optional[Dict[str,
 
     all_compression_values = []
     all_original_values = []
+    # Collect per-layer values for correlation computation
+    all_compression_per_layer: List[List[float]] = []
+    all_original_per_layer: List[List[float]] = []
 
     for cache_file in cache_files:
         cache_data = load_attention_mass_cache(cache_file)
@@ -356,11 +359,15 @@ def compute_checkpoint_attention_mass(checkpoint_dir: str) -> Optional[Dict[str,
             # Average across all layers for this sample
             sample_avg_compression = np.mean(compression_per_layer)
             all_compression_values.append(sample_avg_compression)
+            # Store per-layer values for correlation
+            all_compression_per_layer.append(compression_per_layer)
 
         if isinstance(original_per_layer, list) and len(original_per_layer) > 0:
             # Average across all layers for this sample
             sample_avg_original = np.mean(original_per_layer)
             all_original_values.append(sample_avg_original)
+            # Store per-layer values for correlation
+            all_original_per_layer.append(original_per_layer)
 
     if not all_compression_values and not all_original_values:
         return None
@@ -374,10 +381,41 @@ def compute_checkpoint_attention_mass(checkpoint_dir: str) -> Optional[Dict[str,
             "count": int(len(values)),
         }
 
-    return {
+    # Compute correlation across layers
+    correlation = None
+    if all_compression_per_layer and all_original_per_layer:
+        # Get num_layers from first cache file
+        num_layers = len(all_compression_per_layer[0])
+        # Average across samples for each layer
+        avg_compression_per_layer = np.zeros(num_layers)
+        avg_original_per_layer = np.zeros(num_layers)
+
+        for compression_layers, original_layers in zip(all_compression_per_layer, all_original_per_layer):
+            if len(compression_layers) == num_layers and len(original_layers) == num_layers:
+                avg_compression_per_layer += np.array(compression_layers)
+                avg_original_per_layer += np.array(original_layers)
+
+        num_samples = len(all_compression_per_layer)
+        if num_samples > 0:
+            avg_compression_per_layer /= num_samples
+            avg_original_per_layer /= num_samples
+
+            # Compute Pearson correlation coefficient
+            if (
+                len(avg_compression_per_layer) > 1
+                and np.std(avg_compression_per_layer) > 0
+                and np.std(avg_original_per_layer) > 0
+            ):
+                correlation = float(np.corrcoef(avg_compression_per_layer, avg_original_per_layer)[0, 1])
+
+    result = {
         "compression": summarize_values(all_compression_values),
         "original": summarize_values(all_original_values),
     }
+    if correlation is not None:
+        result["correlation"] = correlation
+
+    return result
 
 
 def format_mean_std_cell(
@@ -441,11 +479,19 @@ def print_attention_mass_table(
         table_name = re.sub(r"_lowdim_(\d+)", r" {\\small dim=\1}", table_name)
         table_name = re.sub(r"_lr_(\d+(\.?\d+)?)", r" {\\small lr=\1}", table_name)
 
+        # Format correlation
+        correlation = stats.get("correlation")
+        if correlation is not None:
+            correlation_str = f"{correlation:.4f}"
+        else:
+            correlation_str = "N/A"
+
         table_data.append(
             [
                 table_name,
                 format_mean_std_cell(stats.get("compression"), precision=2, tablefmt=tablefmt),
                 format_mean_std_cell(stats.get("original"), precision=2, tablefmt=tablefmt),
+                correlation_str,
             ]
         )
 
@@ -456,6 +502,7 @@ def print_attention_mass_table(
         "Model",
         "Compression Token (%)",
         "BOS Token Original (%)",
+        "Correlation",
     ]
     result = tabulate(table_data, headers=headers, tablefmt=tablefmt, numalign="right", stralign="left")
 
