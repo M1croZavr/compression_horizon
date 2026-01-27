@@ -257,20 +257,22 @@ where the cramming loss is the cross-entropy over the target sequence:
 \subsection{Progressive Token Addition}
 \label{sec:progressive}
 
-Rather than compressing a fixed sequence, we progressively extend the target:
+Rather than optimizing a compression embedding for a fixed-length target, we progressively extend the target prefix and warm-start optimization:
 %
 \begin{enumerate}
-    \item Initialize with $\mathbf{x}^{(1)} = (x_1)$, optimize $\mathbf{e}^{(1)}$ to 100\% accuracy
-    \item Extend to $\mathbf{x}^{(k)} = (x_1, \ldots, x_k)$, keep optimization from $\mathbf{e}^{(k-1)}$ point.
-    \item Continue until convergence fails
+    \item Initialize with $\mathbf{x}^{(1)} = (x_1)$ and optimize $\mathbf{e}^{(1)} \in \mathbb{R}^d$ until perfect reconstruction.
+    \item Extend to $\mathbf{x}^{(k)} = (x_1, \ldots, x_k)$, initialize $\mathbf{e}^{(k)} \leftarrow \mathbf{e}^{(k-1)}$, and continue optimizing for the longer prefix.
+    \item Repeat until perfect reconstruction is no longer achievable within the optimization budget.
 \end{enumerate}
 
 This process is visualized on Figure~\ref{fig:progressive}.
 
-At the end of optimization process we have sequence of compression embeddings $ e^{(1)} \dots e^{(n)} $ for each token. With this sequence we can track optimizer path for each new token. And get aproximate trajectory length of optimization process. We define it as sum of euclidian dictances between sequential pairs of compression embeddings.
+Progressive cramming produces a sequence of embeddings $\{\mathbf{e}^{(k)}\}_{k=1}^{n}$, where $\mathbf{e}^{(k)}$ is the optimized compression embedding for the length-$k$ prefix.
+This lets us quantify how far the optimizer moves in embedding space as new tokens are added.
+We define the (stage-wise) trajectory length as the sum of Euclidean distances between consecutive stages:
 
 \begin{equation}
-    L = \sum^{n-1}_{i=1}{ \| e^{(i+1)} - e^{(i)} \| }
+    L_{\text{traj}} = \sum_{k=1}^{n-1} \left\| \mathbf{e}^{(k+1)} - \mathbf{e}^{(k)} \right\|_2
 \end{equation}
 
 
@@ -286,17 +288,17 @@ At the end of optimization process we have sequence of compression embeddings $ 
 \label{sec:activation_alignment}
 
 To stabilize optimization, we regularize hidden states toward those of the uncompressed sequence.
-Let $\mathbf{h}_l^{\text{cram}}(i)$ denote the hidden state at layer $l$, position $i$ with compression embedding, and $\mathbf{h}_l^{\text{clean}}(i)$ the corresponding state without compression.
-The activation alignment loss is based on cosine distance:
+Let $\mathbf{h}_l^{\text{cram}}(i)$ denote the hidden state at layer $l$ and token position $i$ when the model is conditioned on the compression embedding, and let $\mathbf{h}_l^{\text{clean}}(i)$ be the corresponding state for the same token position without compression.
+We align activations using cosine distance:
 %
 \begin{equation}
     \mathcal{L}_{\text{align}} = \frac{1}{n} \sum_{l \in \{1..K\}} \sum_{i=1}^{n} \left( 1 - \frac{\mathbf{h}_l^{\text{cram}}(i) \cdot \mathbf{h}_l^{\text{clean}}(i)}{\|\mathbf{h}_l^{\text{cram}}(i)\| \, \|\mathbf{h}_l^{\text{clean}}(i)\|} \right)
 \end{equation}
 %
 
-where $K$ is number of layers for alignment.
+where $K$ is the number of layers used for alignment.
 
-The full training objective for activation allignment combines reconstruction and alignment:
+The full objective combines reconstruction and alignment:
 
 \begin{equation}
     \mathcal{L} = \mathcal{L}_{\text{cram}} + \alpha \mathcal{L}_{\text{align}}
@@ -315,19 +317,39 @@ This motivates constraining optimization to a learned projection:
     \mathbf{e} = \mathbf{W} \mathbf{z} + \mathbf{b}
 \end{equation}
 
-where $\mathbf{z} \in \mathbb{R}^k$ with $k \ll d$, and $\mathbf{W} \in \mathbb{R}^{d \times k}$. $\mathbf{z}$ and $\mathbf{W}$ $\mathbf{b}$ are all learned and randomly initialized for each compressed sample.
+where $\mathbf{z} \in \mathbb{R}^k$ with $k \ll d$, $\mathbf{W} \in \mathbb{R}^{d \times k}$, and $\mathbf{b} \in \mathbb{R}^d$.
+For each sample, we randomly initialize $(\mathbf{W}, \mathbf{b}, \mathbf{z})$ and optimize them jointly, which restricts the compression embedding to a rank-$k$ affine subspace.
 
-This is simple linear projection and after training it can be computed only once and saved as high-dimensional embedding. But there a difference with single embedding optimization: linear projection makes optimizer to have an moments for this projection.
+After optimization, the effective embedding $\mathbf{e}$ can be materialized once and reused; the projection primarily changes the optimization geometry by introducing optimizer state (e.g., momentum) in the low-dimensional coordinates.
+
+\subsection{Attention Mass}
+\label{sec:attention_mass}
+
+To quantify attention hijacking (Section~\ref{sec:attention}), we measure how much attention mass other positions allocate to the first position (position $0$), which corresponds to \texttt{[mem]} in crammed inputs or the BOS token in the uncompressed baseline.
+Let $\mathbf{A}_l \in [0,1]^{S \times S}$ denote the attention matrix at layer $l$ after averaging over heads.
+For a given prefix length $s \le S$, we define the attention mass on position $0$ as
+%
+\begin{equation}
+    m_l(s) = \frac{1}{s-1} \sum_{q=1}^{s-1} \mathbf{A}_l(q, 0)
+\end{equation}
+%
+which excludes self-attention ($q=0$) and averages over query positions.
+We report $100 \cdot m_l(s)$ as a percentage, and average over a set of target prefix lengths $\mathcal{S}$:
+%
+\begin{equation}
+    \bar{m}_l = \frac{1}{|\mathcal{S}|} \sum_{s \in \mathcal{S}} m_l(s)
+\end{equation}
 
 \subsection{Information Gain}
 
-As a main metric for cramming task we use Information Gain. Let $H_{LM} = H(P_{\theta}(t_{[1:N]}))$ be the sum of per token cross entropy in bits for original tokens sequence without compression embedding. And $H_{[mem]+LM} = H(P_{\theta}(t_{[1:N]}|\texttt{[mem]}))$ be the sum of per token cross entropy in bits for crammed tokens sequence.
+As a primary cramming metric we use information gain \cite{kuratov2025cramming}, defined as the reduction in total cross-entropy (in bits) on the target sequence when conditioning on the learned compression embedding.
+Let $H_{LM}$ be the sum of per-token cross-entropies for the original token sequence, and let $H_{[mem]+LM}$ be the corresponding quantity when the model is conditioned on \texttt{[mem]}.
 
 \begin{equation}
     C_H = H_{LM} - H_{[mem]+LM}
 \end{equation}
 
-\citet{kuratov2025cramming} showed that cramming is limited not with tokens number rather with information gain and information gain for models remains stable for different types of datasets.
+\citet{kuratov2025cramming} show that cramming capacity is better characterized by information gain than by raw token count, and that this quantity is relatively stable across datasets.
 
 % =============================================================================
 \section{Experiments}
