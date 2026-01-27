@@ -223,7 +223,7 @@ def compute_attention_mass_for_stages(
     attention_block_size: int = 16,
     target_seq_lengths_override: Optional[List[int]] = None,
     dataset_type: str = "progressive",
-) -> Dict[int, Dict[int, float]]:
+) -> Tuple[Dict[int, Dict[int, float]], Optional[tuple], Optional[str], Optional[int]]:
     """
     Compute attention mass percent for all stages.
 
@@ -241,10 +241,14 @@ def compute_attention_mass_for_stages(
         dataset_type: Type of dataset ("progressive" or "prefix_tuning")
 
     Returns:
-        Dictionary mapping seq_len to layer_index to attention_mass_percent
+        Tuple of (results_dict, attentions, text, num_compression_tokens) where:
+        - results_dict: Dictionary mapping seq_len to layer_index to attention_mass_percent
+        - attentions: Tuple of attention tensors or None
+        - text: Input text string or None
+        - num_compression_tokens: Number of compression tokens or None
     """
     if not stages:
-        return {}
+        return {}, None, None, None
 
     # Get the stage record (for prefix_tuning, there's only one; for progressive, use the longest)
     if dataset_type == "prefix_tuning":
@@ -252,14 +256,14 @@ def compute_attention_mass_for_stages(
         # For prefix tuning, extract sequence length from tokenized text
         text = stage_record.get("text", "")
         if not isinstance(text, str) or text.strip() == "":
-            return {}
+            return {}, None, None, None
         # Tokenize to get actual sequence length
         enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
         max_seq_len = enc["input_ids"].shape[1]
         # Extract prefix embedding
         embedding = stage_record.get("prefix_embedding")
         if embedding is None:
-            return {}
+            return {}, None, None, None
         # Get number of virtual tokens
         num_compression_tokens = int(stage_record.get("num_virtual_tokens", 1))
     else:
@@ -267,17 +271,17 @@ def compute_attention_mass_for_stages(
         longest_stage = max(stages, key=lambda s: int(s.get("stage_seq_len", 0)))
         max_seq_len = int(longest_stage.get("stage_seq_len", -1))
         if max_seq_len < 1:
-            return {}
+            return {}, None, None, None
         # Extract compression embeddings
         embedding = longest_stage.get("embedding")
         if embedding is None:
-            return {}
+            return {}, None, None, None
         # Get number of compression tokens
         num_compression_tokens = int(longest_stage.get("num_compression_tokens", 1))
         # Get text
         text = longest_stage.get("text", "")
         if not isinstance(text, str) or text.strip() == "":
-            return {}
+            return {}, None, None, None
 
     # Convert to tensor
     if isinstance(embedding, list):
@@ -550,7 +554,7 @@ def compute_attention_mass_for_stages(
         block_size=attention_block_size,
     )
 
-    return results
+    return results, attentions, text, num_compression_tokens
 
 
 def plot_attention_hijacking_heatmap(
@@ -611,6 +615,139 @@ def plot_attention_hijacking_heatmap(
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved heatmap to: {output_path}")
+
+
+def plot_attention_weights_heatmap(
+    attentions: tuple,
+    num_compression_tokens: int,
+    tokenizer: AutoTokenizer,
+    text: str,
+    sample_id: Optional[int],
+    output_path: str,
+    layer_idx: Optional[int] = None,
+    head_idx: Optional[int] = None,
+):
+    """
+    Plot full attention weights heatmap (seq_len x seq_len) for a specific layer and optionally head.
+
+    Args:
+        attentions: Tuple of attention tensors, one per layer [batch_size, num_heads, seq_len, seq_len]
+        num_compression_tokens: Number of compression tokens
+        tokenizer: Tokenizer for token labels
+        text: Input text for token labels
+        sample_id: Optional sample ID for title
+        output_path: Path to save the plot
+        layer_idx: Layer index to plot (if None, averages across all layers)
+        head_idx: Head index to plot (if None, averages across all heads)
+    """
+    if not attentions:
+        print("No attention weights to plot")
+        return
+
+    num_layers = len(attentions)
+    batch_size, num_heads, seq_len, _ = attentions[0].shape
+
+    # Validate: if head_idx is specified, layer_idx must also be specified
+    if head_idx is not None and layer_idx is None:
+        raise ValueError("head_idx requires layer_idx to be specified")
+
+    # Select layer and head
+    if layer_idx is None:
+        # Average across all layers
+        attention_weights = torch.stack([attn.mean(dim=1) for attn in attentions], dim=0).mean(dim=0)
+        layer_label = "All Layers (avg)"
+        head_label = " (avg across heads)"
+    else:
+        if layer_idx < 0 or layer_idx >= num_layers:
+            raise ValueError(f"layer_idx {layer_idx} out of range [0, {num_layers})")
+        if head_idx is not None:
+            # Specific head in specific layer
+            if head_idx < 0 or head_idx >= num_heads:
+                raise ValueError(f"head_idx {head_idx} out of range [0, {num_heads})")
+            attention_weights = attentions[layer_idx][0, head_idx, :, :]
+            layer_label = f"Layer {layer_idx}"
+            head_label = f", Head {head_idx}"
+        else:
+            # Average across heads in specific layer
+            attention_weights = attentions[layer_idx].mean(dim=1)  # Average across heads
+            layer_label = f"Layer {layer_idx}"
+            head_label = " (avg across heads)"
+
+    # Convert to numpy
+    if attention_weights.ndim == 3:
+        # Has batch dimension: [batch_size, seq_len, seq_len]
+        attention_matrix = attention_weights[0].cpu().numpy()
+    else:
+        # Already 2D: [seq_len, seq_len]
+        attention_matrix = attention_weights.cpu().numpy()
+
+    # Get token labels
+    enc = tokenizer(text, truncation=True, padding=False, return_tensors="pt", add_special_tokens=False)
+    token_ids = enc["input_ids"][0].tolist()
+    tokens = tokenizer.convert_ids_to_tokens(token_ids)
+
+    # Create labels: compression tokens + text tokens
+    compression_labels = [f"Comp_{i}" for i in range(num_compression_tokens)]
+    token_labels = compression_labels + tokens
+
+    # Ensure labels match attention matrix dimensions
+    # The attention matrix includes compression tokens, so seq_len = num_compression_tokens + text_tokens
+    expected_text_tokens = seq_len - num_compression_tokens
+    if len(tokens) != expected_text_tokens:
+        # Truncate or pad tokens to match
+        if len(tokens) > expected_text_tokens:
+            tokens = tokens[:expected_text_tokens]
+        else:
+            tokens = tokens + ["<pad>"] * (expected_text_tokens - len(tokens))
+        token_labels = compression_labels + tokens
+
+    # Truncate labels if sequence is too long (for readability)
+    max_display_tokens = 50
+    if len(token_labels) > max_display_tokens:
+        # Show first few and last few tokens
+        display_labels = token_labels[: max_display_tokens // 2] + ["..."] + token_labels[-max_display_tokens // 2 :]
+        display_matrix = np.concatenate(
+            [
+                attention_matrix[: max_display_tokens // 2, :],
+                np.zeros((1, seq_len)),
+                attention_matrix[-max_display_tokens // 2 :, :],
+            ],
+            axis=0,
+        )
+        display_matrix = np.concatenate(
+            [
+                display_matrix[:, : max_display_tokens // 2],
+                np.zeros((display_matrix.shape[0], 1)),
+                display_matrix[:, -max_display_tokens // 2 :],
+            ],
+            axis=1,
+        )
+    else:
+        display_labels = token_labels
+        display_matrix = attention_matrix
+
+    # Create heatmap
+    fig_size = max(10, len(display_labels) * 0.3)
+    plt.figure(figsize=(fig_size, fig_size))
+    sns.heatmap(
+        display_matrix,
+        xticklabels=display_labels if len(display_labels) <= 30 else False,
+        yticklabels=display_labels if len(display_labels) <= 30 else False,
+        cmap="viridis",
+        cbar_kws={"label": "Attention Weight"},
+        vmin=0,
+        vmax=1,
+    )
+    plt.xlabel("Key Position", fontsize=12)
+    plt.ylabel("Query Position", fontsize=12)
+    title = f"Attention Weights: {layer_label}{head_label}"
+    if sample_id is not None:
+        title += f" (Sample {sample_id})"
+    plt.title(title, fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved attention weights heatmap to: {output_path}")
 
 
 def average_attention_mass_results(
@@ -676,6 +813,28 @@ def main():
         type=int,
         default=16,
         help="Block size for averaging attention for long sequences (target_seq_len > 100).",
+    )
+    parser.add_argument(
+        "--save_per_sample_heatmaps",
+        action="store_true",
+        help="Save individual heatmaps for each sample when processing all samples (ignored if --sample_id is provided).",
+    )
+    parser.add_argument(
+        "--save_attention_weights_heatmaps",
+        action="store_true",
+        help="Save full attention weights heatmaps (seq_len x seq_len) for each sample.",
+    )
+    parser.add_argument(
+        "--attention_layer_idx",
+        type=int,
+        default=None,
+        help="Layer index to plot for attention weights heatmap (if not provided, averages across all layers).",
+    )
+    parser.add_argument(
+        "--attention_head_idx",
+        type=int,
+        default=None,
+        help="Head index to plot for attention weights heatmap (if not provided, averages across all heads).",
     )
 
     args = parser.parse_args()
@@ -791,7 +950,7 @@ def main():
             stage_count = len(stages)
             stage_label = "stages" if dataset_type == "progressive" else "entry"
             print(f"\nProcessing sample {sample_id} with {stage_count} {stage_label}...")
-            results = compute_attention_mass_for_stages(
+            results, attentions, text, num_compression_tokens = compute_attention_mass_for_stages(
                 model=model,
                 tokenizer=tokenizer,
                 stages=stages,
@@ -802,6 +961,32 @@ def main():
             )
             if results:
                 all_results.append(results)
+                # Save per-sample heatmap if flag is set
+                if args.save_per_sample_heatmaps:
+                    output_path = os.path.join(output_dir, f"attention_hijacking_sample_{sample_id}.png")
+                    plot_attention_hijacking_heatmap(
+                        results=results,
+                        sample_id=sample_id,
+                        output_path=output_path,
+                    )
+                # Save attention weights heatmap if flag is set
+                if (
+                    args.save_attention_weights_heatmaps
+                    and attentions is not None
+                    and text is not None
+                    and num_compression_tokens is not None
+                ):
+                    output_path = os.path.join(output_dir, f"attention_weights_sample_{sample_id}.png")
+                    plot_attention_weights_heatmap(
+                        attentions=attentions,
+                        num_compression_tokens=num_compression_tokens,
+                        tokenizer=tokenizer,
+                        text=text,
+                        sample_id=sample_id,
+                        output_path=output_path,
+                        layer_idx=args.attention_layer_idx,
+                        head_idx=args.attention_head_idx,
+                    )
 
         avg_results = average_attention_mass_results(all_results)
         output_path = os.path.join(output_dir, "attention_hijacking_avg.png")
@@ -830,7 +1015,7 @@ def main():
             stage_count = len(stages)
             stage_label = "stages" if dataset_type == "progressive" else "entry"
             print(f"\nProcessing sample {sample_id} with {stage_count} {stage_label}...")
-            results = compute_attention_mass_for_stages(
+            results, attentions, text, num_compression_tokens = compute_attention_mass_for_stages(
                 model=model,
                 tokenizer=tokenizer,
                 stages=stages,
@@ -844,6 +1029,24 @@ def main():
                 sample_id=sample_id,
                 output_path=output_path,
             )
+            # Save attention weights heatmap if flag is set
+            if (
+                args.save_attention_weights_heatmaps
+                and attentions is not None
+                and text is not None
+                and num_compression_tokens is not None
+            ):
+                output_path = os.path.join(output_dir, f"attention_weights_sample_{sample_id}.png")
+                plot_attention_weights_heatmap(
+                    attentions=attentions,
+                    num_compression_tokens=num_compression_tokens,
+                    tokenizer=tokenizer,
+                    text=text,
+                    sample_id=sample_id,
+                    output_path=output_path,
+                    layer_idx=args.attention_layer_idx,
+                    head_idx=args.attention_head_idx,
+                )
 
     print(f"\nAll visualizations saved to: {output_dir}")
 
