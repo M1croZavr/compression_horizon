@@ -280,7 +280,7 @@ We define the (stage-wise) trajectory length as the sum of Euclidean distances b
 \begin{figure*}[t]
     \centering
     \input{figure_progressive_cramming.tikz}
-    \caption{Progressive cramming sequentially adds tokens, optimizing to 100\% accuracy at each stage before extending. All tokens are optimized during each stage, not only last one.}
+    \caption{Progressive cramming adds target tokens sequentially. At stage $k$, we optimize the compression representation to achieve 100\% reconstruction of the prefix $(x_1,\ldots,x_k)$, then extend to $k{+}1$ and warm-start from the previous solution.}
     \label{fig:progressive}
 \end{figure*}
 
@@ -364,7 +364,7 @@ Because autoregressive decoding is brittle to early errors (Section~\ref{sec:pri
 
 \begin{table}[]
     \centering
-    \caption{Full and progressive cramming comparison. Full cramming corresponds to original cramming proposed by \citet{kuratov2025cramming}. Progressive cramming is ours one. For progressive cramming we have fixed accuracy and varying tokens count. While for full cramming we have fixed tokens count and varying accuracy.}\label{tab:full_vs_progressive}
+    \caption{Full vs. progressive cramming on PG19. ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}\label{tab:full_vs_progressive}
 
 \begin{tabular}{llll}
 \hline
@@ -423,7 +423,7 @@ Table~\ref{tab:pca_models} further highlights two qualitative patterns: (i) larg
 
 \begin{table*}[]
     \centering
-    \caption{Progressive cramming optimization trajectories metrics. Compressed tokens - is number of compressed tokens in PG19 dataset.}
+    \caption{Progressive cramming trajectory statistics on PG19. ``Compressed Tokens'' is the achieved prefix length $n$, ``Trajectory Length'' is $L_{\text{traj}}$, and ``PCA 99\%'' is the number of principal components explaining 99\% of trajectory variance.}
     \label{tab:pca_models}
 
 \begin{tabular}{lllll}
@@ -455,7 +455,7 @@ Table~\ref{tab:pca_models} further highlights two qualitative patterns: (i) larg
 \begin{figure}[t]
     \centering
     \centerline{\includegraphics[width=\columnwidth]{aggregate_pca_components_vs_seq_len_Llama3.1-8B_all_lrs.pdf}}
-    \caption{Dependence of the number of PCA components that explains 99\% optimization trajectory variance for Llama-3.1-8B and different learning rate values.}
+    \caption{Number of principal components required to explain 99\% of progressive trajectory variance vs. reconstructed prefix length for Llama-3.1-8B, shown for multiple learning rates.}
     \label{fig:pca_from_seq_length}
 \end{figure}
 
@@ -471,7 +471,7 @@ Notably, lowercasing (which should preserve high-level semantics) induces a mark
 \begin{figure*}[t]
     \centering
     \centerline{\includegraphics[width=\linewidth]{Llama3.1-8B-text-modifications_lr-0p1.pdf}}
-    \caption{Visualization of progressive embeddings for 4 PCA components. For first sample of PG19 for Llama-3.1-8B. All compressed sequences has same 64 tokens prefix. Base trajectory corresponds to original PG19 sample. For random trajectory we have random permutation for all tokens after 64 tokens prefix. "Sampled" trajectory corresponds to tokens sampled with greedy decoding with the same model Llama-3.1-8B conditioned on 64 tokens prefix. For lowercase trajectory we applied lowercase transform for all characters after 64 tokens prefix - this transform should not change text semantics, but makes different tokens to be compressed. For each component there is a signed fraction of explained variance at the axis title. Start point id marked as a circle, end points are marked as the squares.}
+    \caption{Progressive trajectories projected onto PCA components (Llama-3.1-8B, one PG19 sample). All variants share the same 64-token prefix; the suffix is either original (Base), randomly permuted (Random), greedily sampled continuation (Sampled), or lowercased (Lowercased). Circles mark the start and squares mark the end. Axis titles report the signed explained-variance fraction.}
     \label{fig:trajectories_text_modifications}
 \end{figure*}
 
@@ -479,7 +479,7 @@ Notably, lowercasing (which should preserve high-level semantics) induces a mark
 
 \begin{table}[]
     \centering
-    \caption{Progressive Cramming metrics for modified samples from PG19. Sequences has 64 common tokens at the start. {\color{red} TODO \texttt{scripts/paper/text\_modifications\_table.py} recompute tab:text\_modifications script. Metrics are provided for Llama-3.1-8B. }}
+    \caption{Progressive cramming on modified PG19 samples (Llama-3.1-8B). All variants share a 64-token prefix and differ only in the suffix (Base/Random/Sampled/Lowercased). {\color{red} TODO recompute via \texttt{scripts/paper/text\_modifications\_table.py}.}}
     \label{tab:text_modifications}
 
 \begin{tabular}{llll}
@@ -515,7 +515,7 @@ Three takeaways stand out:
 
 \begin{table*}[]
     \centering
-    \caption{Low dimention projection sutup.}
+    \caption{Effect of low-dimensional projection size on progressive cramming. ``dim'' in the model column denotes the projection dimension $k$ (Section~\ref{sec:lowdim}).}
     \label{tab:low_dim_projection_results}
 
 \begin{tabular}{lllll}
@@ -557,7 +557,7 @@ Across settings, we observe that alignment qualitatively changes attention behav
 
 \begin{table*}[]
     \centering
-    \caption{Activation alignment and low dimensional projection}
+    \caption{Activation alignment and low-dimensional projection ablations. ``$\alpha$'' controls alignment strength and ``$L$'' is the number of aligned layers (Section~\ref{sec:activation_alignment}); ``dim'' denotes projection dimension.}
     \label{tab:alignment_and_lowdim_projection}
 
 \begin{tabular}{lllll}
@@ -594,7 +594,7 @@ In contrast, Llama and Gemma show much lower \texttt{[mem]} attention mass than 
 
 \begin{table*}[]
     \centering
-    \caption{Attention hijacking: average attention mass for compression and bos token over all layers}
+    \caption{Attention hijacking summary. ``Compression Token'' is attention mass to position 0 for \texttt{[mem]} in the crammed input; ``BOS Token'' is attention mass to position 0 for the uncompressed baseline; ``Diff'' is (Compression$-$BOS). ``Correlation'' is the Pearson correlation between per-layer attention-mass profiles. Values are mean $\pm$ standard deviation over samples.}
     \label{tab:attn_hijacking}
 
 \begin{tabular}{llllr}
@@ -627,7 +627,7 @@ Compared to cramming, prefix tuning typically attracts less attention mass than 
 
 \begin{table*}[]
     \centering
-    \caption{Attention hijacking for prefix tuning}
+    \caption{Prefix-tuning attention mass, computed with the same metric as Table~\ref{tab:attn_hijacking} but for learned prefix tokens instead of \texttt{[mem]}. Values are mean $\pm$ standard deviation over samples.}
     \label{tab:prefix_tuning_attention_hijacking}
 \begin{tabular}{llllr}
 \hline
@@ -649,7 +649,7 @@ Compared to cramming, prefix tuning typically attracts less attention mass than 
 
 \begin{table}[]
     \centering
-    \caption{Prefix tuning accuracy compared to base progressive training results}
+    \caption{Prefix-tuning reconstruction accuracy compared to progressive cramming. ``Tokens'' denotes the number of learned prefix tokens (or reconstructed tokens for progressive cramming).}
     \label{tab:prefix_tuning_accuracy}
 
 \begin{tabular}{llll}
@@ -690,7 +690,7 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 \paragraph{Results.}
 \begin{table}[t]
     \centering
-    \caption{Downstream task performance. Compressed prefixes cause complete capability collapse. HS - HellaSwag, ARC-E - ARC-Easy, ARC-C - ARC-Challenge {\color{red} TODO recalculate on 512 samples each checkpoint}}
+    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized \texttt{[mem]} embedding. {\color{red} TODO recalculate on 512 samples per checkpoint.}}
     \label{tab:semantic_evaluation}
 \begin{tabular}{lllll}
 \hline
@@ -771,7 +771,7 @@ Model sampled inputs compression - infinite and ideal compression?
 \section{Full activation alignment experiments}
 
 \begin{table*}
-    \caption{Full experiments list with activations alignment and low dim projections}\label{tab:full_activation_alignment_and_low_dim_projections}
+    \caption{Full sweep of activation alignment and low-dimensional projection hyperparameters. ``$\alpha$'' is alignment strength, ``$L$'' is the number of aligned layers, and ``dim'' is projection dimension.}\label{tab:full_activation_alignment_and_low_dim_projections}
 
 
 \begin{tabular}{lllll}
