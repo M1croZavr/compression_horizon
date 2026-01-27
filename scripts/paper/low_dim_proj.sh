@@ -1,6 +1,7 @@
 
 set -x
 
+# tab:progressive_for_model_scales
 PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --checkpoints \
     artifacts/experiments_progressive/sl_4096_Llama-3.2-1B_lr_0.1/progressive_prefixes \
