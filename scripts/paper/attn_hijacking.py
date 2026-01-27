@@ -334,7 +334,7 @@ def compute_checkpoint_attention_mass(checkpoint_dir: str) -> Optional[Dict[str,
         checkpoint_dir: Path to checkpoint directory
 
     Returns:
-        Dictionary with 'compression' and 'original' average attention mass (mean/std/count),
+        Dictionary with 'compression', 'original', and 'diff' average attention mass (mean/std/count),
         or None if no cache files found
     """
     cache_files = find_attention_mass_cache_files(checkpoint_dir)
@@ -343,6 +343,7 @@ def compute_checkpoint_attention_mass(checkpoint_dir: str) -> Optional[Dict[str,
 
     all_compression_values = []
     all_original_values = []
+    all_diff_values = []
     # Collect per-layer values for correlation computation
     all_compression_per_layer: List[List[float]] = []
     all_original_per_layer: List[List[float]] = []
@@ -354,6 +355,9 @@ def compute_checkpoint_attention_mass(checkpoint_dir: str) -> Optional[Dict[str,
 
         compression_per_layer = cache_data.get("avg_attention_mass_per_layer_compression")
         original_per_layer = cache_data.get("avg_attention_mass_per_layer_original")
+
+        sample_avg_compression = None
+        sample_avg_original = None
 
         if isinstance(compression_per_layer, list) and len(compression_per_layer) > 0:
             # Average across all layers for this sample
@@ -368,6 +372,10 @@ def compute_checkpoint_attention_mass(checkpoint_dir: str) -> Optional[Dict[str,
             all_original_values.append(sample_avg_original)
             # Store per-layer values for correlation
             all_original_per_layer.append(original_per_layer)
+
+        # Compute difference if both values are available
+        if sample_avg_compression is not None and sample_avg_original is not None:
+            all_diff_values.append(sample_avg_compression - sample_avg_original)
 
     if not all_compression_values and not all_original_values:
         return None
@@ -411,6 +419,7 @@ def compute_checkpoint_attention_mass(checkpoint_dir: str) -> Optional[Dict[str,
     result = {
         "compression": summarize_values(all_compression_values),
         "original": summarize_values(all_original_values),
+        "diff": summarize_values(all_diff_values),
     }
     if correlation is not None:
         result["correlation"] = correlation
@@ -457,7 +466,7 @@ def print_attention_mass_table(
 
     Args:
         checkpoint_names: List of experiment labels
-        statistics: List of statistics dicts, each containing 'compression' and 'original'
+        statistics: List of statistics dicts, each containing 'compression', 'original', and 'diff'
         midrule_indicies: Optional list of indices where to insert midrule (for LaTeX)
         tablefmt: Table format (grid, simple, latex, etc.)
     """
@@ -469,6 +478,7 @@ def print_attention_mass_table(
     for i, (name, stats) in enumerate(zip(checkpoint_names, statistics)):
         # Clean up name for display
         table_name = name
+        table_name = table_name.replace("pt_sl_1024_", "")
         table_name = table_name.replace("sl_4096_", "")
         table_name = table_name.replace("_lowproj", "")
         table_name = table_name.replace("Meta-", "")
@@ -491,6 +501,7 @@ def print_attention_mass_table(
                 table_name,
                 format_mean_std_cell(stats.get("compression"), precision=2, tablefmt=tablefmt),
                 format_mean_std_cell(stats.get("original"), precision=2, tablefmt=tablefmt),
+                format_mean_std_cell(stats.get("diff"), precision=2, tablefmt=tablefmt),
                 correlation_str,
             ]
         )
@@ -502,6 +513,7 @@ def print_attention_mass_table(
         "Model",
         "Compression Token (%)",
         "BOS Token Original (%)",
+        "Diff (%)",
         "Correlation",
     ]
     result = tabulate(table_data, headers=headers, tablefmt=tablefmt, numalign="right", stralign="left")

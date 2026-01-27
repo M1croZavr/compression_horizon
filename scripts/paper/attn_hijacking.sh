@@ -35,15 +35,10 @@ PYTHONPATH=./src:. python scripts/paper/attn_hijacking.py \
 # Prefix Tuning
 PYTHONPATH=./src:. python scripts/paper/attn_hijacking.py \
   --checkpoints \
+    artifacts/experiments_prefix_tuning/pt_sl_1024_SmolLM2-135M/prefix_tuning_prefixes \
     artifacts/experiments_prefix_tuning/pt_sl_1024_SmolLM2-360M/prefix_tuning_prefixes \
+    artifacts/experiments_prefix_tuning/pt_sl_1024_SmolLM2-1.7B/prefix_tuning_prefixes \
+    artifacts/experiments_prefix_tuning/pt_sl_1024_Llama-3.2-3B/prefix_tuning_prefixes \
+    artifacts/experiments_prefix_tuning/pt_sl_1024_Qwen3-4B/prefix_tuning_prefixes \
   --compute \
   --tablefmt latex
-
-    artifacts/experiments_prefix_tuning/pt_sl_16384_SmolLM2-1.7B/prefix_tuning_prefixes \
-    artifacts/experiments_prefix_tuning/pt_sl_16384_SmolLM2-135M/prefix_tuning_prefixes \
-    # artifacts/experiments_prefix_tuning/pt_sl_16384_Llama-3.2-3B/prefix_tuning_prefixes \
-    # artifacts/experiments_prefix_tuning/pt_sl_16384_Qwen3-4B/prefix_tuning_prefixes \
-
-
-
-
