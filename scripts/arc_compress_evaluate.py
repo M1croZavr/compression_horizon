@@ -833,18 +833,21 @@ def main():
                     correct_predictions_compressed += 1
 
             total_predictions += 1
-            correct_ending = endings[label]
-            full_text = context + correct_ending
-            token_count = count_text_tokens(tokenizer, full_text)
-            char_count = count_text_characters(full_text)
-            total_tokens += token_count
-            total_characters += char_count
-            if baseline_is_correct:
-                correct_tokens_baseline += token_count
-                correct_characters_baseline += char_count
-            if compressed_is_correct:
-                correct_tokens_compressed += token_count
-                correct_characters_compressed += char_count
+            token_count = None
+            char_count = None
+            if 0 <= label < len(endings):
+                correct_ending = endings[label]
+                full_text = context + correct_ending
+                token_count = count_text_tokens(tokenizer, full_text)
+                char_count = count_text_characters(full_text)
+                total_tokens += token_count
+                total_characters += char_count
+                if baseline_is_correct:
+                    correct_tokens_baseline += token_count
+                    correct_characters_baseline += char_count
+                if compressed_is_correct:
+                    correct_tokens_compressed += token_count
+                    correct_characters_compressed += char_count
 
             # Store result
             result = {
