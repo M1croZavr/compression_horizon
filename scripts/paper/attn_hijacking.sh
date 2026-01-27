@@ -3,15 +3,15 @@
 # tab:attn_hijacking
 PYTHONPATH=./src:. python scripts/paper/attn_hijacking.py \
   --checkpoints \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-135M_lr_0.1/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-360M_lr_0.1/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_Llama-3.2-1B_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_Llama-3.2-3B_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-160m_lr_0.5/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-410m_lr_0.5/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_lr_0.5/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-135M_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-360M_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-270m_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-1b-pt_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lr_0.1/progressive_prefixes \
@@ -35,10 +35,10 @@ PYTHONPATH=./src:. python scripts/paper/attn_hijacking.py \
 # Prefix Tuning tab:prefix_tuning_attention_hijacking
 PYTHONPATH=./src:. python scripts/paper/attn_hijacking.py \
   --checkpoints \
+    artifacts/experiments_prefix_tuning/pt_sl_1024_Llama-3.2-3B/prefix_tuning_prefixes \
     artifacts/experiments_prefix_tuning/pt_sl_1024_SmolLM2-135M/prefix_tuning_prefixes \
     artifacts/experiments_prefix_tuning/pt_sl_1024_SmolLM2-360M/prefix_tuning_prefixes \
     artifacts/experiments_prefix_tuning/pt_sl_1024_SmolLM2-1.7B/prefix_tuning_prefixes \
-    artifacts/experiments_prefix_tuning/pt_sl_1024_Llama-3.2-3B/prefix_tuning_prefixes \
     artifacts/experiments_prefix_tuning/pt_sl_1024_Qwen3-4B/prefix_tuning_prefixes \
   --compute \
   --tablefmt latex

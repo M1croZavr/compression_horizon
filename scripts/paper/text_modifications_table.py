@@ -31,7 +31,7 @@ def main() -> None:
     args = parse_args()
 
     cache_filename = "full_cramming_table_cache.json"
-    cache_version = 2
+    cache_version = 3
 
     experiments_list = [
         # Llama-3.2-1B
