@@ -588,19 +588,22 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 \paragraph{Results.}
 \begin{table}[t]
     \centering
-    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized \texttt{[mem]} embedding. {\color{red} TODO recalculate on 512 samples per checkpoint.}}
+    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized \texttt{[mem]} embedding.
     \label{tab:semantic_evaluation}
-\begin{tabular}{lllll}
-\hline
-                   & \multicolumn{2}{c}{\textbf{HellaSwag}} & \multicolumn{2}{c}{\textbf{ARC-E}} \\
- Model         & Base   & Cram   & Base   & Cram   \\
-\hline
- \small pythia-1.4b   & 42.34\% & 22.94\% & 42.55\% & 26.02\% \\
- \small SmolLM2-1.7B  & 52.01\% & 19.89\% & 53.85\% & 31.01\% \\
- \small Llama-3.1-8B  & 44.34\% & 24.28\% & 37.98\% & 25.50\% \\
- \small gemma-3-4b-pt & 30.09\% & 22.90\% & 39.66\% & 26.08\% \\
-\hline
-\end{tabular}
+
+
+    \begin{tabular}{lllll}
+        \hline
+                           & \multicolumn{2}{c}{\textbf{HellaSwag}} & \multicolumn{2}{c}{\textbf{ARC-E}} \\
+         Model         & Base   & Cram   & Base   & Cram   \\
+        \hline
+         pythia-1.4b   & 43.06\% & 26.32\% & 45.95\% & 24.32\% \\
+         SmolLM2-1.7B  & 51.54\% & 23.17\% & 58.77\% & 30.69\% \\
+         Llama-3.1-8B  & 40.79\% & 23.24\% & 38.48\% & 27.87\% \\
+         gemma-3-4b-pt & 29.27\% & 26.18\% & 39.70\% & 24.29\% \\
+        \hline
+        \end{tabular}
+
 
 \end{table}
 
