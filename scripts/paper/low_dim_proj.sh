@@ -271,4 +271,4 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_nobos_lr_0.1/progressive_prefixes \
   --n_components 4 \
   --sample_id 0 \
-  --show_labels --only_stat_table --tablefmt latex
+  --show_labels --only_stat_table --tablefmt latex --short

@@ -1311,15 +1311,35 @@ def print_statistics_table(
     statistics: List[Dict[str, Any]],
     midrule_indicies,
     tablefmt: str = "grid",
+    short: bool = False,
 ):
     """Print a statistics table using tabulate.
 
     Args:
         checkpoint_names: List of experiment labels
         statistics: List of statistics dicts, each containing 'num_embeddings' and 'total_steps'
+        short: If True, print the table without the last two columns
     """
     if len(checkpoint_names) == 0 or len(statistics) == 0:
         return
+
+    if short:
+        headers = [
+            "Model",
+            "Cram Tokens",
+            "Info Gain",
+        ]
+    else:
+        headers = [
+            "Model",
+            "Compressed Tokens",
+            "Information Gain",
+        ]
+    if not short:
+        headers += [
+            "Trajectory Length",
+            "PCA 99%",
+        ]
 
     # Prepare table data
     table_data = []
@@ -1328,7 +1348,7 @@ def print_statistics_table(
 
         table_name = name
         table_name = table_name.replace("sl_4096_", "")
-        table_name = table_name.replace("_nobos", " NoBOS")
+        table_name = table_name.replace("_nobos", " \\bcancel{B}")
         table_name = table_name.replace("_lowproj", "")
         table_name = table_name.replace("Meta-", "")
         table_name = table_name.replace("_ds_pg19_loss_cosine", "")
@@ -1338,11 +1358,17 @@ def print_statistics_table(
         table_name = re.sub(r"_lowdim_(\d+)", r" {\\small dim=\1}", table_name)
         table_name = re.sub(r"_lr_(\d+(\.?\d+)?)", r" {\\small lr=\1}", table_name)
 
-        table_data.append(
-            [
-                table_name,
-                format_mean_std_cell(stats.get("num_embeddings"), precision=1, tablefmt=tablefmt),
-                format_mean_std_cell(stats.get("information_gain_from_dataset"), precision=0, tablefmt=tablefmt),
+        num_embeds_precision = 1
+        if short:
+            num_embeds_precision = 0
+
+        row = [
+            table_name,
+            format_mean_std_cell(stats.get("num_embeddings"), precision=num_embeds_precision, tablefmt=tablefmt),
+            format_mean_std_cell(stats.get("information_gain_from_dataset"), precision=0, tablefmt=tablefmt),
+        ]
+        if not short:
+            row += [
                 format_mean_std_cell(stats.get("trajectory_length"), precision=0, tablefmt=tablefmt),
                 # format_mean_std_cell(stats.get("steps_taken"), precision=2, tablefmt=tablefmt),
                 format_mean_std_cell(stats.get("num_pca_for99_var"), precision=2, tablefmt=tablefmt),
@@ -1351,25 +1377,13 @@ def print_statistics_table(
                 # format_mean_std_cell(stats.get("information_gain"), precision=0, tablefmt=tablefmt),
                 # format_embedding_statistics(stats.get("embedding_statistics"), precision=4, tablefmt=tablefmt),
             ]
-        )
+        table_data.append(row)
 
         if midrule_indicies is not None and i in midrule_indicies:
-            table_data.append(["\midrule REMOVE"])
+            table_data.append(["\\midrule REMOVE"] + [""] * (len(headers) - 1))
 
         i += 1
 
-    headers = [
-        "Model",
-        "Compressed Tokens",
-        "Information Gain",
-        "Trajectory Length",
-        # "Steps Taken",
-        "PCA 99%",
-        # "PCA ALL 99%",
-        # "Rand. Proj. 99%",
-        # "Info Gain",
-        # "Emb. Stats (Comp/Vocab)",
-    ]
     result = tabulate(table_data, headers=headers, tablefmt=tablefmt, numalign="right", stralign="left")
 
     result = result.replace("\\textbackslash{}", "\\")
@@ -1537,6 +1551,11 @@ def main():
         default="grid",
         help="Tabulate table format for printed statistics (e.g., grid, simple, github). Default: grid.",
     )
+    parser.add_argument(
+        "--short",
+        action="store_true",
+        help="Print a shortened statistics table without 'Trajectory Length' and 'PCA 99%' columns.",
+    )
     parser.add_argument("--midrule_indicies", nargs="+", type=int)
 
     args = parser.parse_args()
@@ -1593,7 +1612,11 @@ def main():
     # Print statistics table
     if len(statistics_list) > 0:
         print_statistics_table(
-            checkpoint_names, statistics_list, midrule_indicies=args.midrule_indicies, tablefmt=args.tablefmt
+            checkpoint_names,
+            statistics_list,
+            midrule_indicies=args.midrule_indicies,
+            tablefmt=args.tablefmt,
+            short=args.short,
         )
 
     if args.only_stat_table:
