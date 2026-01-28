@@ -523,6 +523,7 @@ def print_attention_mass_table(
     result = result.replace("\$", "$")
     result = result.replace("\\{", "{")
     result = result.replace("\\}", "}")
+    result = result.replace("_nobos", " \\bcancel{B}")
     result = result.replace("P-", "Pythia")
     result = result.replace("L3.2-", "Llama-3.2-")
     result = result.replace("L3.1-", "Llama-3.1-")

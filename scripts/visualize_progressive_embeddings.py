@@ -19,6 +19,22 @@ from sklearn.decomposition import PCA
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+PAPER_FIGSIZE: Tuple[float, float] = (10, 6)
+PAPER_FIGSIZE_TALL: Tuple[float, float] = (10, 7)
+PAPER_FONT_SIZE: int = 25
+PAPER_TICK_LABEL_SIZE: int = 20
+
+
+def apply_paper_plot_style() -> None:
+    """Match plotting style used in `scripts/paper/pca_vs_sequence_length.py`."""
+    matplotlib.rcParams.update(
+        {
+            "font.size": PAPER_FONT_SIZE,
+            "xtick.labelsize": PAPER_TICK_LABEL_SIZE,
+            "ytick.labelsize": PAPER_TICK_LABEL_SIZE,
+        }
+    )
+
 
 def load_progressive_dataset(dataset_path: str) -> Dataset:
     return Dataset.load_from_disk(dataset_path)
@@ -120,7 +136,7 @@ def compute_principal_angles_from_pca_components(
 
 
 def plot_heatmap(matrix: np.ndarray, labels: List[str], title: str, outfile: str):
-    plt.figure(figsize=(0.7 * max(4, len(labels)), 0.7 * max(4, len(labels))))
+    plt.figure(figsize=PAPER_FIGSIZE)
     sns.heatmap(
         matrix,
         xticklabels=labels,
@@ -161,7 +177,7 @@ def plot_pca(X: np.ndarray, labels: List[str], outfile: str):
     # y_range = np.max(xy[:, 1]) - np.min(xy[:, 1])
 
     # plt.figure(figsize=(x_range, y_range))
-    plt.figure(figsize=(8.8, 7))
+    plt.figure(figsize=PAPER_FIGSIZE)
     labeled_positions = []
     for i, lab in enumerate(labels):
         plt.scatter(xy[i, 0], xy[i, 1], s=60)
@@ -731,7 +747,7 @@ def plot_cumulative_explained_variance(X: np.ndarray, title: str, outfile: str, 
 
     n_components = np.arange(1, len(cumulative_var) + 1)
 
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=PAPER_FIGSIZE)
     plt.plot(n_components, cumulative_var, marker="o", linewidth=2, markersize=4)
     plt.axhline(y=0.95, color="r", linestyle="--", alpha=0.7, label="95% variance")
     plt.axhline(y=0.99, color="g", linestyle="--", alpha=0.7, label="99% variance")
@@ -857,7 +873,7 @@ def plot_pca_components_vs_sequence_length(
         return
 
     # Plot
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=PAPER_FIGSIZE)
     plt.plot(seq_lengths, n_components_99, marker="o", linewidth=2, markersize=8, label="99% variance")
     plt.xlabel("Sequence Length", fontsize=14)
     plt.ylabel("Number of PCA Components", fontsize=14)
@@ -917,7 +933,7 @@ def plot_pca_components_vs_sequence_length_aggregate(
     q10_components = [np.percentile(comps, 10) for comps in all_components_per_seq_len]
     q90_components = [np.percentile(comps, 90) for comps in all_components_per_seq_len]
 
-    plt.figure(figsize=(10, 7))
+    plt.figure(figsize=PAPER_FIGSIZE)
     # Plot shaded regions showing distribution
     # Outer region: 10th-90th percentile
     plt.fill_between(
@@ -991,14 +1007,7 @@ def plot_pca_reconstruction_accuracy(
     if len(rows) == 0:
         return
 
-    font_size = 25
-    matplotlib.rcParams.update(
-        {
-            "font.size": font_size,
-            "xtick.labelsize": 20,
-            "ytick.labelsize": 20,
-        }
-    )
+    apply_paper_plot_style()
 
     # Group rows by sample_id
     rows_by_sample_id: Dict[int, List[Dict[str, Any]]] = {}
@@ -1194,7 +1203,7 @@ def plot_pca_reconstruction_accuracy(
     q10_accuracies = [np.percentile(accs, 10) for accs in all_accuracies_per_component]
     q90_accuracies = [np.percentile(accs, 90) for accs in all_accuracies_per_component]
 
-    plt.figure(figsize=(10, 7))
+    plt.figure(figsize=PAPER_FIGSIZE_TALL)
     # Plot shaded regions showing distribution
     # Outer region: 10th-90th percentile
     plt.fill_between(
@@ -1246,7 +1255,7 @@ def plot_pca_reconstruction_accuracy(
         q10_first_error_indices = [np.percentile(indices, 10) for indices in all_first_error_indices_per_component]
         q90_first_error_indices = [np.percentile(indices, 90) for indices in all_first_error_indices_per_component]
 
-        plt.figure(figsize=(10, 7))
+        plt.figure(figsize=PAPER_FIGSIZE_TALL)
         # Plot shaded regions showing distribution
         # Outer region: 10th-90th percentile
         plt.fill_between(
@@ -1328,7 +1337,7 @@ def plot_pca_reconstruction_accuracy(
                 print(f"  10th percentile: {np.percentile(all_sequence_lengths, 10):.2f}")
                 print(f"  90th percentile: {np.percentile(all_sequence_lengths, 90):.2f}")
                 print()
-            plt.figure(figsize=(10, 7))
+            plt.figure(figsize=PAPER_FIGSIZE_TALL)
             plt.hist(error_indices_last_model, bins=50, alpha=0.7, color="steelblue", edgecolor="black", linewidth=1.2)
             plt.axvline(
                 np.mean(error_indices_last_model),
@@ -1673,7 +1682,7 @@ def plot_pca_components_similarity_across_samples(
 
     # Plot summary comparison
     summary_outfile = outfile.replace(".png", "_summary.png")
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=PAPER_FIGSIZE)
     categories = ["Matching PC indices\n(e.g., PC1 vs PC1)", "Non-matching PC indices\n(e.g., PC1 vs PC2)"]
     means = [
         np.mean(matching_similarities) if matching_similarities else 0.0,
@@ -1822,7 +1831,7 @@ def plot_shared_subspace_pca_rank_selection(
     print(f"Saved shared-subspace PCA metrics: {npz_out}")
 
     # Plot: reconstruction error vs rank
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=PAPER_FIGSIZE)
     plt.fill_between(ranks, q10_err, q90_err, alpha=0.2, label="10-90% (across samples)")
     plt.plot(ranks, mean_err, linewidth=2.5, label="Mean error")
     plt.plot(ranks, q50_err, linewidth=2.0, linestyle="--", label="Median error")
@@ -1841,7 +1850,7 @@ def plot_shared_subspace_pca_rank_selection(
     explained_at_r = 1.0 - errors[:, chosen_r - 1]
     explained_at_r = explained_at_r[np.isfinite(explained_at_r)]
     if explained_at_r.size > 0:
-        plt.figure(figsize=(8, 5))
+        plt.figure(figsize=PAPER_FIGSIZE)
         plt.hist(explained_at_r, bins=20, alpha=0.8, color="steelblue", edgecolor="black")
         plt.xlabel("Explained variance (1 - error)", fontsize=12)
         plt.ylabel("Count", fontsize=12)
@@ -1867,7 +1876,7 @@ def plot_correlation(
         print(f"Warning: Skipping {title} - x and y have different lengths ({len(x)} vs {len(y)})")
         return
 
-    plt.figure(figsize=(6, 4))
+    plt.figure(figsize=PAPER_FIGSIZE)
     # Create gradient colors based on position (first to last)
     n_points = len(x)
     if n_points > 0:
@@ -1917,7 +1926,7 @@ def plot_norms_over_stages(
 ):
     if len(mean_vals) == 0:
         return
-    plt.figure(figsize=(max(6, 0.6 * len(labels)), 4))
+    plt.figure(figsize=PAPER_FIGSIZE)
     x = np.arange(len(labels))
     plt.plot(x, mean_vals, marker="o", label="mean")
     if len(max_vals) == len(mean_vals):
@@ -2133,8 +2142,8 @@ def main():
     # Group by sample and build stage-wise matrices
     by_sid = collate_stages_by_sample(rows)
 
-    # For each sample: compute pairwise distances between stages and PCA
-    sns.set(style="whitegrid")
+    # Match plot style/size used by paper scripts.
+    apply_paper_plot_style()
     summary_steps: List[int] = []
     summary_conv: List[float] = []
     summary_seq_len: List[int] = []
@@ -2338,7 +2347,7 @@ def main():
             device,
             title="Aggregate: PCA Reconstruction Accuracy (All Compression Embeddings)",
             outfile=os.path.join(out_dir, "aggregate_pca_reconstruction_accuracy.png"),
-            max_components=32,
+            max_components=192,
         )
 
     # Aggregate PCA components vs sequence length across all samples
