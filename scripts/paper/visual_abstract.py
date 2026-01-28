@@ -1,4 +1,5 @@
 import argparse
+import colorsys
 import os
 from typing import Any, Dict, Tuple
 
@@ -55,6 +56,14 @@ def _estimate_cell_area(grid_x: np.ndarray, grid_y: np.ndarray) -> float:
     return dx * dy
 
 
+def _boost_saturation(rgb: np.ndarray, factor: float) -> np.ndarray:
+    r, g, b = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    s = max(0.0, min(1.0, s * float(factor)))
+    r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v)
+    return np.array([r2, g2, b2], dtype=np.float32)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create a visual-abstract static image from landscape_pca_pairs.npz")
     parser.add_argument("--npz_path", type=str, required=True, help="Path to .npz produced by visualize_landscale_2pca.py")
@@ -104,12 +113,12 @@ def main() -> None:
         sns.set_theme(style="whitegrid")
     matplotlib.rcParams.update(
         {
-            "font.size": 25,  # default text
-            "axes.titlesize": 25,
-            "xtick.labelsize": 25,
-            "ytick.labelsize": 25,
-            "axes.labelsize": 20,
-            "legend.fontsize": 25,
+            "font.size": 30,  # default text
+            "axes.titlesize": 30,
+            "xtick.labelsize": 30,
+            "ytick.labelsize": 30,
+            "axes.labelsize": 30,
+            "legend.fontsize": 30,
         }
     )
 
@@ -146,8 +155,9 @@ def main() -> None:
     ev2 = float(explained[1])
     ev_cum_2 = float(ev1 + ev2)
     ev_cum_all = float(np.sum(explained))
-    print(f"Explained variance: PC1={ev1:.6f}, PC2={ev2:.6f}, cumulative(PC1+PC2)={ev_cum_2:.6f}")
-    print(f"Cumulative explained variance (all fitted PCs) = {ev_cum_all:.6f}")
+    print(f"Explained variance ratio: PC1={ev1:.6f}, PC2={ev2:.6f}")
+    print(f"Cumulative explained variance ratio (PC1+PC2) = {ev_cum_2:.6f}")
+    print(f"Cumulative explained variance ratio (all fitted PCs) = {ev_cum_all:.6f}")
 
     sampled_indices = npz["sampled_indices"].astype(np.int64).reshape(-1)
     sampled_seq_len = npz["sampled_seq_len"].astype(np.int64).reshape(-1)
@@ -226,8 +236,16 @@ def main() -> None:
         keep_full = anchor_indices_full >= zoom_start
         colors_zoom = colors_full[keep_full]
 
-    def _draw_panel(ax, zoom_start_point: int, anchor_sel_local, anchor_xy_local, anchor_indices_local, colors_local):
-        max_region_alpha = 0.8
+    def _draw_panel(
+        ax,
+        zoom_start_point: int,
+        anchor_sel_local,
+        anchor_xy_local,
+        anchor_indices_local,
+        colors_local,
+        suppress_anchor_labels_ge: int | None = None,
+    ):
+        max_region_alpha = 0.7
         near_perfect_area_by_anchor: Dict[int, float] = {}
 
         for k, (aidx, color) in enumerate(zip(anchor_sel_local.tolist(), colors_local)):
@@ -256,8 +274,10 @@ def main() -> None:
             else:
                 whiten = np.zeros_like(dist, dtype=np.float32)
             whiten = np.clip(whiten, 0.0, 1.0) * mask.astype(np.float32)
+            # Make regions more saturated: keep the lightening effect, but avoid washing out to pure white.
+            whiten = whiten * 0.75
 
-            anchor_rgb = np.array(color[:3], dtype=np.float32)
+            anchor_rgb = _boost_saturation(np.array(color[:3], dtype=np.float32), factor=1.35)
             rgb = anchor_rgb[None, None, :] * (1.0 - whiten[..., None]) + 1.0 * whiten[..., None]
             rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32)
             rgba_img = np.zeros((acc_map.shape[0], acc_map.shape[1], 4), dtype=np.float32)
@@ -318,11 +338,13 @@ def main() -> None:
                 linewidths=0.8,
                 zorder=5,
             )
+            if suppress_anchor_labels_ge is not None and int(idx) >= int(suppress_anchor_labels_ge):
+                continue
             ax.text(
                 float(x),
                 float(y),
                 f"{idx}",
-                fontsize=20,
+                fontsize=25,
                 ha="left",
                 va="bottom",
                 color="black",
@@ -366,9 +388,9 @@ def main() -> None:
     fig_title = f"Visual abstract: PC1-PC2 accuracy regions (>{thr:.2f}), cumulative={ev_cum_2:.3f}"
     print(fig_title)
 
-    ax.set_xlabel(f"PC1 {{{ev1:.3f}}}")
-    ax.set_ylabel(f"PC2 {{{ev2:.3f}}}")
-    ax.tick_params(axis="both", which="major", labelsize=20)
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.tick_params(axis="both", which="major", labelsize=25)
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.15)
 
@@ -413,7 +435,15 @@ def main() -> None:
             },
         )
         fig2.subplots_adjust(wspace=0.06)
-        _draw_panel(axes[0], 0, anchor_sel_full, anchor_xy_full, anchor_indices_full, colors_full)
+        _draw_panel(
+            axes[0],
+            0,
+            anchor_sel_full,
+            anchor_xy_full,
+            anchor_indices_full,
+            colors_full,
+            suppress_anchor_labels_ge=zoom_start,
+        )
         axes[0].set_title("Full")
         _draw_panel(axes[1], zoom_start, anchor_sel, anchor_xy, anchor_indices, colors_zoom)
         # Title will be updated after we compute the zoom factor.
@@ -473,11 +503,16 @@ def main() -> None:
             fig2.add_artist(con)
 
         for ax_i in axes:
-            ax_i.set_xlabel(f"PC1 {{{ev1:.3f}}}")
-            ax_i.set_ylabel(f"PC2 {{{ev2:.3f}}}")
-            ax_i.tick_params(axis="both", which="major", labelsize=20)
+            ax_i.set_xlabel("PC1")
+            ax_i.set_ylabel("PC2")
+            ax_i.tick_params(axis="both", which="major", labelsize=25)
             ax_i.set_aspect("equal", adjustable="box")
             ax_i.grid(True, alpha=0.15)
+
+        # Put the zoom-in y-label on the right to reduce clutter between panels.
+        axes[1].yaxis.set_label_position("right")
+        axes[1].yaxis.tick_right()
+        axes[1].tick_params(axis="y", which="both", left=False, labelleft=False, right=True, labelright=True)
         plt.tight_layout()
         plt.savefig(joined_path, dpi=int(args.dpi), bbox_inches="tight")
         plt.savefig(joined_pdf, dpi=int(args.dpi), bbox_inches="tight")
