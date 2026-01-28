@@ -430,11 +430,6 @@ Figure~\ref{fig:pca_from_seq_length} shows that, for Llama-3.1-8B, the number of
 Table~\ref{tab:all_progressive_modifications} further suggests that Gemma~3 achieves noticeably lower information gain at smaller reconstructed lengths than Llama and Pythia, consistent with additional optimization constraints such as logits softcapping \cite{gemma2}.
 
 
-{\color{red} TODO - shared subspaces?}
-
-{\color{red} TODO visualize Optimization Landscape.}
-
-
 % TODO may be make image shorter in heigth?
 \begin{figure}[t]
     \centering
@@ -621,7 +616,12 @@ Perfect reconstruction accuracy is insufficient; future work must evaluate capab
 
 {\color{red} run more samples experiments to validate mainpaper}
 
-{\color{red} my own optimizer that explores more dimensions?}
+{\color{red} my own optimizer that explores more dimensions? if we found bad local minima, we can explore more dimensions?}
+
+% {\color{red} TODO - shared subspaces?}
+
+% {\color{red} TODO visualize Optimization Landscape.}
+
 
 
 % \begin{itemize}

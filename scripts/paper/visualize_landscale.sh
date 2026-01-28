@@ -14,5 +14,5 @@ ALL_CHECKPOINTS=(
 )
 
 for checkpoint in "${ALL_CHECKPOINTS[@]}"; do
-    python scripts/paper/visualize_landscale_2pca.py --sample_id 0 --pca4 --mesh_resolution 30 --num-frames 10 --padding 0.5 --dataset_path artifacts/experiments_progressive/${checkpoint}/progressive_prefixes
+    python scripts/paper/visualize_landscale_2pca.py --sample_id 0 --batch_size 64 --pca4 --mesh_resolution 30 --num-frames 5 --padding 0.5 --dataset_path artifacts/experiments_progressive/${checkpoint}/progressive_prefixes
 done

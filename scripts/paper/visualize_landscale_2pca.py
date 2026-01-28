@@ -125,7 +125,7 @@ def _compute_accuracy_batch(
     attn_bs0 = attention_mask
     denom = attn_bs0.sum(dim=-1).clamp_min(1).float()
 
-    for batch_start in tqdm(range(0, num_embeddings, batch_size), desc="accuracy"):
+    for batch_start in range(0, num_embeddings, batch_size):
         batch_end = min(batch_start + batch_size, num_embeddings)
         batch_embeddings = compression_embeddings_flat[batch_start:batch_end]
 
@@ -557,7 +557,7 @@ def main() -> None:
         anchors.append(anchor_coords)
 
         acc_surfaces: List[np.ndarray] = []
-        for k, (i, j) in enumerate(pair_indices):
+        for k, (i, j) in enumerate(tqdm(pair_indices)):
             X_mesh = grids_x[k]
             Y_mesh = grids_y[k]
             Z_acc = _compute_accuracy_surface_for_anchor_pair(
