@@ -1,0 +1,692 @@
+import argparse
+import os
+from collections import Counter
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as F
+from datasets import Dataset
+from sklearn.decomposition import PCA
+from tqdm.auto import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+matplotlib.use("Agg")
+
+
+def load_progressive_dataset(dataset_path: str) -> Dataset:
+    return Dataset.load_from_disk(dataset_path)
+
+
+def _infer_output_dir(dataset_path: str) -> str:
+    exp_dir = os.path.dirname(dataset_path)
+    return os.path.join(exp_dir, "visualizations")
+
+
+def _savefig_with_pdf(outfile: str, dpi: int = 200) -> None:
+    plt.savefig(outfile, dpi=dpi)
+    if outfile.lower().endswith(".png"):
+        plt.savefig(outfile[:-4] + ".pdf", dpi=dpi)
+
+
+def _as_2d_embedding(row: Dict[str, Any]) -> torch.Tensor:
+    emb = torch.tensor(row["embedding"], dtype=torch.float32)
+    if emb.ndim == 1:
+        emb = emb.unsqueeze(0)
+    if emb.ndim != 2:
+        raise ValueError(f"Expected embedding to be 1D or 2D, got shape={tuple(emb.shape)}")
+    return emb
+
+
+def flatten_embedding(row: Dict[str, Any]) -> np.ndarray:
+    emb = _as_2d_embedding(row)
+    return emb.reshape(-1).detach().cpu().numpy()
+
+
+def _filter_rows_for_sample(ds: Dataset, sample_id: int) -> List[Dict[str, Any]]:
+    # Drop heavy columns if present (keeps runtime + memory lower)
+    drop_cols = [c for c in ["orig_embedding", "initialization_embedding"] if c in ds.column_names]
+    if drop_cols:
+        ds = ds.remove_columns(drop_cols)
+
+    rows: List[Dict[str, Any]] = []
+    for i in tqdm(range(len(ds)), desc=f"Filtering sample_id={sample_id}"):
+        r = ds[i]
+        if int(r.get("sample_id", -1)) != int(sample_id):
+            continue
+        rows.append(r)
+    return rows
+
+
+def _pick_reference_row(rows_sorted: List[Dict[str, Any]]) -> Dict[str, Any]:
+    # Reference: the longest sequence length (matches existing landscape logic)
+    return max(rows_sorted, key=lambda r: int(r.get("stage_seq_len", -1)))
+
+
+def _pick_text(rows_sorted: List[Dict[str, Any]]) -> str:
+    # Prefer text from the longest stage; fallback to any non-empty text.
+    ref = _pick_reference_row(rows_sorted)
+    t = ref.get("text", "")
+    if isinstance(t, str) and t.strip():
+        return t
+    for r in rows_sorted[::-1]:
+        t = r.get("text", "")
+        if isinstance(t, str) and t.strip():
+            return t
+    raise ValueError("No non-empty `text` found for this sample_id in the dataset.")
+
+
+def _most_common_str(values: List[str]) -> Optional[str]:
+    values = [v.strip() for v in values if isinstance(v, str) and v.strip()]
+    if not values:
+        return None
+    return Counter(values).most_common(1)[0][0]
+
+
+def _load_model_and_tokenizer(
+    model_checkpoint: str,
+    device: torch.device,
+    torch_dtype: torch.dtype,
+) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
+    # Be tolerant to older transformers / models not supporting attn_implementation.
+    kwargs: Dict[str, Any] = {"torch_dtype": torch_dtype}
+    if device.type == "cuda":
+        kwargs["attn_implementation"] = "flash_attention_2"
+    try:
+        model = AutoModelForCausalLM.from_pretrained(model_checkpoint, **kwargs).to(device)
+    except Exception:
+        # Retry without attn_implementation if incompatible
+        kwargs.pop("attn_implementation", None)
+        model = AutoModelForCausalLM.from_pretrained(model_checkpoint, **kwargs).to(device)
+
+    model.eval()
+    tok = AutoTokenizer.from_pretrained(model_checkpoint)
+    if tok.pad_token is None and tok.eos_token is not None:
+        tok.pad_token = tok.eos_token
+    return model, tok
+
+
+def _compute_loss_batch(
+    compression_embeddings_flat: torch.Tensor,
+    original_shape: Tuple[int, int],
+    model: AutoModelForCausalLM,
+    device: torch.device,
+    input_ids: torch.Tensor,
+    input_text_embeds: torch.Tensor,
+    attention_mask: torch.Tensor,
+    target_outputs: Any,
+    loss_type: str,
+    batch_size: int,
+) -> np.ndarray:
+    model.eval()
+    losses: List[np.ndarray] = []
+    num_embeddings = int(compression_embeddings_flat.shape[0])
+    mem_tokens = int(original_shape[0])
+
+    for batch_start in tqdm(range(0, num_embeddings, batch_size), desc="loss"):
+        batch_end = min(batch_start + batch_size, num_embeddings)
+        batch_embeddings = compression_embeddings_flat[batch_start:batch_end]
+
+        with torch.no_grad():
+            bs = int(batch_embeddings.shape[0])
+            comp = batch_embeddings.reshape(bs, original_shape[0], original_shape[1]).to(device)
+            text_embeds_bs = input_text_embeds.expand(bs, -1, -1)
+            inputs_embeds = torch.cat([comp, text_embeds_bs], dim=1)
+
+            comp_attention = torch.ones((bs, mem_tokens), device=device, dtype=attention_mask.dtype)
+            attn_bs = attention_mask.expand(bs, -1)
+            extended_attention_mask = torch.cat([comp_attention, attn_bs], dim=1)
+
+            outputs = model(
+                inputs_embeds=inputs_embeds,
+                attention_mask=extended_attention_mask,
+                output_hidden_states=(loss_type != "cross_entropy"),
+            )
+
+            if loss_type == "cross_entropy":
+                labels = input_ids.clone().expand(bs, -1).clone()
+                labels[attn_bs == 0] = -100
+                batch_losses = F.cross_entropy(
+                    outputs.logits[:, mem_tokens - 1 : -1].flatten(0, 1),
+                    labels.flatten(),
+                    reduction="none",
+                )
+                batch_losses = batch_losses.view(bs, -1).mean(dim=1)
+                losses.append(batch_losses.float().cpu().numpy())
+            else:
+                total_layers = len(outputs.hidden_states)
+                batch_losses_t = torch.zeros(bs, device=device)
+                for layer_idx in range(total_layers):
+                    comp_hidden = outputs.hidden_states[layer_idx][:, mem_tokens:]
+                    tgt_hidden = target_outputs.hidden_states[layer_idx].expand(bs, -1, -1)
+                    if loss_type == "l2":
+                        layer_loss = F.mse_loss(comp_hidden, tgt_hidden, reduction="none").sum(dim=-1).sqrt().mean(dim=1)
+                    elif loss_type == "l1":
+                        layer_loss = F.l1_loss(comp_hidden, tgt_hidden, reduction="none").sum(dim=-1).mean(dim=1)
+                    elif loss_type == "cosine":
+                        cosine = F.cosine_similarity(comp_hidden, tgt_hidden, dim=-1)
+                        layer_loss = (1.0 - cosine).mean(dim=1)
+                    else:
+                        raise ValueError(f"Unsupported loss_type: {loss_type}")
+                    batch_losses_t += layer_loss
+                batch_losses_t = batch_losses_t / float(total_layers)
+                losses.append(batch_losses_t.float().cpu().numpy())
+
+    return np.concatenate(losses, axis=0)
+
+
+def _compute_accuracy_batch(
+    compression_embeddings_flat: torch.Tensor,
+    original_shape: Tuple[int, int],
+    model: AutoModelForCausalLM,
+    device: torch.device,
+    input_ids: torch.Tensor,
+    input_text_embeds: torch.Tensor,
+    attention_mask: torch.Tensor,
+    batch_size: int,
+) -> np.ndarray:
+    model.eval()
+    accuracies: List[np.ndarray] = []
+    num_embeddings = int(compression_embeddings_flat.shape[0])
+    mem_tokens = int(original_shape[0])
+    attn_bs0 = attention_mask
+    denom = attn_bs0.sum(dim=-1).clamp_min(1).float()
+
+    for batch_start in tqdm(range(0, num_embeddings, batch_size), desc="accuracy"):
+        batch_end = min(batch_start + batch_size, num_embeddings)
+        batch_embeddings = compression_embeddings_flat[batch_start:batch_end]
+
+        with torch.no_grad():
+            bs = int(batch_embeddings.shape[0])
+            comp = batch_embeddings.reshape(bs, original_shape[0], original_shape[1]).to(device)
+            text_embeds_bs = input_text_embeds.expand(bs, -1, -1)
+            inputs_embeds = torch.cat([comp, text_embeds_bs], dim=1)
+
+            comp_attention = torch.ones((bs, mem_tokens), device=device, dtype=attention_mask.dtype)
+            attn_bs = attention_mask.expand(bs, -1)
+            extended_attention_mask = torch.cat([comp_attention, attn_bs], dim=1)
+
+            outputs = model(inputs_embeds=inputs_embeds, attention_mask=extended_attention_mask)
+            pred_logits = outputs.logits[:, mem_tokens - 1 : -1]
+            pred_tokens = pred_logits.argmax(dim=-1)
+
+            correct = (pred_tokens == input_ids.expand(bs, -1)).to(torch.float32)
+            masked_correct = correct * attn_bs.to(torch.float32)
+            acc = masked_correct.sum(dim=-1) / denom.expand(bs)
+            accuracies.append(acc.float().cpu().numpy())
+
+    return np.concatenate(accuracies, axis=0)
+
+
+def _expanded_bounds(vmin: float, vmax: float, padding: float) -> Tuple[float, float]:
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        return -1.0, 1.0
+    if vmax < vmin:
+        vmin, vmax = vmax, vmin
+    span = vmax - vmin
+    pad = float(padding * span) if span > 0 else 1.0
+    return float(vmin - pad), float(vmax + pad)
+
+
+def _plot_surface(
+    X_mesh: np.ndarray,
+    Y_mesh: np.ndarray,
+    Z_mesh: np.ndarray,
+    coords_xy: np.ndarray,
+    stage_labels: List[str],
+    current_idx: int,
+    title: str,
+    colorbar_label: str,
+    outfile: str,
+    cmap: str,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> None:
+    plt.figure(figsize=(9.5, 7.5))
+    im = plt.pcolormesh(X_mesh, Y_mesh, Z_mesh, shading="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+    plt.colorbar(im, label=colorbar_label)
+
+    # Overlay trajectory
+    plt.plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
+    plt.scatter(coords_xy[:, 0], coords_xy[:, 1], s=45, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
+    if coords_xy.shape[0] >= 1 and 0 <= current_idx < coords_xy.shape[0]:
+        plt.scatter(
+            coords_xy[current_idx, 0],
+            coords_xy[current_idx, 1],
+            s=220,
+            marker="*",
+            c="red",
+            edgecolors="black",
+            linewidths=1.0,
+            zorder=20,
+        )
+
+    # Optional labels (kept light to avoid clutter)
+    for i, lab in enumerate(stage_labels):
+        if i == 0 or i == len(stage_labels) - 1 or i == current_idx:
+            plt.text(coords_xy[i, 0], coords_xy[i, 1], lab, fontsize=10, color="black")
+
+    plt.xlabel("PC1")
+    plt.ylabel("PC2")
+    plt.title(title)
+    plt.axis("equal")
+    plt.tight_layout()
+    _savefig_with_pdf(outfile, dpi=220)
+    plt.close()
+
+
+def _render_combined_frame(
+    X_mesh: np.ndarray,
+    Y_mesh: np.ndarray,
+    Z_loss: np.ndarray,
+    Z_acc: np.ndarray,
+    coords_xy: np.ndarray,
+    current_idx: int,
+    loss_type: str,
+    sample_id: int,
+) -> np.ndarray:
+    fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.2))
+
+    im0 = axes[0].pcolormesh(X_mesh, Y_mesh, Z_loss, shading="auto", cmap="viridis")
+    fig.colorbar(im0, ax=axes[0], label=f"Loss ({loss_type})")
+    axes[0].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
+    axes[0].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
+    if coords_xy.shape[0] >= 1 and 0 <= current_idx < coords_xy.shape[0]:
+        axes[0].scatter(
+            coords_xy[current_idx, 0],
+            coords_xy[current_idx, 1],
+            s=220,
+            marker="*",
+            c="red",
+            edgecolors="black",
+            linewidths=1.0,
+            zorder=20,
+        )
+    axes[0].set_title("Loss")
+    axes[0].set_xlabel("PC1")
+    axes[0].set_ylabel("PC2")
+    axes[0].axis("equal")
+
+    im1 = axes[1].pcolormesh(X_mesh, Y_mesh, Z_acc, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
+    fig.colorbar(im1, ax=axes[1], label="Teacher-forced accuracy")
+    axes[1].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
+    axes[1].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
+    if coords_xy.shape[0] >= 1 and 0 <= current_idx < coords_xy.shape[0]:
+        axes[1].scatter(
+            coords_xy[current_idx, 0],
+            coords_xy[current_idx, 1],
+            s=220,
+            marker="*",
+            c="red",
+            edgecolors="black",
+            linewidths=1.0,
+            zorder=20,
+        )
+    axes[1].set_title("Accuracy")
+    axes[1].set_xlabel("PC1")
+    axes[1].set_ylabel("PC2")
+    axes[1].axis("equal")
+
+    fig.suptitle(f"PC1-PC2 landscapes (sample_id={sample_id})")
+    fig.tight_layout()
+    fig.canvas.draw()
+    # Extract RGB pixels in a matplotlib-version-safe way.
+    # Newer matplotlib may not expose canvas.tostring_rgb(); prefer buffer_rgba().
+    if hasattr(fig.canvas, "buffer_rgba"):
+        rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        img = rgba[:, :, :3].copy()
+    else:
+        w, h = fig.canvas.get_width_height()
+        # tostring_argb -> [A, R, G, B] per pixel
+        argb = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8).reshape(h, w, 4)
+        img = argb[:, :, 1:4].copy()
+    plt.close(fig)
+    return img
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Draw loss/accuracy landscape over PC1-PC2 for one progressive sample trajectory"
+    )
+    parser.add_argument("--dataset_path", type=str, required=True, help="Path to progressive_prefixes dataset directory")
+    parser.add_argument("--sample_id", type=int, required=True, help="Single sample_id to visualize")
+    parser.add_argument("--output_dir", type=str, default=None, help="Directory to save figures/npz")
+    parser.add_argument("--model_checkpoint", type=str, default=None, help="Override HF model checkpoint")
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default=None,
+        choices=["l2", "l1", "cosine", "cross_entropy"],
+        help="Override loss type (default: infer from dataset row)",
+    )
+    parser.add_argument("--mesh_resolution", type=int, default=80, help="Grid resolution for PC1/PC2")
+    parser.add_argument("--padding", type=float, default=0.15, help="Fractional padding added to PCA bounds")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for model forward passes")
+    parser.add_argument(
+        "--num-frames",
+        "--num_frames",
+        type=int,
+        default=1,
+        help="If 1 (default), save a single landscape image. If >1, save a GIF over uniformly sampled trajectory points.",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="bfloat16",
+        choices=["bfloat16", "float16", "float32"],
+        help="Model dtype (GPU: bfloat16/float16 recommended; CPU: float32 recommended)",
+    )
+    args = parser.parse_args()
+
+    out_dir = args.output_dir or _infer_output_dir(args.dataset_path)
+    os.makedirs(out_dir, exist_ok=True)
+
+    ds = load_progressive_dataset(args.dataset_path)
+    rows = _filter_rows_for_sample(ds, sample_id=args.sample_id)
+    if not rows:
+        raise ValueError(f"No rows found for sample_id={args.sample_id} in {args.dataset_path}")
+
+    # Sort trajectory
+    rows_sorted = sorted(rows, key=lambda r: int(r.get("stage_index", 0)))
+    stage_labels = [f"L{int(r.get('stage_seq_len', -1))}" for r in rows_sorted]
+
+    # Infer model checkpoint and loss type
+    inferred_model = _most_common_str([str(r.get("model_checkpoint", "")).strip() for r in rows_sorted])
+    model_checkpoint = args.model_checkpoint or inferred_model
+    if model_checkpoint is None:
+        raise ValueError("Could not infer `model_checkpoint` from dataset; please pass --model_checkpoint")
+
+    inferred_loss_type = None
+    if rows_sorted:
+        lt = rows_sorted[0].get("loss_type", None)
+        if isinstance(lt, str) and lt.strip():
+            inferred_loss_type = lt.strip().lower()
+    loss_type = (args.loss_type or inferred_loss_type or "l2").lower()
+
+    # Device/dtype
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.dtype == "bfloat16":
+        torch_dtype = torch.bfloat16
+    elif args.dtype == "float16":
+        torch_dtype = torch.float16
+    else:
+        torch_dtype = torch.float32
+    if device.type != "cuda" and torch_dtype != torch.float32:
+        print("Warning: non-float32 dtype on CPU may be slow or unsupported; consider --dtype float32")
+
+    model, tok = _load_model_and_tokenizer(model_checkpoint=model_checkpoint, device=device, torch_dtype=torch_dtype)
+
+    # Reference text + embeddings shape
+    reference_text = _pick_text(rows_sorted)
+    reference_row = _pick_reference_row(rows_sorted)
+    reference_emb = _as_2d_embedding(reference_row)
+    original_shape = (int(reference_emb.shape[0]), int(reference_emb.shape[1]))
+
+    # PCA input matrix
+    X = np.stack([flatten_embedding(r) for r in rows_sorted], axis=0)
+    if X.shape[0] < 2:
+        raise ValueError("Need at least 2 stages for PCA/landscape.")
+
+    n_components = int(min(X.shape[0] - 1, X.shape[1]))
+    if n_components < 2:
+        raise ValueError(f"PCA requires >=2 components; got n_components={n_components}")
+
+    pca = PCA(n_components=n_components, random_state=42)
+    coords = pca.fit_transform(X)
+    coords_xy = coords[:, :2]
+
+    # Default anchor: penultimate stage embedding in the sorted trajectory
+    penultimate_idx = max(0, len(rows_sorted) - 2)
+
+    # Grid bounds on PC1/PC2
+    pc1_lo, pc1_hi = _expanded_bounds(float(coords_xy[:, 0].min()), float(coords_xy[:, 0].max()), float(args.padding))
+    pc2_lo, pc2_hi = _expanded_bounds(float(coords_xy[:, 1].min()), float(coords_xy[:, 1].max()), float(args.padding))
+    x_range = np.linspace(pc1_lo, pc1_hi, int(args.mesh_resolution))
+    y_range = np.linspace(pc2_lo, pc2_hi, int(args.mesh_resolution))
+    X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
+
+    # Precompute tokenization + target outputs once (full length for loss / shared context).
+    # Accuracy will be sliced per-frame to match the starred stage's stage_seq_len.
+    enc = tok(reference_text, truncation=True, padding=False, return_tensors="pt")
+    input_ids_full = enc["input_ids"].to(device)
+    attention_mask_full = enc["attention_mask"].to(device)
+    input_embeddings_layer = model.get_input_embeddings()
+    with torch.no_grad():
+        input_text_embeds_full = input_embeddings_layer(input_ids_full).to(dtype=torch_dtype)
+        target_outputs = model(
+            inputs_embeds=input_text_embeds_full,
+            attention_mask=attention_mask_full,
+            output_hidden_states=(loss_type != "cross_entropy"),
+        )
+
+    def _slice_inputs_for_seq_len(seq_len: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Use attention_mask_full to determine max available non-pad length.
+        max_len = int(attention_mask_full.sum(dim=-1).max().item())
+        use_len = int(min(max(int(seq_len), 1), max_len))
+        return (
+            input_ids_full[:, :use_len],
+            input_text_embeds_full[:, :use_len, :],
+            attention_mask_full[:, :use_len],
+        )
+
+    def _compute_loss_surface_for_anchor(anchor_coords: np.ndarray) -> np.ndarray:
+        mesh_points = np.repeat(anchor_coords.reshape(1, -1), X_mesh.size, axis=0)
+        mesh_points[:, 0] = X_mesh.reshape(-1)
+        mesh_points[:, 1] = Y_mesh.reshape(-1)
+        reconstructed = pca.inverse_transform(mesh_points).astype(np.float32, copy=False)
+        reconstructed_t = torch.tensor(reconstructed, dtype=torch.float32)
+
+        losses = _compute_loss_batch(
+            compression_embeddings_flat=reconstructed_t.to(dtype=torch_dtype),
+            original_shape=original_shape,
+            model=model,
+            device=device,
+            input_ids=input_ids_full,
+            input_text_embeds=input_text_embeds_full,
+            attention_mask=attention_mask_full,
+            target_outputs=target_outputs,
+            loss_type=loss_type,
+            batch_size=int(args.batch_size),
+        )
+        return losses.reshape(X_mesh.shape)
+
+    def _compute_accuracy_surface_for_anchor(anchor_coords: np.ndarray, seq_len: int) -> np.ndarray:
+        mesh_points = np.repeat(anchor_coords.reshape(1, -1), X_mesh.size, axis=0)
+        mesh_points[:, 0] = X_mesh.reshape(-1)
+        mesh_points[:, 1] = Y_mesh.reshape(-1)
+        reconstructed = pca.inverse_transform(mesh_points).astype(np.float32, copy=False)
+        reconstructed_t = torch.tensor(reconstructed, dtype=torch.float32)
+
+        input_ids, input_text_embeds, attention_mask = _slice_inputs_for_seq_len(seq_len)
+        accuracies = _compute_accuracy_batch(
+            compression_embeddings_flat=reconstructed_t.to(dtype=torch_dtype),
+            original_shape=original_shape,
+            model=model,
+            device=device,
+            input_ids=input_ids,
+            input_text_embeds=input_text_embeds,
+            attention_mask=attention_mask,
+            batch_size=int(args.batch_size),
+        )
+        return accuracies.reshape(X_mesh.shape)
+
+    num_frames = int(args.num_frames)
+    if num_frames <= 1:
+        current_idx = int(penultimate_idx)
+        anchor_coords = coords[current_idx].copy()
+        current_seq_len = int(rows_sorted[current_idx].get("stage_seq_len", 1))
+        Z_loss = _compute_loss_surface_for_anchor(anchor_coords)
+        Z_acc = _compute_accuracy_surface_for_anchor(anchor_coords, seq_len=current_seq_len)
+
+        # Save NPZ (single frame)
+        npz_path = os.path.join(out_dir, "landscape_pc1_pc2.npz")
+        np.savez_compressed(
+            npz_path,
+            pc1_grid=X_mesh,
+            pc2_grid=Y_mesh,
+            loss=Z_loss,
+            accuracy=Z_acc,
+            coords_xy=coords_xy,
+            stage_index=np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
+            stage_seq_len=np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
+            current_idx=np.array([current_idx], dtype=np.int64),
+            current_seq_len=np.array([current_seq_len], dtype=np.int64),
+            anchor_coords=anchor_coords,
+            explained_variance_ratio=pca.explained_variance_ratio_,
+            model_checkpoint=np.array([model_checkpoint]),
+            loss_type=np.array([loss_type]),
+            dataset_path=np.array([args.dataset_path]),
+            sample_id=np.array([int(args.sample_id)], dtype=np.int64),
+            created_at=np.array([datetime.now().isoformat()]),
+        )
+        print(f"Saved NPZ: {npz_path}")
+
+        loss_out = os.path.join(out_dir, "landscape_loss_pc1_pc2.png")
+        acc_out = os.path.join(out_dir, "landscape_accuracy_pc1_pc2.png")
+        combined_out = os.path.join(out_dir, "landscape_pc1_pc2_combined.png")
+
+        _plot_surface(
+            X_mesh=X_mesh,
+            Y_mesh=Y_mesh,
+            Z_mesh=Z_loss,
+            coords_xy=coords_xy,
+            stage_labels=stage_labels,
+            current_idx=current_idx,
+            title=f"Loss landscape on PC1-PC2 (sample_id={args.sample_id}, loss_type={loss_type})",
+            colorbar_label=f"Loss ({loss_type})",
+            outfile=loss_out,
+            cmap="viridis",
+        )
+        print(f"Saved: {loss_out}")
+
+        _plot_surface(
+            X_mesh=X_mesh,
+            Y_mesh=Y_mesh,
+            Z_mesh=Z_acc,
+            coords_xy=coords_xy,
+            stage_labels=stage_labels,
+            current_idx=current_idx,
+            title=f"Accuracy landscape on PC1-PC2 (sample_id={args.sample_id})",
+            colorbar_label="Teacher-forced accuracy",
+            outfile=acc_out,
+            cmap="magma",
+            vmin=0.0,
+            vmax=1.0,
+        )
+        print(f"Saved: {acc_out}")
+
+        fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.2))
+        im0 = axes[0].pcolormesh(X_mesh, Y_mesh, Z_loss, shading="auto", cmap="viridis")
+        fig.colorbar(im0, ax=axes[0], label=f"Loss ({loss_type})")
+        axes[0].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
+        axes[0].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
+        axes[0].scatter(
+            coords_xy[current_idx, 0],
+            coords_xy[current_idx, 1],
+            s=220,
+            marker="*",
+            c="red",
+            edgecolors="black",
+            linewidths=1.0,
+            zorder=20,
+        )
+        axes[0].set_title("Loss")
+        axes[0].set_xlabel("PC1")
+        axes[0].set_ylabel("PC2")
+        axes[0].axis("equal")
+
+        im1 = axes[1].pcolormesh(X_mesh, Y_mesh, Z_acc, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
+        fig.colorbar(im1, ax=axes[1], label="Teacher-forced accuracy")
+        axes[1].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
+        axes[1].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
+        axes[1].scatter(
+            coords_xy[current_idx, 0],
+            coords_xy[current_idx, 1],
+            s=220,
+            marker="*",
+            c="red",
+            edgecolors="black",
+            linewidths=1.0,
+            zorder=20,
+        )
+        axes[1].set_title("Accuracy")
+        axes[1].set_xlabel("PC1")
+        axes[1].set_ylabel("PC2")
+        axes[1].axis("equal")
+
+        fig.suptitle(f"PC1-PC2 landscapes (sample_id={args.sample_id})")
+        fig.tight_layout()
+        _savefig_with_pdf(combined_out, dpi=220)
+        plt.close(fig)
+        print(f"Saved: {combined_out}")
+        return
+
+    # Multi-frame GIF
+    import imageio.v2 as imageio
+
+    n_traj = int(coords_xy.shape[0])
+    sampled = np.linspace(0, max(n_traj - 1, 0), num=num_frames, dtype=int)
+    sampled = np.unique(sampled)
+    if sampled.size == 0:
+        sampled = np.array([0], dtype=int)
+
+    loss_stack: List[np.ndarray] = []
+    acc_stack: List[np.ndarray] = []
+    anchors: List[np.ndarray] = []
+    frames: List[np.ndarray] = []
+
+    sampled_seq_lens: List[int] = []
+    for idx in tqdm(sampled.tolist(), desc="Computing landscapes frames"):
+        anchor_coords = coords[int(idx)].copy()
+        seq_len = int(rows_sorted[int(idx)].get("stage_seq_len", 1))
+        sampled_seq_lens.append(seq_len)
+        anchors.append(anchor_coords)
+        Z_loss = _compute_loss_surface_for_anchor(anchor_coords)
+        Z_acc = _compute_accuracy_surface_for_anchor(anchor_coords, seq_len=seq_len)
+        loss_stack.append(Z_loss)
+        acc_stack.append(Z_acc)
+        frame = _render_combined_frame(
+            X_mesh=X_mesh,
+            Y_mesh=Y_mesh,
+            Z_loss=Z_loss,
+            Z_acc=Z_acc,
+            coords_xy=coords_xy,
+            current_idx=int(idx),
+            loss_type=loss_type,
+            sample_id=int(args.sample_id),
+        )
+        frames.append(frame)
+
+    gif_path = os.path.join(out_dir, "landscape_pc1_pc2.gif")
+    imageio.mimsave(gif_path, frames, duration=1000, loop=0)
+    print(f"Saved GIF: {gif_path}")
+
+    # Save NPZ (multi-frame)
+    npz_path = os.path.join(out_dir, "landscape_pc1_pc2.npz")
+    np.savez_compressed(
+        npz_path,
+        pc1_grid=X_mesh,
+        pc2_grid=Y_mesh,
+        loss=np.stack(loss_stack, axis=0),
+        accuracy=np.stack(acc_stack, axis=0),
+        coords_xy=coords_xy,
+        stage_index=np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
+        stage_seq_len=np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
+        sampled_indices=sampled.astype(np.int64),
+        sampled_seq_len=np.array(sampled_seq_lens, dtype=np.int64),
+        anchor_coords=np.stack(anchors, axis=0),
+        explained_variance_ratio=pca.explained_variance_ratio_,
+        model_checkpoint=np.array([model_checkpoint]),
+        loss_type=np.array([loss_type]),
+        dataset_path=np.array([args.dataset_path]),
+        sample_id=np.array([int(args.sample_id)], dtype=np.int64),
+        created_at=np.array([datetime.now().isoformat()]),
+    )
+    print(f"Saved NPZ: {npz_path}")
+
+
+if __name__ == "__main__":
+    main()

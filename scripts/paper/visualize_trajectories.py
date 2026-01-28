@@ -16,6 +16,26 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
+def save_figure_pdf_png(outfile: str, dpi: int = 300) -> List[str]:
+    """Save the current matplotlib figure as both PDF and PNG when either is requested."""
+    root, ext = os.path.splitext(outfile)
+    ext = ext.lower()
+
+    if ext == ".pdf":
+        outfiles = [outfile, root + ".png"]
+    elif ext == ".png":
+        outfiles = [outfile, root + ".pdf"]
+    else:
+        outfiles = [outfile]
+
+    saved = []
+    for path in outfiles:
+        if path not in saved:
+            plt.savefig(path, dpi=dpi)
+            saved.append(path)
+    return saved
+
+
 def load_progressive_dataset(dataset_path: str) -> Dataset:
     """Load a progressive embeddings dataset from disk."""
     return Dataset.load_from_disk(dataset_path)
@@ -923,9 +943,9 @@ def plot_pca_trajectories(
         plt.grid(True, alpha=0.3)
         plt.axis("equal")
         plt.tight_layout()
-        plt.savefig(outfile, dpi=300)
+        saved_paths = save_figure_pdf_png(outfile, dpi=300)
         plt.close()
-        print(f"Saved 2D PCA plot to: {outfile}")
+        print(f"Saved 2D PCA plot to: {', '.join(saved_paths)}")
 
     elif n_components == 4:
         # Multiple subplots for 4 components (similar to plot_pca_4_components)
@@ -989,9 +1009,9 @@ def plot_pca_trajectories(
             axes[idx].axis("off")
 
         plt.tight_layout()
-        plt.savefig(outfile, dpi=300)
+        saved_paths = save_figure_pdf_png(outfile, dpi=300)
         plt.close()
-        print(f"Saved 4-component PCA plot to: {outfile}")
+        print(f"Saved 4-component PCA plot to: {', '.join(saved_paths)}")
     else:
         raise ValueError(f"n_components must be 2 or 4, got {n_components}")
 
@@ -1192,11 +1212,6 @@ def main():
         help="Paths to progressive embeddings datasets (checkpoints)",
     )
     parser.add_argument(
-        "--only_stat_table",
-        required=True,
-        action="store_true",
-    )
-    parser.add_argument(
         "--output",
         type=str,
         required=True,
@@ -1292,7 +1307,12 @@ def main():
         labels_list=None,
     )
 
-    print(f"Visualization complete. Saved to: {args.output}")
+    root, ext = os.path.splitext(args.output)
+    ext = ext.lower()
+    if ext in {".pdf", ".png"}:
+        print(f"Visualization complete. Saved to: {args.output} (and {root + ('.png' if ext == '.pdf' else '.pdf')})")
+    else:
+        print(f"Visualization complete. Saved to: {args.output}")
 
 
 if __name__ == "__main__":

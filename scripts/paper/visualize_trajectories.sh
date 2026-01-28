@@ -40,7 +40,7 @@ python scripts/paper/visualize_trajectories.py \
   --output artifacts/paper/Llama3.1-8B-text-modifications_lr-0p1.pdf \
   --n_components 4 \
   --sample_id 0 \
-  --show_labels --only_stat_table --tablefmt plain
+  --show_labels --tablefmt plain
 
 
 python scripts/paper/visualize_trajectories.py \
@@ -51,4 +51,4 @@ python scripts/paper/visualize_trajectories.py \
   --output artifacts/paper/Llama3.1-8B-all-lrs.pdf \
   --n_components 2 \
   --sample_id 0 \
-  --show_labels --only_stat_table --tablefmt plain
+  --show_labels --tablefmt plain
