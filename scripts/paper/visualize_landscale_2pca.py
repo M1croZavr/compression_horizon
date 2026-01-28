@@ -347,6 +347,50 @@ def _render_combined_frame(
     return img
 
 
+def _render_accuracy_frame(
+    X_mesh: np.ndarray,
+    Y_mesh: np.ndarray,
+    Z_acc: np.ndarray,
+    coords_xy: np.ndarray,
+    current_idx: int,
+    sample_id: int,
+) -> np.ndarray:
+    fig, ax = plt.subplots(1, 1, figsize=(9.5, 7.5))
+
+    im = ax.pcolormesh(X_mesh, Y_mesh, Z_acc, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
+    fig.colorbar(im, ax=ax, label="Teacher-forced accuracy")
+    ax.plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
+    ax.scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
+    if coords_xy.shape[0] >= 1 and 0 <= current_idx < coords_xy.shape[0]:
+        ax.scatter(
+            coords_xy[current_idx, 0],
+            coords_xy[current_idx, 1],
+            s=220,
+            marker="*",
+            c="red",
+            edgecolors="black",
+            linewidths=1.0,
+            zorder=20,
+        )
+    ax.set_title("Accuracy")
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.axis("equal")
+
+    fig.suptitle(f"Accuracy landscape (sample_id={sample_id})")
+    fig.tight_layout()
+    fig.canvas.draw()
+    if hasattr(fig.canvas, "buffer_rgba"):
+        rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        img = rgba[:, :, :3].copy()
+    else:
+        w, h = fig.canvas.get_width_height()
+        argb = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8).reshape(h, w, 4)
+        img = argb[:, :, 1:4].copy()
+    plt.close(fig)
+    return img
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Draw loss/accuracy landscape over PC1-PC2 for one progressive sample trajectory"
@@ -362,9 +406,16 @@ def main() -> None:
         choices=["l2", "l1", "cosine", "cross_entropy"],
         help="Override loss type (default: infer from dataset row)",
     )
-    parser.add_argument("--mesh_resolution", type=int, default=80, help="Grid resolution for PC1/PC2")
+    parser.add_argument("--mesh_resolution", type=int, default=40, help="Grid resolution for PC1/PC2")
     parser.add_argument("--padding", type=float, default=0.15, help="Fractional padding added to PCA bounds")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for model forward passes")
+    parser.add_argument(
+        "--accuracy-only",
+        "--accuracy_only",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="If true (default), compute and plot only accuracy (png/pdf or gif). Use --no-accuracy-only to also compute loss.",
+    )
     parser.add_argument(
         "--num-frames",
         "--num_frames",
@@ -518,49 +569,37 @@ def main() -> None:
         current_idx = int(penultimate_idx)
         anchor_coords = coords[current_idx].copy()
         current_seq_len = int(rows_sorted[current_idx].get("stage_seq_len", 1))
-        Z_loss = _compute_loss_surface_for_anchor(anchor_coords)
         Z_acc = _compute_accuracy_surface_for_anchor(anchor_coords, seq_len=current_seq_len)
+        Z_loss = None
+        if not bool(args.accuracy_only):
+            Z_loss = _compute_loss_surface_for_anchor(anchor_coords)
 
         # Save NPZ (single frame)
         npz_path = os.path.join(out_dir, "landscape_pc1_pc2.npz")
-        np.savez_compressed(
-            npz_path,
-            pc1_grid=X_mesh,
-            pc2_grid=Y_mesh,
-            loss=Z_loss,
-            accuracy=Z_acc,
-            coords_xy=coords_xy,
-            stage_index=np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
-            stage_seq_len=np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
-            current_idx=np.array([current_idx], dtype=np.int64),
-            current_seq_len=np.array([current_seq_len], dtype=np.int64),
-            anchor_coords=anchor_coords,
-            explained_variance_ratio=pca.explained_variance_ratio_,
-            model_checkpoint=np.array([model_checkpoint]),
-            loss_type=np.array([loss_type]),
-            dataset_path=np.array([args.dataset_path]),
-            sample_id=np.array([int(args.sample_id)], dtype=np.int64),
-            created_at=np.array([datetime.now().isoformat()]),
-        )
+        npz_kwargs: Dict[str, Any] = {
+            "pc1_grid": X_mesh,
+            "pc2_grid": Y_mesh,
+            "accuracy": Z_acc,
+            "coords_xy": coords_xy,
+            "stage_index": np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
+            "stage_seq_len": np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
+            "current_idx": np.array([current_idx], dtype=np.int64),
+            "current_seq_len": np.array([current_seq_len], dtype=np.int64),
+            "anchor_coords": anchor_coords,
+            "explained_variance_ratio": pca.explained_variance_ratio_,
+            "model_checkpoint": np.array([model_checkpoint]),
+            "loss_type": np.array([loss_type]),
+            "dataset_path": np.array([args.dataset_path]),
+            "sample_id": np.array([int(args.sample_id)], dtype=np.int64),
+            "created_at": np.array([datetime.now().isoformat()]),
+        }
+        if Z_loss is not None:
+            npz_kwargs["loss"] = Z_loss
+        np.savez_compressed(npz_path, **npz_kwargs)
         print(f"Saved NPZ: {npz_path}")
 
-        loss_out = os.path.join(out_dir, "landscape_loss_pc1_pc2.png")
         acc_out = os.path.join(out_dir, "landscape_accuracy_pc1_pc2.png")
         combined_out = os.path.join(out_dir, "landscape_pc1_pc2_combined.png")
-
-        _plot_surface(
-            X_mesh=X_mesh,
-            Y_mesh=Y_mesh,
-            Z_mesh=Z_loss,
-            coords_xy=coords_xy,
-            stage_labels=stage_labels,
-            current_idx=current_idx,
-            title=f"Loss landscape on PC1-PC2 (sample_id={args.sample_id}, loss_type={loss_type})",
-            colorbar_label=f"Loss ({loss_type})",
-            outfile=loss_out,
-            cmap="viridis",
-        )
-        print(f"Saved: {loss_out}")
 
         _plot_surface(
             X_mesh=X_mesh,
@@ -578,50 +617,67 @@ def main() -> None:
         )
         print(f"Saved: {acc_out}")
 
-        fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.2))
-        im0 = axes[0].pcolormesh(X_mesh, Y_mesh, Z_loss, shading="auto", cmap="viridis")
-        fig.colorbar(im0, ax=axes[0], label=f"Loss ({loss_type})")
-        axes[0].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
-        axes[0].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
-        axes[0].scatter(
-            coords_xy[current_idx, 0],
-            coords_xy[current_idx, 1],
-            s=220,
-            marker="*",
-            c="red",
-            edgecolors="black",
-            linewidths=1.0,
-            zorder=20,
-        )
-        axes[0].set_title("Loss")
-        axes[0].set_xlabel("PC1")
-        axes[0].set_ylabel("PC2")
-        axes[0].axis("equal")
+        if not bool(args.accuracy_only):
+            loss_out = os.path.join(out_dir, "landscape_loss_pc1_pc2.png")
+            assert Z_loss is not None
+            _plot_surface(
+                X_mesh=X_mesh,
+                Y_mesh=Y_mesh,
+                Z_mesh=Z_loss,
+                coords_xy=coords_xy,
+                stage_labels=stage_labels,
+                current_idx=current_idx,
+                title=f"Loss landscape on PC1-PC2 (sample_id={args.sample_id}, loss_type={loss_type})",
+                colorbar_label=f"Loss ({loss_type})",
+                outfile=loss_out,
+                cmap="viridis",
+            )
+            print(f"Saved: {loss_out}")
 
-        im1 = axes[1].pcolormesh(X_mesh, Y_mesh, Z_acc, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
-        fig.colorbar(im1, ax=axes[1], label="Teacher-forced accuracy")
-        axes[1].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
-        axes[1].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
-        axes[1].scatter(
-            coords_xy[current_idx, 0],
-            coords_xy[current_idx, 1],
-            s=220,
-            marker="*",
-            c="red",
-            edgecolors="black",
-            linewidths=1.0,
-            zorder=20,
-        )
-        axes[1].set_title("Accuracy")
-        axes[1].set_xlabel("PC1")
-        axes[1].set_ylabel("PC2")
-        axes[1].axis("equal")
+            fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.2))
+            im0 = axes[0].pcolormesh(X_mesh, Y_mesh, Z_loss, shading="auto", cmap="viridis")
+            fig.colorbar(im0, ax=axes[0], label=f"Loss ({loss_type})")
+            axes[0].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
+            axes[0].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
+            axes[0].scatter(
+                coords_xy[current_idx, 0],
+                coords_xy[current_idx, 1],
+                s=220,
+                marker="*",
+                c="red",
+                edgecolors="black",
+                linewidths=1.0,
+                zorder=20,
+            )
+            axes[0].set_title("Loss")
+            axes[0].set_xlabel("PC1")
+            axes[0].set_ylabel("PC2")
+            axes[0].axis("equal")
 
-        fig.suptitle(f"PC1-PC2 landscapes (sample_id={args.sample_id})")
-        fig.tight_layout()
-        _savefig_with_pdf(combined_out, dpi=220)
-        plt.close(fig)
-        print(f"Saved: {combined_out}")
+            im1 = axes[1].pcolormesh(X_mesh, Y_mesh, Z_acc, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
+            fig.colorbar(im1, ax=axes[1], label="Teacher-forced accuracy")
+            axes[1].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
+            axes[1].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
+            axes[1].scatter(
+                coords_xy[current_idx, 0],
+                coords_xy[current_idx, 1],
+                s=220,
+                marker="*",
+                c="red",
+                edgecolors="black",
+                linewidths=1.0,
+                zorder=20,
+            )
+            axes[1].set_title("Accuracy")
+            axes[1].set_xlabel("PC1")
+            axes[1].set_ylabel("PC2")
+            axes[1].axis("equal")
+
+            fig.suptitle(f"PC1-PC2 landscapes (sample_id={args.sample_id})")
+            fig.tight_layout()
+            _savefig_with_pdf(combined_out, dpi=220)
+            plt.close(fig)
+            print(f"Saved: {combined_out}")
         return
 
     # Multi-frame GIF
@@ -644,20 +700,31 @@ def main() -> None:
         seq_len = int(rows_sorted[int(idx)].get("stage_seq_len", 1))
         sampled_seq_lens.append(seq_len)
         anchors.append(anchor_coords)
-        Z_loss = _compute_loss_surface_for_anchor(anchor_coords)
         Z_acc = _compute_accuracy_surface_for_anchor(anchor_coords, seq_len=seq_len)
-        loss_stack.append(Z_loss)
+        if not bool(args.accuracy_only):
+            Z_loss = _compute_loss_surface_for_anchor(anchor_coords)
+            loss_stack.append(Z_loss)
         acc_stack.append(Z_acc)
-        frame = _render_combined_frame(
-            X_mesh=X_mesh,
-            Y_mesh=Y_mesh,
-            Z_loss=Z_loss,
-            Z_acc=Z_acc,
-            coords_xy=coords_xy,
-            current_idx=int(idx),
-            loss_type=loss_type,
-            sample_id=int(args.sample_id),
-        )
+        if bool(args.accuracy_only):
+            frame = _render_accuracy_frame(
+                X_mesh=X_mesh,
+                Y_mesh=Y_mesh,
+                Z_acc=Z_acc,
+                coords_xy=coords_xy,
+                current_idx=int(idx),
+                sample_id=int(args.sample_id),
+            )
+        else:
+            frame = _render_combined_frame(
+                X_mesh=X_mesh,
+                Y_mesh=Y_mesh,
+                Z_loss=Z_loss,
+                Z_acc=Z_acc,
+                coords_xy=coords_xy,
+                current_idx=int(idx),
+                loss_type=loss_type,
+                sample_id=int(args.sample_id),
+            )
         frames.append(frame)
 
     gif_path = os.path.join(out_dir, "landscape_pc1_pc2.gif")
@@ -666,25 +733,26 @@ def main() -> None:
 
     # Save NPZ (multi-frame)
     npz_path = os.path.join(out_dir, "landscape_pc1_pc2.npz")
-    np.savez_compressed(
-        npz_path,
-        pc1_grid=X_mesh,
-        pc2_grid=Y_mesh,
-        loss=np.stack(loss_stack, axis=0),
-        accuracy=np.stack(acc_stack, axis=0),
-        coords_xy=coords_xy,
-        stage_index=np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
-        stage_seq_len=np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
-        sampled_indices=sampled.astype(np.int64),
-        sampled_seq_len=np.array(sampled_seq_lens, dtype=np.int64),
-        anchor_coords=np.stack(anchors, axis=0),
-        explained_variance_ratio=pca.explained_variance_ratio_,
-        model_checkpoint=np.array([model_checkpoint]),
-        loss_type=np.array([loss_type]),
-        dataset_path=np.array([args.dataset_path]),
-        sample_id=np.array([int(args.sample_id)], dtype=np.int64),
-        created_at=np.array([datetime.now().isoformat()]),
-    )
+    npz_kwargs = {
+        "pc1_grid": X_mesh,
+        "pc2_grid": Y_mesh,
+        "accuracy": np.stack(acc_stack, axis=0),
+        "coords_xy": coords_xy,
+        "stage_index": np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
+        "stage_seq_len": np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
+        "sampled_indices": sampled.astype(np.int64),
+        "sampled_seq_len": np.array(sampled_seq_lens, dtype=np.int64),
+        "anchor_coords": np.stack(anchors, axis=0),
+        "explained_variance_ratio": pca.explained_variance_ratio_,
+        "model_checkpoint": np.array([model_checkpoint]),
+        "loss_type": np.array([loss_type]),
+        "dataset_path": np.array([args.dataset_path]),
+        "sample_id": np.array([int(args.sample_id)], dtype=np.int64),
+        "created_at": np.array([datetime.now().isoformat()]),
+    }
+    if not bool(args.accuracy_only):
+        npz_kwargs["loss"] = np.stack(loss_stack, axis=0)
+    np.savez_compressed(npz_path, **npz_kwargs)
     print(f"Saved NPZ: {npz_path}")
 
 
