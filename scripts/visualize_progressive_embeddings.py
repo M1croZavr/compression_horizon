@@ -71,6 +71,54 @@ def compute_pairwise_similarities(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray
     return l2, cos_dist
 
 
+def savefig_with_pdf(outfile: str, dpi: int = 150):
+    plt.savefig(outfile, dpi=dpi)
+    if outfile.lower().endswith(".png"):
+        plt.savefig(outfile[:-4] + ".pdf", dpi=dpi)
+
+
+def compute_principal_angles_from_pca_components(
+    components_a: np.ndarray,
+    components_b: np.ndarray,
+    n_components: int,
+) -> Tuple[np.ndarray, float, float]:
+    """Compute principal angles between two PCA subspaces.
+
+    Args:
+        components_a: PCA components for sample A, shape [k_a, d] (rows are orthonormal PCs).
+        components_b: PCA components for sample B, shape [k_b, d] (rows are orthonormal PCs).
+        n_components: Max number of PCs to include in the subspace comparison.
+
+    Returns:
+        angles: Principal angles in radians, shape [r] where r=min(n_components,k_a,k_b).
+        overlap: Mean squared cosine overlap, (1/r) * sum_i cos^2(theta_i). In [0, 1].
+        chordal_distance: sqrt(r - sum_i cos^2(theta_i)).
+    """
+    if components_a.ndim != 2 or components_b.ndim != 2:
+        raise ValueError("components_a and components_b must be 2D arrays")
+    if components_a.shape[1] != components_b.shape[1]:
+        raise ValueError("components_a and components_b must have the same feature dimension")
+
+    r = int(min(n_components, components_a.shape[0], components_b.shape[0]))
+    if r < 1:
+        return np.zeros((0,), dtype=np.float64), float("nan"), float("nan")
+
+    # sklearn PCA: components_ has orthonormal rows. Convert to [d, r] orthonormal bases.
+    Ua = components_a[:r].T
+    Ub = components_b[:r].T
+
+    # Singular values of Ua^T Ub are cosines of principal angles.
+    s = np.linalg.svd(Ua.T @ Ub, compute_uv=False)
+    s = np.clip(s, 0.0, 1.0)
+    angles = np.arccos(s)
+
+    cos2_sum = float(np.sum(s**2))
+    overlap = cos2_sum / float(r)
+    chordal_sq = max(float(r) - cos2_sum, 0.0)
+    chordal_distance = float(math.sqrt(chordal_sq))
+    return angles, overlap, chordal_distance
+
+
 def plot_heatmap(matrix: np.ndarray, labels: List[str], title: str, outfile: str):
     plt.figure(figsize=(0.7 * max(4, len(labels)), 0.7 * max(4, len(labels))))
     sns.heatmap(
@@ -83,7 +131,7 @@ def plot_heatmap(matrix: np.ndarray, labels: List[str], title: str, outfile: str
     )
     plt.title(title)
     plt.tight_layout()
-    plt.savefig(outfile, dpi=150)
+    savefig_with_pdf(outfile, dpi=150)
     plt.close()
 
 
@@ -1373,6 +1421,73 @@ def plot_pca_components_similarity_across_samples(
     if len(pca_models) < 2:
         return
 
+    # -------------------------------------------------------------------------
+    # Principal angles / Grassmann metrics across samples (subspace comparison)
+    # -------------------------------------------------------------------------
+    valid_sample_ids = sorted(pca_components.keys())
+    if len(valid_sample_ids) >= 2:
+        n = len(valid_sample_ids)
+        labels = [f"S{sid}" for sid in valid_sample_ids]
+        overlap_mat = np.eye(n, dtype=np.float64)
+        chordal_mat = np.zeros((n, n), dtype=np.float64)
+        mean_angle_mat = np.zeros((n, n), dtype=np.float64)
+        max_angle_mat = np.zeros((n, n), dtype=np.float64)
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                sid_i = valid_sample_ids[i]
+                sid_j = valid_sample_ids[j]
+                angles, overlap, chordal = compute_principal_angles_from_pca_components(
+                    pca_components[sid_i],
+                    pca_components[sid_j],
+                    n_components=n_components,
+                )
+                if angles.size == 0 or not np.isfinite(overlap) or not np.isfinite(chordal):
+                    continue
+                overlap_mat[i, j] = overlap
+                overlap_mat[j, i] = overlap
+                chordal_mat[i, j] = chordal
+                chordal_mat[j, i] = chordal
+                mean_angle = float(np.mean(angles))
+                max_angle = float(np.max(angles))
+                mean_angle_mat[i, j] = mean_angle
+                mean_angle_mat[j, i] = mean_angle
+                max_angle_mat[i, j] = max_angle
+                max_angle_mat[j, i] = max_angle
+
+        npz_out = outfile.replace(".png", "_principal_angles.npz")
+        np.savez(
+            npz_out,
+            sample_ids=np.array(valid_sample_ids, dtype=np.int64),
+            overlap=overlap_mat,
+            chordal_distance=chordal_mat,
+            mean_angle_rad=mean_angle_mat,
+            max_angle_rad=max_angle_mat,
+            n_components=np.array([int(n_components)], dtype=np.int64),
+        )
+        print(f"Saved principal-angle subspace metrics: {npz_out}")
+
+        # Keep heatmaps readable.
+        if n <= 64:
+            plot_heatmap(
+                overlap_mat,
+                labels,
+                title=f"Subspace overlap (mean cos^2 principal angles), r={n_components}",
+                outfile=outfile.replace(".png", "_subspace_overlap.png"),
+            )
+            plot_heatmap(
+                chordal_mat,
+                labels,
+                title=f"Chordal distance between PCA subspaces, r={n_components}",
+                outfile=outfile.replace(".png", "_subspace_chordal_distance.png"),
+            )
+            plot_heatmap(
+                mean_angle_mat,
+                labels,
+                title=f"Mean principal angle (radians), r={n_components}",
+                outfile=outfile.replace(".png", "_subspace_mean_angle.png"),
+            )
+
     # Normalize all PC vectors for cosine similarity computation
     normalized_pcs = {}
     for sid in sample_ids:
@@ -1594,6 +1709,147 @@ def plot_pca_components_similarity_across_samples(
     plt.savefig(summary_outfile, dpi=150)
     print(f"plot_pca_components_similarity_across_samples (summary): {summary_outfile}")
     plt.close()
+
+
+def plot_shared_subspace_pca_rank_selection(
+    by_sid: Dict[int, List[Dict[str, Any]]],
+    outfile: str,
+    max_components: int = 128,
+    eps: float = 0.01,
+    center: str = "mean",
+    normalize_fro: bool = True,
+):
+    """Shared-subspace PCA + rank selection by reconstruction error.
+
+    Builds per-sample centered trajectory matrices X_i (stages x d), fits a single
+    PCA basis U on the union of all samples (optionally Frobenius-normalized per sample
+    to weight samples equally), then computes per-sample reconstruction error vs rank:
+
+        err_i(r) = ||X_i - X_i U_r U_r^T||_F^2 / ||X_i||_F^2
+
+    Uses the orthonormality of PCA components to compute err without explicit reconstruction:
+
+        ||Proj_{U_r}(X_i)||_F^2 = ||X_i U_r||_F^2
+        err_i(r) = 1 - ||X_i U_r||_F^2 / ||X_i||_F^2
+    """
+    if len(by_sid) < 2:
+        return
+    if max_components < 1:
+        return
+    if eps <= 0.0 or eps >= 1.0:
+        raise ValueError("eps must be in (0, 1)")
+    if center not in {"mean", "first"}:
+        raise ValueError("center must be 'mean' or 'first'")
+
+    centered_by_sid: List[Tuple[int, np.ndarray]] = []
+    for sid, stages in by_sid.items():
+        if len(stages) < 2:
+            continue
+        E = np.stack([flatten_embedding(s) for s in stages], axis=0)  # [T, d]
+        if E.shape[0] < 2:
+            continue
+        if center == "mean":
+            E = E - np.mean(E, axis=0, keepdims=True)
+        else:
+            E = E - E[:1]
+        denom = float(np.linalg.norm(E) ** 2)
+        if denom <= 1e-20:
+            continue
+        if normalize_fro:
+            E = E / (math.sqrt(denom) + 1e-12)
+        centered_by_sid.append((int(sid), E.astype(np.float64, copy=False)))
+
+    if len(centered_by_sid) < 2:
+        print("plot_shared_subspace_pca_rank_selection: need >= 2 valid samples")
+        return
+
+    X_all = np.concatenate([E for _, E in centered_by_sid], axis=0)
+    n_points, d = X_all.shape
+    max_comp = int(min(max_components, d, max(n_points - 1, 1)))
+    if max_comp < 1:
+        return
+
+    pca = PCA(n_components=max_comp, random_state=42)
+    pca.fit(X_all)
+    U_full = pca.components_.T  # [d, max_comp]
+
+    # errors[sample_idx, r-1] = err_i(r)
+    errors = np.zeros((len(centered_by_sid), max_comp), dtype=np.float64)
+    sample_ids = []
+    for idx, (sid, X) in enumerate(centered_by_sid):
+        sample_ids.append(sid)
+        denom = float(np.linalg.norm(X) ** 2)
+        if denom <= 1e-20:
+            errors[idx, :] = np.nan
+            continue
+        Y = X @ U_full  # [T, max_comp]
+        proj_sq_per_comp = np.sum(Y**2, axis=0)  # [max_comp]
+        cum_proj_sq = np.cumsum(proj_sq_per_comp)
+        err = 1.0 - (cum_proj_sq / denom)
+        errors[idx, :] = np.clip(err, 0.0, 1.0)
+
+    # Aggregate stats across samples
+    ranks = np.arange(1, max_comp + 1, dtype=np.int64)
+    mean_err = np.nanmean(errors, axis=0)
+    q10_err = np.nanpercentile(errors, 10, axis=0)
+    q50_err = np.nanpercentile(errors, 50, axis=0)
+    q90_err = np.nanpercentile(errors, 90, axis=0)
+
+    # Pick smallest rank meeting mean error threshold
+    meet = np.where(mean_err <= eps)[0]
+    chosen_r = int(meet[0] + 1) if meet.size > 0 else int(max_comp)
+    print(
+        f"shared_subspace_pca: center={center}, normalize_fro={normalize_fro}, "
+        f"eps={eps}, max_comp={max_comp}, chosen_r={chosen_r}"
+    )
+
+    # Save raw metrics
+    npz_out = outfile.replace(".png", ".npz")
+    np.savez(
+        npz_out,
+        sample_ids=np.array(sample_ids, dtype=np.int64),
+        ranks=ranks,
+        errors=errors,
+        mean_error=mean_err,
+        q10_error=q10_err,
+        median_error=q50_err,
+        q90_error=q90_err,
+        chosen_r=np.array([chosen_r], dtype=np.int64),
+        eps=np.array([eps], dtype=np.float64),
+        center=np.array([center]),
+        normalize_fro=np.array([normalize_fro]),
+    )
+    print(f"Saved shared-subspace PCA metrics: {npz_out}")
+
+    # Plot: reconstruction error vs rank
+    plt.figure(figsize=(10, 6))
+    plt.fill_between(ranks, q10_err, q90_err, alpha=0.2, label="10-90% (across samples)")
+    plt.plot(ranks, mean_err, linewidth=2.5, label="Mean error")
+    plt.plot(ranks, q50_err, linewidth=2.0, linestyle="--", label="Median error")
+    plt.axhline(y=eps, color="red", linestyle="--", linewidth=1.5, label=f"eps={eps}")
+    plt.axvline(x=chosen_r, color="black", linestyle=":", linewidth=1.5, label=f"chosen r={chosen_r}")
+    plt.xlabel("Rank r (shared PCA components)", fontsize=12)
+    plt.ylabel("Relative reconstruction error", fontsize=12)
+    plt.title("Shared-subspace PCA: rank selection by reconstruction error", fontsize=14)
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="best")
+    plt.tight_layout()
+    savefig_with_pdf(outfile, dpi=150)
+    plt.close()
+
+    # Plot: distribution of explained variance at chosen rank
+    explained_at_r = 1.0 - errors[:, chosen_r - 1]
+    explained_at_r = explained_at_r[np.isfinite(explained_at_r)]
+    if explained_at_r.size > 0:
+        plt.figure(figsize=(8, 5))
+        plt.hist(explained_at_r, bins=20, alpha=0.8, color="steelblue", edgecolor="black")
+        plt.xlabel("Explained variance (1 - error)", fontsize=12)
+        plt.ylabel("Count", fontsize=12)
+        plt.title(f"Shared-subspace PCA explained variance at r={chosen_r}", fontsize=14)
+        plt.grid(True, alpha=0.3, axis="y")
+        plt.tight_layout()
+        savefig_with_pdf(outfile.replace(".png", "_explained_distribution.png"), dpi=150)
+        plt.close()
 
 
 def plot_correlation(
@@ -1824,6 +2080,31 @@ def main():
         type=int,
         default=2,
         help="Limit number of PCA component pairs to compute landscape for (default: 2)",
+    )
+    parser.add_argument(
+        "--shared_subspace_max_components",
+        type=int,
+        default=128,
+        help="Max components for shared-subspace PCA rank selection",
+    )
+    parser.add_argument(
+        "--shared_subspace_eps",
+        type=float,
+        default=0.01,
+        help="Reconstruction error threshold eps for shared-subspace PCA rank selection",
+    )
+    parser.add_argument(
+        "--shared_subspace_center",
+        type=str,
+        default="mean",
+        choices=["mean", "first"],
+        help="How to center each sample trajectory before shared PCA",
+    )
+    parser.add_argument(
+        "--shared_subspace_normalize_fro",
+        default=False,
+        action="store_true",
+        help="If set, Frobenius-normalize each centered sample trajectory before shared PCA",
     )
 
     args = parser.parse_args()
@@ -2074,6 +2355,14 @@ def main():
             by_sid,
             outfile=os.path.join(out_dir, "pca_components_similarity_across_samples.png"),
             n_components=8,
+        )
+        plot_shared_subspace_pca_rank_selection(
+            by_sid,
+            outfile=os.path.join(out_dir, "shared_subspace_pca_rank_selection.png"),
+            max_components=int(args.shared_subspace_max_components),
+            eps=float(args.shared_subspace_eps),
+            center=str(args.shared_subspace_center),
+            normalize_fro=bool(args.shared_subspace_normalize_fro),
         )
 
     # Correlation plots across all stages
