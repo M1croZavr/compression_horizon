@@ -74,6 +74,8 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --checkpoints \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lowdim_32_lowproj/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lowdim_64_lowproj/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lowdim_128_lowproj/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lowdim_256_lowproj/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lowdim_512_lowproj/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_lr_0.5/progressive_prefixes \
@@ -96,7 +98,7 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_512_lowproj/progressive_prefixes \
   --n_components 4 \
   --sample_id 0 \
-  --midrule_indicies 3 9 15 \
+  --midrule_indicies 5 11 17 \
   --show_labels --only_stat_table --tablefmt latex
 
 
@@ -172,22 +174,6 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lowdim_64_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lowdim_128_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_Qwen3-4B_loss_cosine_hybrid_1.0_align_4/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_Qwen3-4B_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_Qwen3-4B_loss_cosine_hybrid_1.0_align_16/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_Qwen3-4B_loss_cosine_hybrid_1.0_align_20/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_Qwen3-4B_lowdim_32_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_Qwen3-4B_lowdim_64_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_Qwen3-4B_lowdim_128_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_Qwen3-4B_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_loss_cosine_hybrid_1.0_align_4/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_loss_cosine_hybrid_1.0_align_16/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_loss_cosine_hybrid_1.0_align_20/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_32_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_64_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_128_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
-    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_loss_cosine_hybrid_1.0_align_4/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_loss_cosine_hybrid_1.0_align_16/progressive_prefixes \
@@ -196,9 +182,33 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_lowdim_64_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_lowdim_128_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_loss_cosine_hybrid_1.0_align_4/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_loss_cosine_hybrid_1.0_align_16/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_loss_cosine_hybrid_1.0_align_20/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_32_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_64_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_128_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_loss_cosine_hybrid_1.0_align_4/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_loss_cosine_hybrid_1.0_align_16/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_loss_cosine_hybrid_1.0_align_20/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_32_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_64_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_128_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B_loss_cosine_hybrid_1.0_align_4/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B_loss_cosine_hybrid_1.0_align_16/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B_loss_cosine_hybrid_1.0_align_20/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B_lowdim_32_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B_lowdim_64_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B_lowdim_128_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Qwen3-4B_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
   --n_components 4 \
   --sample_id 0 \
-  --midrule_indicies 5 9 13 17 25 \
+  --midrule_indicies 9 17 25 33 \
   --show_labels --only_stat_table --tablefmt latex
 
 
@@ -238,10 +248,26 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
     artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_256_lowproj/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_256_lowproj/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lowdim_256_lowproj_loss_cosine_hybrid_1.0_align_8/progressive_prefixes \
   --n_components 4 \
   --sample_id 0 \
   --midrule_indicies 3 7 11 \
   --show_labels --only_stat_table --tablefmt latex
 
 
+# NO BOS token
+PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
+  --checkpoints \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/progressive sl_4096_Meta-Llama-3.1-8B_nobos_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/progressive sl_4096_pythia-1.4b_lr_0.5/progressive_prefixes \
+    artifacts/experiments_progressive/progressive sl_4096_pythia-1.4b_nobos_lr_0.5/progressive_prefixes \
+    artifacts/experiments_progressive/progressive sl_4096_SmolLM2-1.7B_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/progressive sl_4096_SmolLM2-1.7B_nobos_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/progressive sl_4096_gemma-3-4b-pt_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/progressive sl_4096_gemma-3-4b-pt_nobos_lr_0.1/progressive_prefixes \
+  --n_components 4 \
+  --sample_id 0 \
+  --show_labels --only_stat_table --tablefmt latex

@@ -2,6 +2,7 @@ import argparse
 import math
 import os
 import time
+from collections import Counter
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -953,23 +954,14 @@ def plot_pca_reconstruction_accuracy(
         rows_by_sample_id[sample_id].append(row)
 
     # Prepare data structures for each sample
-    # For each sample: collect all embeddings for PCA, and identify longest sequence row for accuracy
+    # For each sample: collect all embeddings for PCA, and identify second-to-last stage row for accuracy
     sample_data: List[Dict[str, Any]] = []
     for sample_id, sample_rows in rows_by_sample_id.items():
-        # Find max sequence length for this sample and collect all embeddings
-        max_seq_len = -1
-        longest_row = None
-        longest_row_idx = -1
+        # Sort rows by sequence length and select second-to-last (or longest if only one stage)
         all_embeddings_for_sample = []
         all_rows_ordered = []
 
         for idx, row in enumerate(sample_rows):
-            seq_len = int(row.get("stage_seq_len", -1))
-            if seq_len > max_seq_len:
-                max_seq_len = seq_len
-                longest_row = row
-                longest_row_idx = idx
-
             # Collect all embeddings for this sample (for PCA)
             emb = torch.tensor(row["embedding"], dtype=torch.float32)
             if emb.ndim == 1:
@@ -978,21 +970,30 @@ def plot_pca_reconstruction_accuracy(
             all_embeddings_for_sample.append(flattened_embedding)
             all_rows_ordered.append(row)
 
-        if longest_row is None or len(all_embeddings_for_sample) < 2:
+        if len(all_embeddings_for_sample) < 2:
             # Need at least 2 embeddings for PCA
             continue
 
-        text = longest_row.get("text", "")
+        # Sort rows by sequence length (ascending)
+        sorted_rows_with_indices = sorted(enumerate(all_rows_ordered), key=lambda x: int(x[1].get("stage_seq_len", -1)))
+
+        # Select second-to-last stage (or last if only one stage)
+        if len(sorted_rows_with_indices) >= 2:
+            selected_idx, selected_row = sorted_rows_with_indices[-2]
+        else:
+            selected_idx, selected_row = sorted_rows_with_indices[-1]
+
+        text = selected_row.get("text", "")
         if not isinstance(text, str) or text.strip() == "":
             continue
 
-        emb_longest = torch.tensor(longest_row["embedding"], dtype=torch.float32)
-        if emb_longest.ndim == 1:
-            emb_longest = emb_longest.unsqueeze(0)
-        original_shape = emb_longest.shape  # [num_compression_tokens, hidden_dim]
+        emb_selected = torch.tensor(selected_row["embedding"], dtype=torch.float32)
+        if emb_selected.ndim == 1:
+            emb_selected = emb_selected.unsqueeze(0)
+        original_shape = emb_selected.shape  # [num_compression_tokens, hidden_dim]
 
-        # Get the embedding corresponding to the longest sequence
-        longest_embedding = all_embeddings_for_sample[longest_row_idx]
+        # Get the embedding corresponding to the selected stage
+        selected_embedding = all_embeddings_for_sample[selected_idx]
 
         sample_data.append(
             {
@@ -1000,7 +1001,7 @@ def plot_pca_reconstruction_accuracy(
                 "text": text,
                 "original_shape": original_shape,
                 "all_embeddings": np.stack(all_embeddings_for_sample, axis=0),  # All embeddings for PCA
-                "longest_embedding": longest_embedding,  # Embedding from longest sequence
+                "longest_embedding": selected_embedding,  # Embedding from selected stage (second-to-last)
             }
         )
 
@@ -1015,8 +1016,9 @@ def plot_pca_reconstruction_accuracy(
     n_components_list = []
     all_accuracies_per_component = []  # Store all accuracies for each component count
     all_first_error_indices_per_component = []  # Store first error indices for each component count
+    all_sequence_lengths = []  # Store sequence lengths for statistics
 
-    # Determine max components across all samples
+    # Determine max components across all samples and collect sequence lengths
     max_comp_global = 0
     for sample_info in sample_data:
         all_emb = sample_info["all_embeddings"]
@@ -1034,7 +1036,7 @@ def plot_pca_reconstruction_accuracy(
         accuracies_per_sample = []
         first_error_indices_per_sample = []
 
-        for sample_info in sample_data:
+        for sample_idx, sample_info in enumerate(sample_data):
             all_emb = sample_info["all_embeddings"]
             n_samples_for_pca, n_features = all_emb.shape
             max_comp_for_sample = min(n_samples_for_pca - 1, n_features)
@@ -1098,6 +1100,9 @@ def plot_pca_reconstruction_accuracy(
                     # Find first error index: first position where prediction is wrong
                     # Compare pred_tokens[0, i] with input_ids[0, i] for valid positions
                     seq_len = int(attention_mask.sum().item())
+                    # Collect sequence length once per sample (on first component iteration)
+                    if n_comp == 1 and len(all_sequence_lengths) < len(sample_data):
+                        all_sequence_lengths.append(seq_len)
                     first_error_idx = seq_len  # Default: no error (error at sequence length)
                     for i in range(seq_len):
                         if pred_tokens[0, i].item() != input_ids[0, i].item():
@@ -1116,6 +1121,12 @@ def plot_pca_reconstruction_accuracy(
         print("len(n_components_list) == 0")
         raise ValueError("len(n_components_list) == 0")
         # return
+
+    # Extract error indices only from the last PCA model (max components)
+    error_indices_last_model = []
+    last_n_comp = n_components_list[-1] if len(n_components_list) > 0 else None
+    if last_n_comp is not None and len(all_first_error_indices_per_component) > 0:
+        error_indices_last_model = all_first_error_indices_per_component[-1]
 
     # Compute statistics for plotting
     mean_accuracies = [np.mean(accs) for accs in all_accuracies_per_component]
@@ -1221,31 +1232,61 @@ def plot_pca_reconstruction_accuracy(
         print(f"plot_pca_reconstruction_accuracy (first error index): {error_index_outfile}")
         plt.close()
 
-        # Create distribution plot of error indices for all reconstructed samples
-        all_error_indices = []
-        for indices in all_first_error_indices_per_component:
-            all_error_indices.extend(indices)
+        # Create distribution plot of error indices for the last PCA model (max components) only
+        if len(error_indices_last_model) > 0:
+            # Count frequency of each error index
+            error_index_counts = Counter(error_indices_last_model)
+            top_20_indices = error_index_counts.most_common(20)
 
-        if len(all_error_indices) > 0:
+            # Print top-20 most common error indices to console
+            n_samples = len(error_indices_last_model)
+            last_n_comp = n_components_list[-1] if len(n_components_list) > 0 else max_comp_global
+            print(
+                f"\nTop-20 most common error indices (for last PCA model with {last_n_comp} components, {n_samples} samples):"
+            )
+            print(f"{'Rank':<6} {'Error Index':<15} {'Count':<10} {'Percentage':<12}")
+            print("-" * 50)
+            for rank, (error_idx, count) in enumerate(top_20_indices, 1):
+                percentage = 100.0 * count / len(error_indices_last_model)
+                print(f"{rank:<6} {error_idx:<15} {count:<10} {percentage:.2f}%")
+            print()
+
+            # Print sequence length statistics
+            if len(all_sequence_lengths) > 0:
+                print(f"\nSample sequence length statistics (out of {len(all_sequence_lengths)} samples):")
+                print(f"  Mean: {np.mean(all_sequence_lengths):.2f}")
+                print(f"  Median: {np.median(all_sequence_lengths):.2f}")
+                print(f"  Std: {np.std(all_sequence_lengths):.2f}")
+                print(f"  Min: {np.min(all_sequence_lengths)}")
+                print(f"  Max: {np.max(all_sequence_lengths)}")
+                print(f"  25th percentile: {np.percentile(all_sequence_lengths, 25):.2f}")
+                print(f"  75th percentile: {np.percentile(all_sequence_lengths, 75):.2f}")
+                print(f"  10th percentile: {np.percentile(all_sequence_lengths, 10):.2f}")
+                print(f"  90th percentile: {np.percentile(all_sequence_lengths, 90):.2f}")
+                print()
             plt.figure(figsize=(10, 7))
-            plt.hist(all_error_indices, bins=50, alpha=0.7, color="steelblue", edgecolor="black", linewidth=1.2)
+            plt.hist(error_indices_last_model, bins=50, alpha=0.7, color="steelblue", edgecolor="black", linewidth=1.2)
             plt.axvline(
-                np.mean(all_error_indices),
+                np.mean(error_indices_last_model),
                 color="red",
                 linestyle="--",
                 linewidth=2,
-                label=f"Mean: {np.mean(all_error_indices):.2f}",
+                label=f"Mean: {np.mean(error_indices_last_model):.2f}",
             )
             plt.axvline(
-                np.median(all_error_indices),
+                np.median(error_indices_last_model),
                 color="green",
                 linestyle="--",
                 linewidth=2,
-                label=f"Median: {np.median(all_error_indices):.2f}",
+                label=f"Median: {np.median(error_indices_last_model):.2f}",
             )
             plt.xlabel("First Error Index (Sequence Position)", fontsize=14)
             plt.ylabel("Frequency", fontsize=14)
-            plt.title(f"{title} - Distribution of Error Indices (All Samples, All Components)", fontsize=16)
+            last_n_comp = n_components_list[-1] if len(n_components_list) > 0 else max_comp_global
+            plt.title(
+                f"{title} - Distribution of Error Indices (Last PCA Model, {last_n_comp} components, {len(error_indices_last_model)} samples)",
+                fontsize=16,
+            )
             plt.grid(True, alpha=0.3, axis="y")
             plt.legend(loc="best", fontsize=11)
             plt.xlim(left=0)

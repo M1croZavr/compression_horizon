@@ -13,7 +13,7 @@
 
 # MODEL_NAME=unsloth/gemma-3-270m
 # MODEL_NAME=unsloth/gemma-3-1b-pt
-# MODEL_NAME=unsloth/gemma-3-4b-pt
+MODEL_NAME=unsloth/gemma-3-4b-pt
 
 # LR check
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01
