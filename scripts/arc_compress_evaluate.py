@@ -23,9 +23,15 @@ from compression_horizon.train.loss import compute_hybrid_cross_entropy_and_alig
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 
-def count_text_tokens(tokenizer: AutoTokenizer, text: str) -> int:
+def count_text_tokens(tokenizer: AutoTokenizer, text: str, add_special_tokens: bool = True) -> int:
     """Count tokens in text using the provided tokenizer."""
-    encoded = tokenizer(text, truncation=True, padding=False, return_tensors=None)
+    encoded = tokenizer(
+        text,
+        truncation=True,
+        padding=False,
+        return_tensors=None,
+        add_special_tokens=add_special_tokens,
+    )
     return len(encoded["input_ids"])
 
 
@@ -60,6 +66,7 @@ def compress_prefixes_batch(
     num_alignment_layers: int = 0,
     inverted_alignment: bool = False,
     device: Optional[torch.device] = None,
+    add_special_tokens: bool = True,
 ) -> list[torch.Tensor]:
     """Compress multiple text prefixes into compression tokens (batched).
 
@@ -90,7 +97,7 @@ def compress_prefixes_batch(
     use_alignment = hybrid_alpha is not None and loss_type != "cross_entropy"
 
     # Tokenize all texts with padding
-    encoded = tokenizer(texts, truncation=True, padding=True, return_tensors="pt")
+    encoded = tokenizer(texts, truncation=True, padding=True, return_tensors="pt", add_special_tokens=add_special_tokens)
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
@@ -215,6 +222,7 @@ def compress_prefix(
     num_alignment_layers: int = 0,
     inverted_alignment: bool = False,
     device: Optional[torch.device] = None,
+    add_special_tokens: bool = True,
 ) -> torch.Tensor:
     """Compress a text prefix into compression tokens.
 
@@ -238,7 +246,7 @@ def compress_prefix(
     freeze_model_parameters(model)
 
     # Tokenize the text
-    encoded = tokenizer(text, truncation=True, padding=False, return_tensors="pt")
+    encoded = tokenizer(text, truncation=True, padding=False, return_tensors="pt", add_special_tokens=add_special_tokens)
     input_ids = encoded["input_ids"].to(device)  # [1, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [1, seq_len]
 
@@ -339,6 +347,7 @@ def compute_ppl_baseline_batch(
     contexts: list[str],
     endings: list[str],
     device: Optional[torch.device] = None,
+    add_special_tokens: bool = True,
 ) -> list[float]:
     """Compute perplexity of context + ending pairs without compression tokens (batched).
 
@@ -365,7 +374,7 @@ def compute_ppl_baseline_batch(
     full_texts = [ctx + end for ctx, end in zip(contexts, endings)]
 
     # Tokenize with padding
-    encoded = tokenizer(full_texts, truncation=True, padding=True, return_tensors="pt")
+    encoded = tokenizer(full_texts, truncation=True, padding=True, return_tensors="pt", add_special_tokens=add_special_tokens)
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
@@ -419,6 +428,7 @@ def compute_ppl_with_compression_batch(
     contexts: list[str],
     endings: list[str],
     device: Optional[torch.device] = None,
+    add_special_tokens: bool = True,
 ) -> list[float]:
     """Compute perplexity of context + ending pairs using compression tokens (batched).
 
@@ -446,7 +456,7 @@ def compute_ppl_with_compression_batch(
     full_texts = [ctx + end for ctx, end in zip(contexts, endings)]
 
     # Tokenize with padding
-    encoded = tokenizer(full_texts, truncation=True, padding=True, return_tensors="pt")
+    encoded = tokenizer(full_texts, truncation=True, padding=True, return_tensors="pt", add_special_tokens=add_special_tokens)
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
@@ -664,6 +674,12 @@ def main():
         action="store_true",
         help="If set, aligns the last num_alignment_layers instead of the first.",
     )
+    parser.add_argument(
+        "--no_bos_token",
+        action="store_true",
+        default=False,
+        help="Disable BOS token insertion during tokenization.",
+    )
 
     args = parser.parse_args()
 
@@ -692,6 +708,10 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    add_bos_supported = hasattr(tokenizer, "add_bos_token")
+    if args.no_bos_token and add_bos_supported:
+        tokenizer.add_bos_token = False
+    add_special_tokens = not (args.no_bos_token and not add_bos_supported)
 
     # Load ARC dataset
     print(f"Loading ARC dataset ({args.arc_split})...")
@@ -756,6 +776,7 @@ def main():
                     contexts=contexts_for_batch,
                     endings=batch_endings_list[sample_idx],
                     device=device,
+                    add_special_tokens=add_special_tokens,
                 )
                 sample_ppls = ppls
             except Exception as e:
@@ -778,6 +799,7 @@ def main():
                 num_alignment_layers=args.num_alignment_layers,
                 inverted_alignment=args.inverted_alignment,
                 device=device,
+                add_special_tokens=add_special_tokens,
             )
         except Exception as e:
             print(f"Error compressing batch {batch_idx}: {e}")
@@ -803,6 +825,7 @@ def main():
                     contexts=contexts_for_batch,
                     endings=batch_endings_list[sample_idx],
                     device=device,
+                    add_special_tokens=add_special_tokens,
                 )
                 sample_ppls = ppls
             except Exception as e:
@@ -838,7 +861,7 @@ def main():
             if 0 <= label < len(endings):
                 correct_ending = endings[label]
                 full_text = context + correct_ending
-                token_count = count_text_tokens(tokenizer, full_text)
+                token_count = count_text_tokens(tokenizer, full_text, add_special_tokens=add_special_tokens)
                 char_count = count_text_characters(full_text)
                 total_tokens += token_count
                 total_characters += char_count

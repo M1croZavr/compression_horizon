@@ -14,6 +14,16 @@ python scripts/jobs/run_jobs_arc_evaluate.py \
   --batch_size 32 \
   --model Llama-3.1 SmolLM2-1.7B gemma-3-4b-pt EleutherAI/pythia-1.4b
 """
+"""
+python scripts/jobs/run_jobs_arc_evaluate.py \
+  --limit_samples 512 \
+  --num_compression_tokens 1 \
+  --max_optimization_steps 1000 \
+  --learning_rate 0.1 \
+  --batch_size 32 \
+  --no_bos_token \
+  --model Llama-3.1 SmolLM2-1.7B gemma-3-4b-pt EleutherAI/pythia-1.4b
+"""
 
 
 def get_in_progress_jobs(client, region, statuses=None):
@@ -142,6 +152,12 @@ if __name__ == "__main__":
         action="store_true",
         help="If set, aligns the last num_alignment_layers instead of the first.",
     )
+    parser.add_argument(
+        "--no_bos_token",
+        action="store_true",
+        default=False,
+        help="Disable BOS token insertion during tokenization.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -216,6 +232,8 @@ if __name__ == "__main__":
             cmd_args.append(f"--hybrid_alpha {args.hybrid_alpha}")
         if args.inverted_alignment:
             cmd_args.append("--inverted_alignment")
+        if args.no_bos_token:
+            cmd_args.append("--no_bos_token")
 
         # Add random_seed if specified (non-default)
         if args.random_seed is not None and args.random_seed != 42:
@@ -257,6 +275,8 @@ if __name__ == "__main__":
 
         if args.inverted_alignment:
             exp_suffix = f"{exp_suffix}_inv_align"
+        if args.no_bos_token:
+            exp_suffix = f"{exp_suffix}_nobos"
 
         out_dir_name = f"artifacts/arc_evaluation/{exp_suffix}"
         if os.path.exists(out_dir_name):
