@@ -344,7 +344,7 @@ def main() -> None:
                 float(x),
                 float(y),
                 f"{idx}",
-                fontsize=25,
+                fontsize=30,
                 ha="left",
                 va="bottom",
                 color="black",
