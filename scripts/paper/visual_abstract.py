@@ -303,8 +303,10 @@ def main() -> None:
 
     plt.tight_layout()
     plt.savefig(out_path, dpi=int(args.dpi))
+    plt.savefig(out_path[:-4] + ".pdf", dpi=int(args.dpi))
     plt.close(fig)
     print(f"Saved: {out_path}")
+    print(f"Saved: {out_path[:-4] + '.pdf'}")
 
 
 if __name__ == "__main__":
