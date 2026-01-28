@@ -1,6 +1,29 @@
 
 set -x
 
+tab:all_learning_rates
+PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
+  --checkpoints \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.5/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_1.0/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_pythia-1.4b/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_pythia-1.4b_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_pythia-1.4b_lr_0.5/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_pythia-1.4b_lr_1.0/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lr_0.5/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lr_1.0/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lr_0.5/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_gemma-3-4b-pt_lr_1.0/progressive_prefixes \
+  --n_components 4 \
+  --sample_id 0 \
+  --midrule_indicies 3 7 11 \
+  --show_labels --only_stat_table --tablefmt latex
+
+
 # tab:progressive_for_model_scales
 PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --checkpoints \

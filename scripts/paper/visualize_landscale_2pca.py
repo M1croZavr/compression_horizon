@@ -353,6 +353,24 @@ def main() -> None:
         help="If 1 (default), save a single landscape image. If >1, save a GIF over uniformly sampled trajectory points.",
     )
     parser.add_argument(
+        "--anchor-indices",
+        "--anchor_indices",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Optional explicit anchor indices (trajectory indices). If provided, overrides uniform sampling. "
+        "The number of indices must match --num-frames.",
+    )
+    parser.add_argument(
+        "--neighborhood",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Optional per-frame neighborhood radius in PCA space. If provided, for each frame we compute the landscape "
+        "only within a square [center-r, center+r] around the current anchor point (for each plotted PC pair). "
+        "The number of radii must match --num-frames.",
+    )
+    parser.add_argument(
         "--dtype",
         type=str,
         default="bfloat16",
@@ -455,6 +473,16 @@ def main() -> None:
         y_range = np.linspace(lo_j, hi_j, int(args.mesh_resolution))
         return np.meshgrid(x_range, y_range)
 
+    def _make_mesh_for_pair_centered(anchor_coords: np.ndarray, i: int, j: int, radius: float) -> Tuple[np.ndarray, np.ndarray]:
+        r = float(radius)
+        if not np.isfinite(r) or r <= 0:
+            raise ValueError(f"--neighborhood radii must be positive finite floats, got {radius}")
+        cx = float(anchor_coords[i])
+        cy = float(anchor_coords[j])
+        x_range = np.linspace(cx - r, cx + r, int(args.mesh_resolution))
+        y_range = np.linspace(cy - r, cy + r, int(args.mesh_resolution))
+        return np.meshgrid(x_range, y_range)
+
     def _compute_accuracy_surface_for_anchor_pair(
         anchor_coords: np.ndarray, seq_len: int, i: int, j: int, X_mesh: np.ndarray, Y_mesh: np.ndarray
     ) -> np.ndarray:
@@ -479,7 +507,19 @@ def main() -> None:
 
     num_frames = int(args.num_frames)
     if num_frames <= 1:
-        current_idx = int(penultimate_idx)
+        if args.anchor_indices is not None:
+            if len(args.anchor_indices) != 1:
+                raise ValueError("--anchor-indices must have exactly 1 value when --num-frames <= 1")
+            current_idx = int(args.anchor_indices[0])
+        else:
+            current_idx = int(penultimate_idx)
+        radius_single = None
+        if args.neighborhood is not None:
+            if len(args.neighborhood) != 1:
+                raise ValueError("--neighborhood must have exactly 1 value when --num-frames <= 1")
+            radius_single = float(args.neighborhood[0])
+        if current_idx < 0 or current_idx >= int(coords.shape[0]):
+            raise ValueError(f"anchor index out of range: {current_idx} (valid: 0..{int(coords.shape[0]) - 1})")
         anchor_coords = coords[current_idx].copy()
         current_seq_len = int(rows_sorted[current_idx].get("stage_seq_len", 1))
         grids_x: List[np.ndarray] = []
@@ -487,7 +527,10 @@ def main() -> None:
         acc_surfaces: List[np.ndarray] = []
 
         for i, j in pair_indices:
-            X_mesh, Y_mesh = _make_mesh_for_pair(i, j)
+            if radius_single is None:
+                X_mesh, Y_mesh = _make_mesh_for_pair(i, j)
+            else:
+                X_mesh, Y_mesh = _make_mesh_for_pair_centered(anchor_coords, i, j, radius=radius_single)
             Z_acc = _compute_accuracy_surface_for_anchor_pair(
                 anchor_coords, seq_len=current_seq_len, i=i, j=j, X_mesh=X_mesh, Y_mesh=Y_mesh
             )
@@ -532,6 +575,9 @@ def main() -> None:
             current_idx=np.array([current_idx], dtype=np.int64),
             current_seq_len=np.array([current_seq_len], dtype=np.int64),
             anchor_coords=anchor_coords,
+            neighborhood_radius=(
+                np.array([radius_single], dtype=np.float32) if radius_single is not None else np.array([], dtype=np.float32)
+            ),
             explained_variance_ratio=pca.explained_variance_ratio_,
             model_checkpoint=np.array([model_checkpoint]),
             dataset_path=np.array([args.dataset_path]),
@@ -545,10 +591,33 @@ def main() -> None:
     import imageio.v2 as imageio
 
     n_traj = int(coords.shape[0])
-    sampled = np.linspace(0, max(n_traj - 1, 0), num=num_frames, dtype=int)
-    sampled = np.unique(sampled)
-    if sampled.size == 0:
-        sampled = np.array([0], dtype=int)
+    if args.anchor_indices is not None:
+        if len(args.anchor_indices) != num_frames:
+            raise ValueError(
+                f"--anchor-indices must have exactly --num-frames values: got {len(args.anchor_indices)} vs {num_frames}"
+            )
+        sampled = np.array([int(x) for x in args.anchor_indices], dtype=int)
+    else:
+        sampled = np.linspace(0, max(n_traj - 1, 0), num=num_frames, dtype=int)
+        sampled = np.unique(sampled)
+        if sampled.size == 0:
+            sampled = np.array([0], dtype=int)
+
+    if sampled.size > 0:
+        if int(sampled.min()) < 0 or int(sampled.max()) >= n_traj:
+            raise ValueError(
+                f"--anchor-indices out of range: min={int(sampled.min())}, max={int(sampled.max())}, n_traj={n_traj}"
+            )
+
+    radii = None
+    if args.neighborhood is not None:
+        if len(args.neighborhood) != num_frames:
+            raise ValueError(
+                f"--neighborhood must have exactly --num-frames values: got {len(args.neighborhood)} vs {num_frames}"
+            )
+        radii = np.array([float(x) for x in args.neighborhood], dtype=np.float32)
+        if not np.all(np.isfinite(radii)) or np.any(radii <= 0):
+            raise ValueError(f"--neighborhood radii must be positive finite floats, got {args.neighborhood}")
 
     anchors: List[np.ndarray] = []
     acc_stack_by_pair: Dict[Tuple[int, int], List[np.ndarray]] = {p: [] for p in pair_indices}
@@ -557,34 +626,48 @@ def main() -> None:
     sampled_seq_lens: List[int] = []
     grids_x: List[np.ndarray] = []
     grids_y: List[np.ndarray] = []
-    for i, j in pair_indices:
-        X_mesh, Y_mesh = _make_mesh_for_pair(i, j)
-        grids_x.append(X_mesh)
-        grids_y.append(Y_mesh)
+    grids_x_per_frame: List[np.ndarray] = []
+    grids_y_per_frame: List[np.ndarray] = []
+    if radii is None:
+        for i, j in pair_indices:
+            X_mesh, Y_mesh = _make_mesh_for_pair(i, j)
+            grids_x.append(X_mesh)
+            grids_y.append(Y_mesh)
 
-    for idx in tqdm(sampled.tolist(), desc="Computing landscapes frames"):
+    for frame_k, idx in enumerate(tqdm(sampled.tolist(), desc="Computing landscapes frames")):
         anchor_coords = coords[int(idx)].copy()
         seq_len = int(rows_sorted[int(idx)].get("stage_seq_len", 1))
         sampled_seq_lens.append(seq_len)
         anchors.append(anchor_coords)
 
         acc_surfaces: List[np.ndarray] = []
-        for k, (i, j) in enumerate(tqdm(pair_indices)):
-            X_mesh = grids_x[k]
-            Y_mesh = grids_y[k]
+        grids_x_this: List[np.ndarray] = []
+        grids_y_this: List[np.ndarray] = []
+        radius_k = float(radii[frame_k]) if radii is not None else None
+        for k, (i, j) in enumerate(pair_indices):
+            if radius_k is None:
+                X_mesh = grids_x[k]
+                Y_mesh = grids_y[k]
+            else:
+                X_mesh, Y_mesh = _make_mesh_for_pair_centered(anchor_coords, i, j, radius=radius_k)
+            grids_x_this.append(X_mesh)
+            grids_y_this.append(Y_mesh)
             Z_acc = _compute_accuracy_surface_for_anchor_pair(
                 anchor_coords, seq_len=seq_len, i=i, j=j, X_mesh=X_mesh, Y_mesh=Y_mesh
             )
             acc_stack_by_pair[(i, j)].append(Z_acc)
             acc_surfaces.append(Z_acc)
+        if radius_k is not None:
+            grids_x_per_frame.append(np.stack(grids_x_this, axis=0))
+            grids_y_per_frame.append(np.stack(grids_y_this, axis=0))
 
         if len(pair_indices) == 1:
             (i0, j0) = pair_indices[0]
             vx = float(pca.explained_variance_ratio_[i0]) if i0 < len(pca.explained_variance_ratio_) else float("nan")
             vy = float(pca.explained_variance_ratio_[j0]) if j0 < len(pca.explained_variance_ratio_) else float("nan")
             frame = _render_accuracy_frame(
-                X_mesh=grids_x[0],
-                Y_mesh=grids_y[0],
+                X_mesh=grids_x_this[0],
+                Y_mesh=grids_y_this[0],
                 Z_acc=acc_surfaces[0],
                 coords_xy=coords[:, [i0, j0]],
                 current_idx=int(idx),
@@ -595,8 +678,8 @@ def main() -> None:
         else:
             frame = _render_accuracy_grid_frame(
                 pair_indices=pair_indices,
-                grids_x=grids_x,
-                grids_y=grids_y,
+                grids_x=grids_x_this,
+                grids_y=grids_y_this,
                 acc_surfaces=acc_surfaces,
                 coords=coords,
                 explained_variance_ratio=pca.explained_variance_ratio_,
@@ -616,11 +699,17 @@ def main() -> None:
     # Save NPZ (multi-frame)
     acc_stack = np.stack([np.stack(acc_stack_by_pair[p], axis=0) for p in pair_indices], axis=1)
     npz_path = os.path.join(out_dir, "landscape_pca_pairs.npz")
+    if radii is None:
+        grid_x_out = np.stack(grids_x, axis=0)
+        grid_y_out = np.stack(grids_y, axis=0)
+    else:
+        grid_x_out = np.stack(grids_x_per_frame, axis=0)
+        grid_y_out = np.stack(grids_y_per_frame, axis=0)
     np.savez_compressed(
         npz_path,
         pair_indices=np.array(pair_indices, dtype=np.int64),
-        grid_x=np.stack(grids_x, axis=0),
-        grid_y=np.stack(grids_y, axis=0),
+        grid_x=grid_x_out,
+        grid_y=grid_y_out,
         accuracy=acc_stack,
         coords=coords,
         stage_index=np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
@@ -628,6 +717,7 @@ def main() -> None:
         sampled_indices=sampled.astype(np.int64),
         sampled_seq_len=np.array(sampled_seq_lens, dtype=np.int64),
         anchor_coords=np.stack(anchors, axis=0),
+        neighborhood_radius=(radii if radii is not None else np.array([], dtype=np.float32)),
         explained_variance_ratio=pca.explained_variance_ratio_,
         model_checkpoint=np.array([model_checkpoint]),
         dataset_path=np.array([args.dataset_path]),

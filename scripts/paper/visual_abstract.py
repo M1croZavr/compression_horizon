@@ -73,7 +73,7 @@ def main() -> None:
     parser.add_argument(
         "--scatter_alpha",
         type=float,
-        default=0.1,
+        default=0.05,
         help="Alpha for background trajectory scatter points",
     )
     parser.add_argument(
@@ -91,7 +91,18 @@ def main() -> None:
 
     npz = _load_npz(args.npz_path)
 
-    required = ["pair_indices", "grid_x", "grid_y", "accuracy", "coords", "explained_variance_ratio"]
+    # New format (no backward compatibility): produced by visualize_landscale_2pca.py multi-frame run.
+    required = [
+        "pair_indices",
+        "grid_x",
+        "grid_y",
+        "accuracy",
+        "coords",
+        "explained_variance_ratio",
+        "sampled_indices",
+        "sampled_seq_len",
+        "anchor_coords",
+    ]
     missing = [k for k in required if k not in npz]
     if missing:
         raise ValueError(f"Missing keys in npz: {missing}. Available keys: {sorted(npz.keys())}")
@@ -114,26 +125,15 @@ def main() -> None:
     print(f"Explained variance: PC1={ev1:.6f}, PC2={ev2:.6f}, cumulative(PC1+PC2)={ev_cum_2:.6f}")
     print(f"Cumulative explained variance (all fitted PCs) = {ev_cum_all:.6f}")
 
-    # Determine anchors: prefer sampled_indices + sampled_seq_len (multi-frame),
-    # otherwise fall back to current_idx/current_seq_len (single frame).
-    if "sampled_indices" in npz and "sampled_seq_len" in npz and "anchor_coords" in npz:
-        sampled_indices = npz["sampled_indices"].astype(np.int64).reshape(-1)
-        # sampled_seq_len = npz["sampled_seq_len"].astype(np.int64).reshape(-1)
-        anchor_coords = _ensure_2d(npz["anchor_coords"].astype(np.float32))
-        if anchor_coords.shape[0] != sampled_indices.shape[0]:
-            raise ValueError(f"anchor_coords rows ({anchor_coords.shape[0]}) != sampled_indices ({sampled_indices.shape[0]})")
-        anchor_xy_all = anchor_coords[:, :2]
-        # anchor_labels_all = sampled_seq_len  # token prefix length
-    elif "current_idx" in npz and "current_seq_len" in npz and "anchor_coords" in npz:
-        sampled_indices = np.array([int(npz["current_idx"].reshape(-1)[0])], dtype=np.int64)
-        # anchor_labels_all = np.array([int(npz["current_seq_len"].reshape(-1)[0])], dtype=np.int64)
-        anchor_coords = _ensure_2d(npz["anchor_coords"].astype(np.float32))
-        anchor_xy_all = anchor_coords[:, :2]
-    else:
+    sampled_indices = npz["sampled_indices"].astype(np.int64).reshape(-1)
+    sampled_seq_len = npz["sampled_seq_len"].astype(np.int64).reshape(-1)
+    anchor_coords = _ensure_2d(npz["anchor_coords"].astype(np.float32))
+    if anchor_coords.shape[0] != sampled_indices.shape[0] or sampled_seq_len.shape[0] != sampled_indices.shape[0]:
         raise ValueError(
-            "NPZ does not contain anchor metadata. Expected either "
-            "(sampled_indices+sampled_seq_len+anchor_coords) or (current_idx+current_seq_len+anchor_coords)."
+            "Inconsistent anchor metadata: "
+            f"sampled_indices={sampled_indices.shape}, sampled_seq_len={sampled_seq_len.shape}, anchor_coords={anchor_coords.shape}"
         )
+    anchor_xy_all = anchor_coords[:, :2]
 
     n_anchors_total = int(anchor_xy_all.shape[0])
     if args.num_anchors is None or args.num_anchors <= 0 or args.num_anchors >= n_anchors_total:
@@ -145,28 +145,24 @@ def main() -> None:
         anchor_sel = anchor_sel[1:]
 
     anchor_xy = anchor_xy_all[anchor_sel]
-    # anchor_labels = anchor_labels_all[anchor_sel]
-    anchor_indices = sampled_indices[anchor_sel] if sampled_indices.shape[0] >= n_anchors_total else anchor_sel
+    anchor_indices = sampled_indices[anchor_sel]
 
     # Accuracy surface extraction for PC1-PC2:
-    # - single-frame: accuracy has shape [num_pairs,H,W]
-    # - multi-frame: accuracy has shape [num_frames,num_pairs,H,W]
+    # - new format: accuracy has shape [num_frames,num_pairs,H,W]
     acc = npz["accuracy"]
-    grid_x = npz["grid_x"][pair_idx]
-    grid_y = npz["grid_y"][pair_idx]
-    if grid_x.shape != grid_y.shape:
-        raise ValueError(f"grid_x and grid_y shapes differ: {grid_x.shape} vs {grid_y.shape}")
-
-    if acc.ndim == 3:
-        # [num_pairs,H,W] -> choose pair -> same surface for all anchors
-        acc_per_anchor = np.repeat(acc[pair_idx][None, ...], repeats=n_anchors_total, axis=0)
-    elif acc.ndim == 4:
-        # [num_frames,num_pairs,H,W] -> align to sampled frames
-        if acc.shape[0] != n_anchors_total:
-            raise ValueError(f"accuracy frames ({acc.shape[0]}) != anchors ({n_anchors_total})")
-        acc_per_anchor = acc[:, pair_idx]
-    else:
-        raise ValueError(f"Unsupported accuracy ndim={acc.ndim}, shape={acc.shape}")
+    grid_x_all = npz["grid_x"]
+    grid_y_all = npz["grid_y"]
+    if grid_x_all.shape != grid_y_all.shape:
+        raise ValueError(f"grid_x and grid_y shapes differ: {grid_x_all.shape} vs {grid_y_all.shape}")
+    if acc.ndim != 4:
+        raise ValueError(f"Expected accuracy to have shape [num_frames,num_pairs,H,W], got {acc.shape}")
+    if grid_x_all.ndim != 4:
+        raise ValueError(f"Expected grid_x/grid_y to have shape [num_frames,num_pairs,H,W], got {grid_x_all.shape}")
+    if acc.shape[0] != n_anchors_total or grid_x_all.shape[0] != n_anchors_total:
+        raise ValueError(
+            f"Frames mismatch: acc_frames={acc.shape[0]}, grid_frames={grid_x_all.shape[0]}, anchors={n_anchors_total}"
+        )
+    acc_per_anchor = acc[:, pair_idx]
 
     # Plot
     out_path = args.output
@@ -192,10 +188,12 @@ def main() -> None:
     # Draw first (beneath trajectory + anchors).
     thr = float(args.threshold)
     max_region_alpha = 0.6
-    cell_area = _estimate_cell_area(grid_x, grid_y)
     near_perfect_area_by_anchor: Dict[int, float] = {}
     for k, (aidx, color) in enumerate(zip(anchor_sel.tolist(), colors)):
         acc_map = acc_per_anchor[int(aidx)]
+        gx = grid_x_all[int(aidx), pair_idx]
+        gy = grid_y_all[int(aidx), pair_idx]
+        cell_area = _estimate_cell_area(gx, gy)
         mask = acc_map > thr
         near_perfect_area_by_anchor[int(aidx)] = float(mask.sum()) * cell_area if cell_area > 0 else float(mask.sum())
         if not np.any(mask):
@@ -207,7 +205,7 @@ def main() -> None:
         # farther from the anchor point in PC space -> whiter.
         center_x = float(anchor_xy_all[int(aidx), 0])
         center_y = float(anchor_xy_all[int(aidx), 1])
-        dist = np.sqrt((grid_x - center_x) ** 2 + (grid_y - center_y) ** 2).astype(np.float32)
+        dist = np.sqrt((gx - center_x) ** 2 + (gy - center_y) ** 2).astype(np.float32)
         dist_in = dist[mask]
         if dist_in.size > 0:
             d_min = float(np.min(dist_in))
@@ -232,10 +230,10 @@ def main() -> None:
             rgba_img,
             origin="lower",
             extent=[
-                float(grid_x.min()),
-                float(grid_x.max()),
-                float(grid_y.min()),
-                float(grid_y.max()),
+                float(gx.min()),
+                float(gx.max()),
+                float(gy.min()),
+                float(gy.max()),
             ],
             interpolation="nearest",
             zorder=1 + 0.001 * float(k),

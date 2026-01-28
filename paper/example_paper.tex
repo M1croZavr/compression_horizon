@@ -655,7 +655,41 @@ which we feel must be specifically highlighted here.
 \newpage
 \appendix
 % \onecolumn
-\section{You \emph{can} have an appendix here.}
+\section{Hyperparameters}
+
+We used 10 samples from PG19 for most experiments. Across all settings, the base language model was frozen; only the compression-token parameters were optimized (either the compression embeddings, or the low-dimensional embedding together with its projection). We optimized with AdamW. For each model, we swept the learning rate over \(\{0.01, 0.1, 0.5, 1.0\}\); the resulting metrics are summarized in Table~\ref{tab:all_learning_rates}. For the low-dimensional embedding and projection variant, we used a learning rate of 0.01. We ran up to 10{,}000 optimization steps per sample in all experiments; for progressive runs, we additionally capped the optimization of each newly added token at 1{,}000 steps. We used 100 warmup steps for all models. Unless stated otherwise, we used AdamW optimizer with $\beta_1=0.9$ and $\beta_2=0.9$, \texttt{weight\_decay}=0.01, \texttt{max\_grad\_norm}=1.0, \texttt{lr\_scheduler\_type}=\texttt{cosine\_with\_min\_lr} with \texttt{min\_lr}: $10^{-3}$, and \texttt{dtype}=\texttt{bf16}.
+
+
+\begin{table*}
+    \centering
+    \caption{Results of the learning-rate sweep across models and settings.}
+    \label{tab:all_learning_rates}
+
+    \begin{tabular}{lllll}
+        \hline
+         Model                         & Compressed Tokens           & Information Gain         & Trajectory Length         & PCA 99\%                    \\
+        \hline
+         Llama-3.1-8B                  & 1298.4 {\small $\pm$ 537.5} & 3760 {\small $\pm$ 1418} & 738 {\small $\pm$ 265}    & 40.8 {\small $\pm$ 13.16}  \\
+         Llama-3.1-8B {\small lr=0.1}  & 1063.5 {\small $\pm$ 394.4} & 3028 {\small $\pm$ 1321} & 4861 {\small $\pm$ 1033}  & 74.4 {\small $\pm$ 7.94}   \\
+         Llama-3.1-8B {\small lr=0.5}  & 934.4 {\small $\pm$ 123.2}  & 2758 {\small $\pm$ 486}  & 15424 {\small $\pm$ 1437} & 138 {\small $\pm$ 11.78}   \\
+         Llama-3.1-8B {\small lr=1.0}  & 1286.4 {\small $\pm$ 524.8} & 3381 {\small $\pm$ 1521} & 29061 {\small $\pm$ 4605} & 186.6 {\small $\pm$ 13.59} \\
+         \midrule
+         pythia-1.4b                   & 188.2 {\small $\pm$ 27.8}   & 581 {\small $\pm$ 101}   & 83 {\small $\pm$ 14}      & 15.7 {\small $\pm$ 1.85}   \\
+         pythia-1.4b {\small lr=0.1}   & 274.3 {\small $\pm$ 56.2}   & 846 {\small $\pm$ 106}   & 956 {\small $\pm$ 123}    & 23.2 {\small $\pm$ 1.99}   \\
+         pythia-1.4b {\small lr=0.5}   & 543.8 {\small $\pm$ 56.8}   & 1694 {\small $\pm$ 125}  & 6730 {\small $\pm$ 390}   & 49 {\small $\pm$ 3.32}     \\
+         pythia-1.4b {\small lr=1.0}   & 558.2 {\small $\pm$ 74.1}   & 1737 {\small $\pm$ 158}  & 11381 {\small $\pm$ 993}  & 63.3 {\small $\pm$ 6.21}   \\
+         \midrule
+         SmolLM2-1.7B {\small lr=0.1}  & 370.2 {\small $\pm$ 113.1}  & 1119 {\small $\pm$ 350}  & 1027 {\small $\pm$ 167}   & 29.2 {\small $\pm$ 2.93}   \\
+         SmolLM2-1.7B {\small lr=0.5}  & 540.5 {\small $\pm$ 139.4}  & 1450 {\small $\pm$ 350}  & 5225 {\small $\pm$ 827}   & 66.8 {\small $\pm$ 9.14}   \\
+         SmolLM2-1.7B {\small lr=1.0}  & 502.5 {\small $\pm$ 180.6}  & 1428 {\small $\pm$ 473}  & 9442 {\small $\pm$ 1810}  & 83 {\small $\pm$ 16.34}    \\
+         gemma-3-4b-pt {\small lr=0.1} & 286.5 {\small $\pm$ 164.6}  & 949 {\small $\pm$ 466}   & 1044 {\small $\pm$ 328}   & 31.8 {\small $\pm$ 9.21}   \\
+         \midrule
+         gemma-3-4b-pt {\small lr=0.5} & 498.6 {\small $\pm$ 86.5}   & 1437 {\small $\pm$ 308}  & 6055 {\small $\pm$ 925}   & 71.6 {\small $\pm$ 11.34}  \\
+         gemma-3-4b-pt {\small lr=1.0} & 558 {\small $\pm$ 86.1}     & 1258 {\small $\pm$ 511}  & 12173 {\small $\pm$ 1004} & 101.6 {\small $\pm$ 10.66} \\
+        \hline
+    \end{tabular}
+
+\end{table*}
 
 
 \section{Full cramming vs progressive.}
@@ -663,6 +697,7 @@ which we feel must be specifically highlighted here.
 In Table~\ref{tab:full_vs_progressive_appendix} we present results from section~\ref{sec:experiments} for full and compressive cramming comparison for different model sizes of Llama and Pythia families.
 
 \begin{table}
+    \centering
     \caption{Full vs. progressive cramming on PG19. ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}
     \label{tab:full_vs_progressive_appendix}
 
@@ -827,6 +862,7 @@ Compared to cramming, prefix tuning typically attracts less attention mass than 
 \section{Full activation alignment experiments}
 
 \begin{table*}
+    \centering
     \caption{Full sweep of activation alignment and low-dimensional projection hyperparameters. ``$\alpha$'' is alignment strength, ``$L$'' is the number of aligned layers, and ``dim'' is projection dimension.}\label{tab:full_activation_alignment_and_low_dim_projections}
 
     \begin{tabular}{lllll}
