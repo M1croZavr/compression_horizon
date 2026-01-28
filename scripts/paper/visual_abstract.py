@@ -188,10 +188,10 @@ def main() -> None:
         colors = cmap(np.linspace(0.05, 0.95, num=len(anchor_sel)))
 
     # Near-ideal regions for each anchor (accuracy > threshold) as continuous overlays.
-    # Within the region, apply a color/opacity gradient based on accuracy.
+    # Use a lightness-to-white gradient inside the region (clean colors, no opacity gradient).
     # Draw first (beneath trajectory + anchors).
     thr = float(args.threshold)
-    max_region_alpha = 0.8
+    max_region_alpha = 0.6
     cell_area = _estimate_cell_area(grid_x, grid_y)
     near_perfect_area_by_anchor: Dict[int, float] = {}
     for k, (aidx, color) in enumerate(zip(anchor_sel.tolist(), colors)):
@@ -200,11 +200,14 @@ def main() -> None:
         near_perfect_area_by_anchor[int(aidx)] = float(mask.sum()) * cell_area if cell_area > 0 else float(mask.sum())
         if not np.any(mask):
             continue
-        scale = _scale_from_accuracy(acc_map, threshold=thr)
-        alpha_grid = (max_region_alpha * scale * mask.astype(np.float32)).astype(np.float32)
+        # Constant opacity (no opacity gradient).
+        alpha_grid = (max_region_alpha * mask.astype(np.float32)).astype(np.float32)
 
-        # Color gradient: keep anchor hue, increase brightness with accuracy.
-        rgb = np.clip(color[:3] * (0.35 + 0.65 * scale[..., None]), 0.0, 1.0).astype(np.float32)
+        # Color gradient (towards white): at threshold -> anchor color, at acc=1 -> white.
+        scale = _scale_from_accuracy(acc_map, threshold=thr).astype(np.float32)
+        anchor_rgb = np.array(color[:3], dtype=np.float32)
+        rgb = anchor_rgb[None, None, :] * (1.0 - scale[..., None]) + 1.0 * scale[..., None]
+        rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32)
         rgba_img = np.zeros((acc_map.shape[0], acc_map.shape[1], 4), dtype=np.float32)
         rgba_img[:, :, :3] = rgb
         rgba_img[:, :, 3] = alpha_grid
@@ -218,7 +221,7 @@ def main() -> None:
                 float(grid_y.min()),
                 float(grid_y.max()),
             ],
-            interpolation="bilinear",
+            interpolation="nearest",
             zorder=1 + 0.001 * float(k),
         )
 
