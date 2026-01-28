@@ -481,6 +481,8 @@ Table~\ref{tab:attn_hijacking} shows that attention hijacking is highly model-de
 SmolLM2 exhibits strong correlation between BOS and \texttt{[mem]} attention profiles, while Pythia often assigns comparable or even higher average attention mass to \texttt{[mem]} than to BOS.
 In contrast, Llama and Gemma show much lower \texttt{[mem]} attention mass than BOS on average and weak (or negative) correlation, suggesting that hijacking concentrates in specific layers rather than uniformly matching the BOS pattern.
 
+To further investigate weather BOS token makes cramming harder, we compare progressive cramming with and without BOS token in Table~\ref{tab:progressive_no_bos_token}.
+Removing BOS token had no significant effect on the compressed token count and information gain.
 
 {\color{red} TODO move this table to appendix? }
 
@@ -510,6 +512,26 @@ In contrast, Llama and Gemma show much lower \texttt{[mem]} attention mass than 
 
 \end{table*}
 
+
+\begin{table*}[]
+    \centering
+    \caption{Progressive cramming without BOS token.}
+    \label{tab:progressive_no_bos_token}
+
+    \begin{tabular}{lllll}
+        \hline
+         Model                               & Compressed Tokens          & Information Gain        & Trajectory Length       & PCA 99\%                  \\
+        \hline
+         pythia-1.4b {\small lr=0.5}         & 543.8 {\small $\pm$ 56.8}  & 1694 {\small $\pm$ 125} & 6730 {\small $\pm$ 390} & 49 {\small $\pm$ 3.32}   \\
+         pythia-1.4b NoBOS {\small lr=0.5}   & 541 {\small $\pm$ 67.9}    & 1687 {\small $\pm$ 121} & 6762 {\small $\pm$ 616} & 49 {\small $\pm$ 3.63}   \\
+         SmolLM2-1.7B {\small lr=0.1}        & 370.2 {\small $\pm$ 113.1} & 1119 {\small $\pm$ 350} & 1027 {\small $\pm$ 167} & 29.2 {\small $\pm$ 2.93} \\
+         SmolLM2-1.7B NoBOS {\small lr=0.1}  & 360.8 {\small $\pm$ 105.1} & 1106 {\small $\pm$ 328} & 1019 {\small $\pm$ 162} & 29.2 {\small $\pm$ 2.71} \\
+         gemma-3-4b-pt {\small lr=0.1}       & 286.5 {\small $\pm$ 164.6} & 949 {\small $\pm$ 466}  & 1044 {\small $\pm$ 328} & 31.8 {\small $\pm$ 9.21} \\
+         gemma-3-4b-pt NoBOS {\small lr=0.1} & 207.2 {\small $\pm$ 85.8}  & 1196 {\small $\pm$ 445} & 969 {\small $\pm$ 203}  & 31.7 {\small $\pm$ 6.93} \\
+        \hline
+    \end{tabular}
+
+\end{table*}
 
 
 \subsection{Downstream Evaluation}
