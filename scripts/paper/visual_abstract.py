@@ -203,10 +203,26 @@ def main() -> None:
         # Constant opacity (no opacity gradient).
         alpha_grid = (max_region_alpha * mask.astype(np.float32)).astype(np.float32)
 
-        # Color gradient (towards white): at threshold -> anchor color, at acc=1 -> white.
-        scale = _scale_from_accuracy(acc_map, threshold=thr).astype(np.float32)
+        # Color gradient (towards white) by distance from region center:
+        # farther from the anchor point in PC space -> whiter.
+        center_x = float(anchor_xy_all[int(aidx), 0])
+        center_y = float(anchor_xy_all[int(aidx), 1])
+        dist = np.sqrt((grid_x - center_x) ** 2 + (grid_y - center_y) ** 2).astype(np.float32)
+        dist_in = dist[mask]
+        if dist_in.size > 0:
+            d_min = float(np.min(dist_in))
+            d_max = float(np.max(dist_in))
+        else:
+            d_min = 0.0
+            d_max = 0.0
+        if d_max > d_min:
+            whiten = (dist - d_min) / (d_max - d_min + 1e-12)
+        else:
+            whiten = np.zeros_like(dist, dtype=np.float32)
+        whiten = np.clip(whiten, 0.0, 1.0) * mask.astype(np.float32)
+
         anchor_rgb = np.array(color[:3], dtype=np.float32)
-        rgb = anchor_rgb[None, None, :] * (1.0 - scale[..., None]) + 1.0 * scale[..., None]
+        rgb = anchor_rgb[None, None, :] * (1.0 - whiten[..., None]) + 1.0 * whiten[..., None]
         rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32)
         rgba_img = np.zeros((acc_map.shape[0], acc_map.shape[1], 4), dtype=np.float32)
         rgba_img[:, :, :3] = rgb
