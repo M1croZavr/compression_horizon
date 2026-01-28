@@ -66,6 +66,7 @@ def infer_checkpoint_label(dataset_path: str) -> str:
 
     label = label.replace("_lr_", " lr=")
     label = label.replace("Meta-", "")
+    label = label.replace("Llama-3.1-8B ", "")
 
     return label
 
@@ -149,7 +150,7 @@ def plot_pca_components_vs_sequence_length_multi(
         print("No valid data points for aggregate PCA components vs sequence length")
         return
 
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(10, 6))
     fint_size = 25
     matplotlib.rcParams.update({"font.size": fint_size})
 
@@ -180,7 +181,7 @@ def plot_pca_components_vs_sequence_length_multi(
         )
 
     plt.xlabel("Sequence Length")
-    plt.ylabel("PCA Components Explaining 99% Variance")
+    plt.ylabel("PCA Components")
     # plt.title(" vs Sequence Length (All Samples)", fontsize=16)
     plt.grid(True, alpha=0.3)
     plt.legend(loc="best")
@@ -189,6 +190,10 @@ def plot_pca_components_vs_sequence_length_multi(
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
     print(f"plot_pca_components_vs_sequence_length_multi: {outfile}")
+    outfile_png = outfile.replace(".pdf", ".png")
+    plt.savefig(outfile_png, dpi=150)
+    print(f"plot_pca_components_vs_sequence_length_multi: {outfile_png}")
+
     plt.close()
 
 
@@ -432,7 +437,7 @@ def plot_pca_reconstruction_accuracy(
         plt.scatter([n_comp] * len(accs), accs, alpha=0.2, s=20, color="blue", zorder=0)
 
     plt.xlabel("Number of PCA Components", fontsize=14)
-    plt.ylabel("Reconstruction Accuracy (Token Prediction)", fontsize=14)
+    plt.ylabel("Accuracy (teacher-forcing)", fontsize=14)
     plt.title(title, fontsize=16)
     plt.grid(True, alpha=0.3)
     plt.legend(loc="best", fontsize=11)
