@@ -8,10 +8,7 @@ import numpy as np
 
 matplotlib.use("Agg")
 
-try:
-    import seaborn as sns
-except Exception:  # pragma: no cover
-    sns = None
+import seaborn as sns
 
 
 def _load_npz(npz_path: str) -> Dict[str, Any]:
@@ -34,9 +31,11 @@ def _ensure_2d(a: np.ndarray) -> np.ndarray:
     return a
 
 
-def _alpha_from_accuracy(acc: np.ndarray) -> np.ndarray:
-    # Per request: alpha=1.0 for acc=1.0, alpha=0 for acc=0.9 (and clip outside).
-    return np.clip((acc - 0.9) / 0.1, 0.0, 1.0)
+def _scale_from_accuracy(acc: np.ndarray, threshold: float) -> np.ndarray:
+    """Map accuracy to [0,1] scale starting at threshold."""
+    thr = float(threshold)
+    denom = max(1.0 - thr, 1e-12)
+    return np.clip((acc - thr) / denom, 0.0, 1.0)
 
 
 def _estimate_cell_area(grid_x: np.ndarray, grid_y: np.ndarray) -> float:
@@ -180,7 +179,7 @@ def main() -> None:
     # Anchor colors (gradient)
     if sns is not None:
         # Use a pleasant scientific-looking palette.
-        colors = np.array(sns.color_palette("viridis", n_colors=max(int(len(anchor_sel)), 1)))
+        colors = np.array(sns.color_palette("rocket_r", n_colors=max(int(len(anchor_sel)), 1)))
         # Ensure RGBA for later use
         if colors.shape[1] == 3:
             colors = np.concatenate([colors, np.ones((colors.shape[0], 1), dtype=colors.dtype)], axis=1)
@@ -188,9 +187,11 @@ def main() -> None:
         cmap = plt.get_cmap("viridis")
         colors = cmap(np.linspace(0.05, 0.95, num=len(anchor_sel)))
 
-    # Near-ideal regions for each anchor (accuracy > threshold) as continuous overlays
+    # Near-ideal regions for each anchor (accuracy > threshold) as continuous overlays.
+    # Within the region, apply a color/opacity gradient based on accuracy.
     # Draw first (beneath trajectory + anchors).
     thr = float(args.threshold)
+    max_region_alpha = 0.8
     cell_area = _estimate_cell_area(grid_x, grid_y)
     near_perfect_area_by_anchor: Dict[int, float] = {}
     for k, (aidx, color) in enumerate(zip(anchor_sel.tolist(), colors)):
@@ -199,9 +200,13 @@ def main() -> None:
         near_perfect_area_by_anchor[int(aidx)] = float(mask.sum()) * cell_area if cell_area > 0 else float(mask.sum())
         if not np.any(mask):
             continue
-        alpha_grid = _alpha_from_accuracy(acc_map) * mask.astype(np.float32)
+        scale = _scale_from_accuracy(acc_map, threshold=thr)
+        alpha_grid = (max_region_alpha * scale * mask.astype(np.float32)).astype(np.float32)
+
+        # Color gradient: keep anchor hue, increase brightness with accuracy.
+        rgb = np.clip(color[:3] * (0.35 + 0.65 * scale[..., None]), 0.0, 1.0).astype(np.float32)
         rgba_img = np.zeros((acc_map.shape[0], acc_map.shape[1], 4), dtype=np.float32)
-        rgba_img[:, :, :3] = color[:3]
+        rgba_img[:, :, :3] = rgb
         rgba_img[:, :, 3] = alpha_grid
 
         ax.imshow(
@@ -221,21 +226,39 @@ def main() -> None:
     ax.scatter(
         coords_xy[:, 0],
         coords_xy[:, 1],
-        s=20,
+        s=40,
         c="black",
         alpha=float(args.scatter_alpha),
         linewidths=0,
         zorder=2,
     )
 
-    # Anchor markers + labels (on top)
+    # Anchor markers + labels (on top). Size is proportional to near-ideal area.
+    areas = np.array([float(near_perfect_area_by_anchor.get(int(anchor_sel[k]), 0.0)) for k in range(len(anchor_sel))])
+    if areas.size > 0 and np.isfinite(areas).any():
+        a_min = float(np.nanmin(areas))
+        a_max = float(np.nanmax(areas))
+    else:
+        a_min = 0.0
+        a_max = 0.0
+
+    def _size_from_area(area: float) -> float:
+        # Map area to marker size range for readability.
+        # Use sqrt scaling to compress dynamic range.
+        if not np.isfinite(area) or area <= 0 or a_max <= a_min:
+            return 110.0
+        t = (float(area) - a_min) / (a_max - a_min + 1e-12)
+        t = float(np.clip(t, 0.0, 1.0))
+        return 90.0 + 260.0 * (t**0.5)
+
     for k, ((x, y), idx, color) in enumerate(zip(anchor_xy, anchor_indices.tolist(), colors)):
         aidx = int(anchor_sel[k])
         area = float(near_perfect_area_by_anchor.get(aidx, 0.0))
+        size = _size_from_area(area)
         ax.scatter(
             [x],
             [y],
-            s=140,
+            s=size,
             c=[color],
             edgecolors="black",
             linewidths=0.8,
@@ -244,7 +267,7 @@ def main() -> None:
         ax.text(
             float(x),
             float(y),
-            f"{idx}\nA={area:.2f}",
+            f"{idx}",
             fontsize=20,
             ha="left",
             va="bottom",
