@@ -503,7 +503,7 @@ And considered experiments with removed BOS token. We compare progressive crammi
 Removing BOS token had no significant effect on the compressed token count and information gain.
 
 
-{\color{red} TODO move this table to appendix? }
+% {\color{red} TODO move this table to appendix? }
 
 \begin{table*}[]
     \centering
@@ -539,14 +539,16 @@ Removing BOS token had no significant effect on the compressed token count and i
 
     \begin{tabular}{lll}
         \hline
-         Model                                     & Cram Tokens            & Info Gain              \\
+         Model                                     & Cram Tokens             & Info Gain                \\
         \hline
-         pythia-1.4b {\small lr=0.5}               & 544 {\small $\pm$ 57}  & 1694 {\small $\pm$ 125} \\
-         pythia-1.4b \bcancel{B} {\small lr=0.5}   & 541 {\small $\pm$ 68}  & 1687 {\small $\pm$ 121} \\
-         SmolLM2-1.7B {\small lr=0.1}              & 370 {\small $\pm$ 113} & 1119 {\small $\pm$ 350} \\
-         SmolLM2-1.7B \bcancel{B} {\small lr=0.1}  & 361 {\small $\pm$ 105} & 1106 {\small $\pm$ 328} \\
-         gemma-3-4b-pt {\small lr=0.1}             & 286 {\small $\pm$ 165} & 949 {\small $\pm$ 466}  \\
-         gemma-3-4b-pt \bcancel{B} {\small lr=0.1} & 207 {\small $\pm$ 86}  & 1196 {\small $\pm$ 445} \\
+         Llama-3.1-8B {\small lr=0.1}              & 1064 {\small $\pm$ 394} & 3028 {\small $\pm$ 1321} \\
+         Llama-3.1-8B \bcancel{B} {\small lr=0.1}  & 1412 {\small $\pm$ 320} & 4473 {\small $\pm$ 1035} \\
+         pythia-1.4b {\small lr=0.5}               & 544 {\small $\pm$ 57}   & 1694 {\small $\pm$ 125}  \\
+         pythia-1.4b \bcancel{B} {\small lr=0.5}   & 541 {\small $\pm$ 68}   & 1687 {\small $\pm$ 121}  \\
+         SmolLM2-1.7B {\small lr=0.1}              & 370 {\small $\pm$ 113}  & 1119 {\small $\pm$ 350}  \\
+         SmolLM2-1.7B \bcancel{B} {\small lr=0.1}  & 361 {\small $\pm$ 105}  & 1106 {\small $\pm$ 328}  \\
+         gemma-3-4b-pt {\small lr=0.1}             & 286 {\small $\pm$ 165}  & 949 {\small $\pm$ 466}   \\
+         gemma-3-4b-pt \bcancel{B} {\small lr=0.1} & 207 {\small $\pm$ 86}   & 1196 {\small $\pm$ 445}  \\
         \hline
     \end{tabular}
 
@@ -613,9 +615,6 @@ Perfect reconstruction accuracy is insufficient; future work must evaluate capab
 
 \subsection{Limitations}
 
-{\color{red} TODO what if we remove bos token? will it be easier  to compress? Add Llama Results last exp to tab:progressive\_no\_bos\_token}
-
-% {\color{red} how no bos token affects semantic evaluation?} - done
 
 % {\color{red} how much bos token is similar to bos token?}  -- won't fix
 

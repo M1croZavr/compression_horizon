@@ -282,10 +282,10 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
 
 # NO BOS token
 # tab:progressive_no_bos_token
-    # artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.1/progressive_prefixes \
-    # artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_nobos_lr_0.1/progressive_prefixes \
 PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --checkpoints \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_lr_0.1/progressive_prefixes \
+    artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_nobos_lr_0.1/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_lr_0.5/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_pythia-1.4b_nobos_lr_0.5/progressive_prefixes \
     artifacts/experiments_progressive/sl_4096_SmolLM2-1.7B_lr_0.1/progressive_prefixes \
