@@ -82,6 +82,18 @@ def main() -> None:
         default=0.9,
         help='Accuracy threshold for "near-ideal" region (default: 0.9)',
     )
+    parser.add_argument(
+        "--zoom_in_start_point",
+        type=int,
+        default=0,
+        help="If >0, zoom-in view: show trajectory/anchors starting from this trajectory index (0-based).",
+    )
+    parser.add_argument(
+        "--zoom_in_padding",
+        type=float,
+        default=0.08,
+        help="Padding fraction added around the zoomed bounding box.",
+    )
     parser.add_argument("--dpi", type=int, default=250, help="Figure DPI")
     args = parser.parse_args()
 
@@ -146,6 +158,17 @@ def main() -> None:
 
     anchor_xy = anchor_xy_all[anchor_sel]
     anchor_indices = sampled_indices[anchor_sel]
+
+    zoom_start = int(args.zoom_in_start_point)
+    if zoom_start < 0 or zoom_start >= coords_xy.shape[0]:
+        raise ValueError(f"--zoom_in_start_point out of range: {zoom_start} (valid: 0..{coords_xy.shape[0]-1})")
+
+    # Filter anchors by zoom start (keep only anchors whose trajectory index is >= zoom_start).
+    if zoom_start > 0 and anchor_indices.size > 0:
+        keep = anchor_indices >= zoom_start
+        anchor_sel = anchor_sel[keep]
+        anchor_xy = anchor_xy[keep]
+        anchor_indices = anchor_indices[keep]
 
     # Accuracy surface extraction for PC1-PC2:
     # - new format: accuracy has shape [num_frames,num_pairs,H,W]
@@ -240,9 +263,10 @@ def main() -> None:
         )
 
     # Background trajectory scatter (draw above regions)
+    coords_xy_plot = coords_xy[zoom_start:]
     ax.scatter(
-        coords_xy[:, 0],
-        coords_xy[:, 1],
+        coords_xy_plot[:, 0],
+        coords_xy_plot[:, 1],
         s=40,
         c="black",
         alpha=float(args.scatter_alpha),
@@ -291,6 +315,37 @@ def main() -> None:
             color="black",
             zorder=6,
         )
+
+    # Zoom-in limits (based on shown trajectory, shown anchors, and their grid extents).
+    x_mins: list[float] = [float(np.min(coords_xy_plot[:, 0]))]
+    x_maxs: list[float] = [float(np.max(coords_xy_plot[:, 0]))]
+    y_mins: list[float] = [float(np.min(coords_xy_plot[:, 1]))]
+    y_maxs: list[float] = [float(np.max(coords_xy_plot[:, 1]))]
+    if anchor_xy.size > 0:
+        x_mins.append(float(np.min(anchor_xy[:, 0])))
+        x_maxs.append(float(np.max(anchor_xy[:, 0])))
+        y_mins.append(float(np.min(anchor_xy[:, 1])))
+        y_maxs.append(float(np.max(anchor_xy[:, 1])))
+        for aidx in anchor_sel.tolist():
+            acc_map = acc_per_anchor[int(aidx)]
+            mask = acc_map > thr
+            if not np.any(mask):
+                continue
+            gx = grid_x_all[int(aidx), pair_idx]
+            gy = grid_y_all[int(aidx), pair_idx]
+            x_mins.append(float(gx[mask].min()))
+            x_maxs.append(float(gx[mask].max()))
+            y_mins.append(float(gy[mask].min()))
+            y_maxs.append(float(gy[mask].max()))
+    x_min = float(np.min(x_mins))
+    x_max = float(np.max(x_maxs))
+    y_min = float(np.min(y_mins))
+    y_max = float(np.max(y_maxs))
+    pad = float(args.zoom_in_padding)
+    dx = x_max - x_min
+    dy = y_max - y_min
+    ax.set_xlim(x_min - pad * dx, x_max + pad * dx)
+    ax.set_ylim(y_min - pad * dy, y_max + pad * dy)
 
     fig_title = f"Visual abstract: PC1-PC2 accuracy regions (>{thr:.2f}), cumulative={ev_cum_2:.3f}"
     print(fig_title)
