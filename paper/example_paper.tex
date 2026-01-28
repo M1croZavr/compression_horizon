@@ -417,11 +417,13 @@ Let $H_{LM}$ be the sum of per-token cross-entropies for the original token sequ
 We evaluate progressive cramming on PG19 \cite{Rae2020CompressiveTransformerPG19} across four model families: Pythia \cite{biderman2023pythia}, Llama~3 \cite{dubey2024llama3}, SmolLM2 \cite{allal2025smollm2}, and Gemma~3 \cite{gemma3}.
 
 Table~\ref{tab:full_vs_progressive} compares progressive cramming (targeting 100\% reconstruction) to ``full'' cramming baselines that use fixed token budgets and may terminate below perfect accuracy.
-Because autoregressive decoding is brittle to early errors (Section~\ref{sec:prior_limitations}), this comparison should be interpreted primarily through the lens of \emph{perfect} reconstruction: progressive cramming trades a fixed-budget constraint for a fixed-accuracy constraint. Despite current table shows  progressive cramming in current setup underperforms full cramming in terms of both information gain and compressed tokens, in section~\ref{sec:activation_alignment} we will show that with some regularizations progressive cramming may lead to comparable results with full cramming achieving $5103 \pm 748$ information gain - that is comparable and even sightly better than information gain $4865.7\pm546.6$ reported in original cramming paper by \citet{kuratov2025cramming}.
+Because autoregressive decoding is brittle to early errors (Section~\ref{sec:prior_limitations}), we interpret this comparison primarily through the lens of \emph{perfect} reconstruction: progressive cramming trades a fixed-budget constraint for a fixed-accuracy constraint.
+In the default setting, progressive cramming underperforms full cramming in both information gain and reconstructed length.
+However, adding regularization via activation alignment and low-dimensional projection (Section~\ref{sec:activation_alignment_exp}) can recover capacity; for Llama-3.1-8B we reach $5103 \pm 748$ bits of information gain, comparable to $4865.7 \pm 546.6$ reported by \citet{kuratov2025cramming}.
 
 \begin{table}[]
     \centering
-    \caption{Full vs. progressive cramming on PG19. ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}
+    \caption{Full vs. progressive cramming on PG19 (mean $\pm$ std over samples). ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}
     \label{tab:full_vs_progressive}
 
     \begin{tabular}{llll}
@@ -443,7 +445,7 @@ Because autoregressive decoding is brittle to early errors (Section~\ref{sec:pri
 
 \begin{table*}[]
     \centering
-    \caption{Progressive cramming variants and key metrics across model families. For each family we report: baseline progressive cramming, low-dimensional projection only (``dim''), activation alignment only ($\\alpha$, $L$), and their combination.}
+    \caption{Progressive cramming variants and key metrics across model families. For each family we report baseline progressive cramming, low-dimensional projection only (``dim''), activation alignment only ($\alpha$, $L$), and their combination.}
     \label{tab:all_progressive_modifications}
 
     \begin{tabular}{lllll}
@@ -480,15 +482,13 @@ Because autoregressive decoding is brittle to early errors (Section~\ref{sec:pri
 
 Progressive cramming enables tracking the optimization path through embedding space.
 We record the sequence of optimized embeddings $\{\mathbf{e}^{(k)}\}_{k=1}^{n}$ and analyze its geometry.
-Across model families, the trajectories are well-approximated by surprisingly low-dimensional structure: only a modest number of principal components explains 99\% of the trajectory variance, even when hundreds (or thousands) of tokens are reconstructed (Table~\ref{tab:all_progressive_modifications}). Table~\ref{tab:all_progressive_modifications} further suggests that Gemma~3 achieves noticeably lower information gain at smaller reconstructed lengths than Llama and Pythia, consistent with additional optimization constraints such as logits softcapping \cite{gemma2}.
+Across model families, trajectories are well-approximated by low-dimensional structure: a modest number of principal components explains 99\% of the trajectory variance, even when hundreds (or thousands) of tokens are reconstructed (Table~\ref{tab:all_progressive_modifications}).
+Notably, Gemma~3 achieves lower information gain at shorter reconstructed lengths than Llama and Pythia, consistent with stronger architectural or training-time constraints (e.g., logits softcapping \cite{gemma2}), though we do not isolate the causal mechanism here.
 
+Figure~\ref{fig:visual_abstract_optimization_trajectory_with_good_accuracy} visualizes a single trajectory projected onto the first two principal components.
+As the reconstructed prefix grows, the region of embeddings that attains near-perfect teacher-forced reconstruction contracts, suggesting that the optimization landscape becomes increasingly constrained at longer lengths.
 
-{\color{red} todo develop this statement about gemma and softcapping?}
-
-We visualized one trajectory for progressive cramming on two PCA components at Figure~\ref{fig:visual_abstract_optimization_trajectory_with_good_accuracy}. Colors encodes 90\%+ accuracy reconstruction (with teacher-forcing) area for corresponding points. On the figure we may see that token index increases, area of high-accuracy reconstruction decreases. And its harder and harder to find suitable directions when sequence length increases.
-
-
-Figure~\ref{fig:pca_from_seq_length} shows that, for Llama-3.1-8B, the number of components required for 99\% variance grows sublinearly with prefix length and is consistent with a slow (approximately logarithmic) trend across learning rates.
+Figure~\ref{fig:pca_from_seq_length} shows that for Llama-3.1-8B, the number of components required to explain 99\% variance grows sublinearly with prefix length and follows a slow (approximately logarithmic) trend across learning rates.
 
 
 \begin{figure}[t]
@@ -508,7 +508,7 @@ Figure~\ref{fig:pca_from_seq_length} shows that, for Llama-3.1-8B, the number of
 \end{figure}
 
 
-\subsection{Lowdim Projection}
+\subsection{Low-Dimensional Projection}
 
 Low-dimensional projection (Section~\ref{sec:lowdim}) changes the optimization geometry by restricting the learned embedding to an affine rank-$k$ subspace.
 Empirically, this can improve stability and alter the effective capacity:
@@ -530,22 +530,22 @@ Two takeaways stand out:
 
 We evaluate reconstruction accuracy when progressive embeddings are reconstructed from PCA components.
 Figure~\ref{fig:pca_reconstruction_accuracy} reports accuracy as a function of the number of components.
-Despite table~\ref{tab:all_progressive_modifications} shows that for Llama-3.1-8B about 74 PCA components explains 99\% of variance, we may see that it takes at least twice more components to achieve near-perfect accuracy with teacher-forcing.
+Although Table~\ref{tab:all_progressive_modifications} suggests that for Llama-3.1-8B roughly 74 PCA components explain 99\% of trajectory variance, achieving near-perfect teacher-forced reconstruction requires substantially more components.
 We also observe the same failure mode as in the full cramming setup (Section~\ref{sec:prior_limitations}):
-errors occur at the start of the sequence, which breaks further decoding from the reconstructed embedding, and many errors appear in the first decoded token. This only happens if reconstruction accuracy is lower than 100\%. For perfect reconstruction there is no such problem.
-
-% {\color{red} TODO update plot and description}
+errors cluster at the start of the sequence (often at the first decoded token), which then propagates and breaks subsequent autoregressive decoding.
+This behavior appears whenever reconstruction accuracy is below 100\%; with perfect reconstruction, this failure mode disappears.
 
 \begin{figure}[t]
     \centering
     \centerline{\includegraphics[width=\columnwidth]{aggregate_pca_reconstruction_accuracy.pdf}}
-    \caption{Reconstruction accuracy for different numbers of PCA components for Llama-3.1-8B.}
+    \caption{Teacher-forced reconstruction accuracy for PCA-reconstructed compression embeddings vs. number of PCA components (Llama-3.1-8B).}
     \label{fig:pca_reconstruction_accuracy}
 \end{figure}
 
-\subsection{Activation Alignment}\label{sec:activation_alignment}
+\subsection{Activation Alignment}
+\label{sec:activation_alignment_exp}
 
-Table~\ref{tab:all_progressive_modifications} studies activation alignment (Section~\ref{sec:activation_alignment}) and its interaction with low-dimensional projection.
+Table~\ref{tab:all_progressive_modifications} studies activation alignment (defined in Section~\ref{sec:activation_alignment}) and its interaction with low-dimensional projection.
 Alignment acts as a regularizer: it can significantly reduce trajectory length and PCA 99\% (indicating smoother, more constrained optimization), but it may trade off against raw cramming capacity depending on the model family.
 In particular, for Llama-3.1-8B, alignment increases information gain and token count relative to the baseline, whereas for SmolLM2-1.7B and Pythia-1.4B alignment alone reduces capacity but can be combined with projection to recover part of the loss.
 Across settings, we observe that alignment qualitatively changes attention behavior, often pushing attention hijacking effects toward deeper layers.
@@ -558,16 +558,15 @@ We analyze attention patterns to understand how compression embeddings achieve r
 We measure attention mass using the definition in Section~\ref{sec:attention_mass}, comparing attention to position 0 in the crammed setting (compression embedding) to attention to the BOS token in the uncompressed baseline.
 
 Table~\ref{tab:attn_hijacking} shows that attention hijacking is highly model-dependent when aggregated over layers.
-SmolLM2 and Pythia exhibits strong correlation between BOS and compression-embedding attention profiles: the compression embedding takes more attention mass on the same layers as the BOS token does. Pythia often assigns comparable or even higher average attention mass to the compression embedding than to BOS. This may mean than the compression embedding works similarly to the BOS token: it works like attention sink, but rather helping model, its hardly overrides generation and breaks language modeling abilities (Section~\ref{sec:semantic_evaluation}) - thats why we called this attention pattern hijacking: it breaks model.
+SmolLM2 and Pythia exhibit strong correlation between the layer-wise attention-mass profiles for the BOS token and the compression embedding.
+In these families, the compression embedding attracts substantial attention mass in the same layers where BOS is an attention sink; in Pythia it can match or exceed BOS attention on average.
+This suggests that the compression embedding may function as an attention sink, but one that can override the model's normal computation and degrade downstream behavior (Section~\ref{sec:semantic_evaluation}).
 
 In contrast, Llama and Gemma show much lower compression-embedding attention mass than BOS on average and weak (or negative) correlation, suggesting that hijacking concentrates in specific layers rather than uniformly matching the BOS pattern.
 
-We next hypothesize that if the compression embedding and the BOS token are similar in phenomenon of attention sink it may be a problem to have in a sequence both a compression embedding and a BOS token due to possible conflict for the same characteristics for embeddings in hidden states.
-
-It also may be hard to force model to generate BOS token due to it never generates it during normal generation.
-
-And considered experiments with removed BOS token. We compare progressive cramming with and without BOS token in Table~\ref{tab:progressive_no_bos_token}.
-Removing BOS token improved crammed tokens count, information gain and reduced attention mass on compression embedding only for Llama-3.1-8B model. And it has no effect for all other models neither in terms of information gain, nor any effect on attention mass.
+Motivated by this similarity, we test whether including both a BOS token and a compression embedding in the prompt creates interference between two attention sinks.
+We therefore run ablations that remove the BOS token and recompute progressive cramming metrics (Table~\ref{tab:progressive_no_bos_token}).
+Removing BOS increases reconstructed length and information gain (and reduces compression-embedding attention mass) for Llama-3.1-8B, but has little effect on the other model families.
 
 \begin{table*}[]
     \centering
@@ -606,7 +605,7 @@ Removing BOS token improved crammed tokens count, information gain and reduced a
 
 \begin{table}[]
     \centering
-    \caption{Progressive cramming without BOS token.}
+    \caption{Progressive cramming with and without the BOS token. \bcancel{B} denotes runs where the BOS token is removed.}
     \label{tab:progressive_no_bos_token}
 
     \begin{tabular}{lll}
@@ -630,7 +629,7 @@ Removing BOS token improved crammed tokens count, information gain and reduced a
 \subsection{Downstream Evaluation}
 \label{sec:semantic_evaluation}
 
-If cramming encodes semantics, compressed prefixes should preserve model capabilities.
+If cramming preserves semantic information, conditioning on a compression embedding should preserve downstream capabilities that depend on the prefix.
 
 \paragraph{Setup.}
 We evaluate on HellaSwag and ARC under two conditions:
@@ -646,7 +645,7 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 \paragraph{Results.}
 \begin{table}[t]
     \centering
-    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized compression embedding. \bcancel{B} symbol stands for experiments with removed BOS token.}
+    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized compression embedding. \bcancel{B} denotes experiments with the BOS token removed.}
     \label{tab:semantic_evaluation}
 
 
