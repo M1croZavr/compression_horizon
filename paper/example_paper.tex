@@ -468,9 +468,10 @@ Reconstruction accuracy saturates quickly; 15 components already yield near-perf
 However, we observe the same failure mode as in the full cramming setup (Section~\ref{sec:prior_limitations}):
 errors occur at the start of the sequence, which breaks further decoding from the reconstructed embedding, and many errors appear in the first decoded token.
 
+% TODO maybe make image shorter in heigth?
 \begin{figure}[t]
     \centering
-    \centerline{\includegraphics[width=\columnwidth]{pca_reconstruction_accuracy.pdf}}
+    \centerline{\includegraphics[width=\columnwidth]{aggregate_pca_reconstruction_accuracy.pdf}}
     \caption{Reconstruction accuracy for different numbers of PCA components for Llama-3.1-8B.}
     \label{fig:pca_reconstruction_accuracy}
 \end{figure}
