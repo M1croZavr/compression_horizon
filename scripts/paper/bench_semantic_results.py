@@ -54,8 +54,12 @@ def load_metrics(results_file: str) -> Optional[RunMetrics]:
     compressed = data.get("compressed", {})
     arc_split = data.get("arc_split") or args.get("arc_split")
 
+    model_checkpoint = args.get("model_checkpoint")
+    if args.get("no_bos_token", False):
+        model_checkpoint = model_checkpoint + " NoBOS"
+
     return RunMetrics(
-        model_checkpoint=args.get("model_checkpoint"),
+        model_checkpoint=model_checkpoint,
         baseline_token_accuracy=baseline.get("token_normalized_accuracy"),
         compressed_token_accuracy=compressed.get("token_normalized_accuracy"),
         arc_split=arc_split,
@@ -114,11 +118,13 @@ def main() -> int:
     hs_results = []
     for results_file in discover_results(args.hs_dirs):
         metrics = load_metrics(results_file)
+        print("results_file", results_file, "metrics", metrics)
         if metrics is not None:
             hs_results.append(metrics)
 
     arc_results = []
     for results_file in discover_results(args.arc_dirs):
+        print("results_file", results_file, "metrics", metrics)
         metrics = load_metrics(results_file)
         if metrics is None:
             continue
@@ -141,9 +147,14 @@ def main() -> int:
     rows = []
     model_mapping = {
         "Meta-Llama-3.1-8B": "Llama-3.1-8B",
-        # "Meta-Llama-3.1-8B": "L-3.1-8B",
-        # "SmolLM2-1.7B": "SML2-1.7B",
+        "Meta-Llama-3.1-8B NoBOS": "Llama-3.1-8B NoBOS",
+        "SmolLM2-1.7B": "SLM2-1.7B",
+        "SmolLM2-1.7B NoBOS": "SLM2-1.7B NoBOS",
+        # # "Meta-Llama-3.1-8B": "L-3.1-8B",
         # "pythia-1.4b": "p-1.4b",
+        # "pythia-1.4b NoBOS": "p-1.4b NoBOS",
+        "gemma-3-4b-pt": "gemma-3-4b",
+        "gemma-3-4b-pt NoBOS": "gemma-3-4b NoBOS",
     }
 
     for model in all_models:
@@ -151,6 +162,7 @@ def main() -> int:
         arc_best = pick_best_run(arc_by_model.get(model, []))
         model_slug = model.split("/")[-1]
         model_slug = model_mapping.get(model_slug, model_slug)
+        model_slug = model_slug.replace(" NoBOS", " \\bcancel{B}")
         rows.append(
             [
                 "\\small " + model_slug,

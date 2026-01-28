@@ -8,6 +8,8 @@
 \usepackage{subcaption}
 \usepackage{booktabs} % for professional tables
 \usepackage[normalem]{ulem}
+\usepackage{amsmath}
+\usepackage[makeroom]{cancel}
 
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds, calc}
@@ -566,19 +568,23 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 \paragraph{Results.}
 \begin{table}[t]
     \centering
-    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized \texttt{[mem]} embedding.}
+    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized \texttt{[mem]} embedding. \bcancel{B} symbol stands for experiments with removed BOS token.}
     \label{tab:semantic_evaluation}
 
 
     \begin{tabular}{lllll}
         \hline
                            & \multicolumn{2}{c}{\textbf{HellaSwag}} & \multicolumn{2}{c}{\textbf{ARC-E}} \\
-         Model                & Base            & Cram            & Base            & Cram            \\
+         Model                           & Base            & Cram            & Base            & Cram            \\
         \hline
-         \small pythia-1.4b   & 43.06{\small \%} & 26.32{\small \%} & 45.95{\small \%} & 24.32{\small \%} \\
-         \small SmolLM2-1.7B  & 51.54{\small \%} & 23.17{\small \%} & 58.77{\small \%} & 30.69{\small \%} \\
-         \small Llama-3.1-8B  & 40.79{\small \%} & 23.24{\small \%} & 38.48{\small \%} & 27.87{\small \%} \\
-         \small gemma-3-4b-pt & 29.27{\small \%} & 26.18{\small \%} & 39.70{\small \%} & 24.29{\small \%} \\
+         \small Llama-3.1-8B             & 40.79{\small \%} & 23.24{\small \%} & 38.48{\small \%} & 27.87{\small \%} \\
+         \small Llama-3.1-8B \bcancel{B} & 38.84{\small \%} & 22.30{\small \%} & 37.69{\small \%} & 29.34{\small \%} \\
+         \small pythia-1.4b              & 43.06{\small \%} & 26.32{\small \%} & 45.95{\small \%} & 24.32{\small \%} \\
+         \small pythia-1.4b \bcancel{B}  & 43.06{\small \%} & 26.32{\small \%} & 45.95{\small \%} & 24.32{\small \%} \\
+         \small SLM2-1.7B                & 51.54{\small \%} & 23.17{\small \%} & 58.77{\small \%} & 30.69{\small \%} \\
+         \small SLM2-1.7B \bcancel{B}    & 51.54{\small \%} & 23.17{\small \%} & 58.77{\small \%} & 30.69{\small \%} \\
+         \small gemma-3-4b               & 29.27{\small \%} & 26.18{\small \%} & 39.70{\small \%} & 24.29{\small \%} \\
+         \small gemma-3-4b \bcancel{B}   & 28.84{\small \%} & 26.18{\small \%} & 34.62{\small \%} & 24.16{\small \%} \\
         \hline
     \end{tabular}
 
@@ -588,6 +594,8 @@ Table~\ref{tab:semantic_evaluation} shows that prepending the crammed \texttt{[m
 In most settings, performance collapses to (or below) the random-guessing baseline, indicating a failure mode stronger than ordinary degradation: \texttt{[mem]} breaks the model's ability to use the prefix to score candidate suffixes.
 This collapse is not explained by nominal cramming capacity (in tokens or information gain): even models that can reconstruct long prefixes fail to preserve downstream behavior.
 These results support the mechanistic picture suggested by attention analysis: cramming achieves reconstruction by overriding model computation rather than encoding a transferable semantic representation.
+
+We also hypotesized that removing BOS token will make cramming easier because we observed a lot of errors in decoding first token in sections\ref{sec:prior_limitations} and section\ref{sec:pca_reconstruction}.
 
 
 % =============================================================================
