@@ -483,7 +483,9 @@ However, adding regularization via activation alignment and low-dimensional proj
 Progressive cramming enables tracking the optimization path through embedding space.
 We record the sequence of optimized embeddings $\{\mathbf{e}^{(k)}\}_{k=1}^{n}$ and analyze its geometry.
 Across model families, trajectories are well-approximated by low-dimensional structure: a modest number of principal components explains 99\% of the trajectory variance, even when hundreds (or thousands) of tokens are reconstructed (Table~\ref{tab:all_progressive_modifications}).
-Notably, Gemma~3 achieves lower information gain at shorter reconstructed lengths than Llama and Pythia, consistent with stronger architectural or training-time constraints (e.g., logits softcapping \cite{gemma2}), though we do not isolate the causal mechanism here.
+
+Notably, Gemma~3 achieves lower information gain at shorter reconstructed lengths than Llama and Pythia, consistent with stronger architectural or training-time constraints (e.g., logits softcapping \cite{gemma2}).
+One plausible mechanism is that logit softcapping limits the model's ability to produce extremely peaked next-token distributions. Since cramming optimization implicitly pushes the model toward high-confidence, token-specific predictions over long horizons, bounding logit magnitudes can reduce the maximum separability between the correct token and close alternatives and can damp gradients in the high-confidence regime. Both effects may make it harder to reach perfect autoregressive reconstruction with a fixed optimization budget, yielding lower information gain and earlier saturation in reconstructed length.
 
 Figure~\ref{fig:visual_abstract_optimization_trajectory_with_good_accuracy} visualizes a single trajectory projected onto the first two principal components.
 As the reconstructed prefix grows, the region of embeddings that attains near-perfect teacher-forced reconstruction contracts, suggesting that the optimization landscape becomes increasingly constrained at longer lengths.
@@ -499,7 +501,6 @@ Figure~\ref{fig:pca_from_seq_length} shows that for Llama-3.1-8B, the number of 
 \end{figure}
 
 
-% TODO may be make image shorter in heigth?
 \begin{figure}[t]
     \centering
     \centerline{\includegraphics[width=\columnwidth]{aggregate_pca_components_vs_seq_len_Llama3.1-8B_all_lrs.pdf}}
@@ -688,6 +689,8 @@ These results support the mechanistic picture suggested by attention analysis: c
 {\color{red} my own optimizer that explores more dimensions? if we found bad local minima, we can explore more dimensions?}
 
 % TODO а сколько реально нужно компонент, чтобы достичь идеальной точности для генеративной реконструкции?
+
+% {\color{red} TODO - how and why exactly softcapping?}
 
 % {\color{red} TODO - shared subspaces?}
 
