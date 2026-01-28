@@ -113,12 +113,12 @@ def main() -> None:
         sns.set_theme(style="whitegrid")
     matplotlib.rcParams.update(
         {
-            "font.size": 30,  # default text
-            "axes.titlesize": 30,
-            "xtick.labelsize": 30,
-            "ytick.labelsize": 30,
-            "axes.labelsize": 30,
-            "legend.fontsize": 30,
+            "font.size": 35,  # default text
+            "axes.titlesize": 35,
+            "xtick.labelsize": 35,
+            "ytick.labelsize": 35,
+            "axes.labelsize": 35,
+            "legend.fontsize": 35,
         }
     )
 
@@ -344,7 +344,7 @@ def main() -> None:
                 float(x),
                 float(y),
                 f"{idx}",
-                fontsize=30,
+                fontsize=35,
                 ha="left",
                 va="bottom",
                 color="black",
@@ -390,7 +390,7 @@ def main() -> None:
 
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
-    ax.tick_params(axis="both", which="major", labelsize=25)
+    ax.tick_params(axis="both", which="major", labelsize=30)
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.15)
 
@@ -505,7 +505,7 @@ def main() -> None:
         for ax_i in axes:
             ax_i.set_xlabel("PC1")
             ax_i.set_ylabel("PC2")
-            ax_i.tick_params(axis="both", which="major", labelsize=25)
+            ax_i.tick_params(axis="both", which="major", labelsize=30)
             ax_i.set_aspect("equal", adjustable="box")
             ax_i.grid(True, alpha=0.15)
 
