@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import imageio
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
@@ -942,6 +943,15 @@ def plot_pca_reconstruction_accuracy(
     if len(rows) == 0:
         return
 
+    font_size = 25
+    matplotlib.rcParams.update(
+        {
+            "font.size": font_size,
+            "xtick.labelsize": 20,
+            "ytick.labelsize": 20,
+        }
+    )
+
     # Group rows by sample_id
     rows_by_sample_id: Dict[int, List[Dict[str, Any]]] = {}
     for row in rows:
@@ -1164,16 +1174,19 @@ def plot_pca_reconstruction_accuracy(
     for n_comp, accs in zip(n_components_list, all_accuracies_per_component):
         plt.scatter([n_comp] * len(accs), accs, alpha=0.2, s=20, color="blue", zorder=0)
 
-    plt.xlabel("Number of PCA Components", fontsize=14)
-    plt.ylabel("Reconstruction Accuracy (Token Prediction)", fontsize=14)
-    plt.title(title, fontsize=16)
+    plt.xlabel("Number of PCA Components", fontsize=25)
+    plt.ylabel("Accuracy", fontsize=25)
+    # plt.title(title, fontsize=16)
     plt.grid(True, alpha=0.3)
-    plt.legend(loc="best", fontsize=11)
+    plt.legend(loc="best", fontsize=25)
     plt.xlim(left=0)
     plt.ylim(bottom=0, top=1.05)
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
     print(f"plot_pca_reconstruction_accuracy: {outfile}")
+    outfile_pdf = outfile.replace(".png", ".pdf")
+    plt.savefig(outfile_pdf, dpi=150)
+    print(f"plot_pca_reconstruction_accuracy: {outfile_pdf}")
     plt.close()
 
     # Plot first error index vs number of PCA components
@@ -1219,17 +1232,20 @@ def plot_pca_reconstruction_accuracy(
         for n_comp, indices in zip(n_components_list, all_first_error_indices_per_component):
             plt.scatter([n_comp] * len(indices), indices, alpha=0.2, s=20, color="red", zorder=0)
 
-        plt.xlabel("Number of PCA Components", fontsize=14)
-        plt.ylabel("First Error Index (Sequence Position)", fontsize=14)
-        plt.title(f"{title} - First Error Index", fontsize=16)
+        plt.xlabel("Number of PCA Components", fontsize=25)
+        plt.ylabel("First Error Index (Sequence Position)", fontsize=25)
+        # plt.title(f"{title} - First Error Index", fontsize=16)
         plt.grid(True, alpha=0.3)
-        plt.legend(loc="best", fontsize=11)
+        plt.legend(loc="best", fontsize=25)
         plt.xlim(left=0)
         plt.ylim(bottom=0)
         plt.tight_layout()
         error_index_outfile = outfile.replace(".png", "_first_error_index.png")
         plt.savefig(error_index_outfile, dpi=150)
         print(f"plot_pca_reconstruction_accuracy (first error index): {error_index_outfile}")
+        error_index_outfile_pdf = error_index_outfile.replace(".png", ".pdf")
+        plt.savefig(error_index_outfile_pdf, dpi=150)
+        print(f"plot_pca_reconstruction_accuracy (first error index): {error_index_outfile_pdf}")
         plt.close()
 
         # Create distribution plot of error indices for the last PCA model (max components) only
@@ -1281,19 +1297,23 @@ def plot_pca_reconstruction_accuracy(
                 label=f"Median: {np.median(error_indices_last_model):.2f}",
             )
             plt.xlabel("First Error Index (Sequence Position)", fontsize=14)
-            plt.ylabel("Frequency", fontsize=14)
+            plt.ylabel("Frequency", fontsize=25)
             last_n_comp = n_components_list[-1] if len(n_components_list) > 0 else max_comp_global
-            plt.title(
-                f"{title} - Distribution of Error Indices (Last PCA Model, {last_n_comp} components, {len(error_indices_last_model)} samples)",
-                fontsize=16,
-            )
+            # plt.title(
+            #     f"{title} - Distribution of Error Indices (Last PCA Model, {last_n_comp} components, {len(error_indices_last_model)} samples)",
+            #     fontsize=16,
+            # )
             plt.grid(True, alpha=0.3, axis="y")
-            plt.legend(loc="best", fontsize=11)
+            plt.legend(loc="best", fontsize=25)
             plt.xlim(left=0)
             plt.tight_layout()
             distribution_outfile = outfile.replace(".png", "_error_indices_distribution.png")
             plt.savefig(distribution_outfile, dpi=150)
             print(f"plot_pca_reconstruction_accuracy (error indices distribution): {distribution_outfile}")
+            distribution_outfile_pdf = distribution_outfile.replace(".png", ".pdf")
+            plt.savefig(distribution_outfile_pdf, dpi=150)
+            print(f"plot_pca_reconstruction_accuracy (error indices distribution): {distribution_outfile_pdf}")
+
             plt.close()
 
 

@@ -428,10 +428,6 @@ Figure~\ref{fig:pca_from_seq_length} shows that, for Llama-3.1-8B, the number of
 Table~\ref{tab:all_progressive_modifications} further suggests that Gemma~3 achieves noticeably lower information gain at smaller reconstructed lengths than Llama and Pythia, consistent with additional optimization constraints such as logits softcapping \cite{gemma2}.
 
 
-% {\color{red} TODO - reconstruction from progressive embedding will be 1.0 accuracy?}
-
-{\color{red} TODO - reconstruction from PCA components}
-
 {\color{red} TODO - shared subspaces?}
 
 {\color{red} TODO visualize Optimization Landscape.}
@@ -462,6 +458,22 @@ Two takeaways stand out:
     \item For Pythia-1.4B, projection can reduce token count and information gain relative to the baseline; combining projection with activation alignment partially recovers performance compared to projection alone. For Gemma in our setting, projection reduces token count and information gain relative to the baseline.
 \end{itemize}
 
+
+\subsection{PCA Reconstruction}
+\label{sec:pca_reconstruction}
+
+We evaluate reconstruction accuracy when progressive embeddings are reconstructed from PCA components.
+Figure~\ref{fig:pca_reconstruction_accuracy} reports accuracy as a function of the number of components.
+Reconstruction accuracy saturates quickly; 15 components already yield near-perfect recovery.
+However, we observe the same failure mode as in the full cramming setup (Section~\ref{sec:prior_limitations}):
+errors occur at the start of the sequence, which breaks further decoding from the reconstructed embedding, and many errors appear in the first decoded token.
+
+\begin{figure}[t]
+    \centering
+    \centerline{\includegraphics[width=\columnwidth]{pca_reconstruction_accuracy.pdf}}
+    \caption{Reconstruction accuracy for different numbers of PCA components for Llama-3.1-8B.}
+    \label{fig:pca_reconstruction_accuracy}
+\end{figure}
 
 \subsection{Activation Alignment}
 
@@ -917,138 +929,6 @@ Three takeaways stand out:
 
 
 
-
-\section{Full progressive experiments metrics for Llama3.1-8B}
-{\color{red} TODO}
-
-\begin{table*}
-    \begin{tabular}{lllll}
-\hline
- Model                                                          & Compressed Tokens           & Information Gain         & Trajectory Length          & PCA 99\%                    \\
-\hline
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_1.0\_align\_16           & 1487.3 {\small $\pm$ 255.4} & nan                      & 1146 {\small $\pm$ 112}    & 33.6 {\small $\pm$ 2.2}    \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_1.0\_align\_24           & 664.8 {\small $\pm$ 99.2}   & nan                      & 570 {\small $\pm$ 87}      & 20.5 {\small $\pm$ 1.75}   \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_1.0\_align\_2            & 1532.3 {\small $\pm$ 280}   & nan                      & 812 {\small $\pm$ 167}     & 45.8 {\small $\pm$ 5.29}   \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_1.0\_align\_32           & 192.7 {\small $\pm$ 50.6}   & nan                      & 150 {\small $\pm$ 31}      & 12.6 {\small $\pm$ 1.69}   \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_1.0\_align\_4            & 1593.6 {\small $\pm$ 306.6} & nan                      & 958 {\small $\pm$ 207}     & 41.9 {\small $\pm$ 3.01}   \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_1.0\_align\_8            & 1633.3 {\small $\pm$ 275.4} & nan                      & 1146 {\small $\pm$ 137}    & 40 {\small $\pm$ 1.26}     \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_2.0\_align\_16           & 1541.1 {\small $\pm$ 295.9} & nan                      & 1106 {\small $\pm$ 132}    & 32.8 {\small $\pm$ 1.94}   \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_2.0\_align\_24           & 599.8 {\small $\pm$ 94.7}   & nan                      & 443 {\small $\pm$ 71}      & 17.5 {\small $\pm$ 0.92}   \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_2.0\_align\_2            & 1258.6 {\small $\pm$ 450.6} & nan                      & 693 {\small $\pm$ 244}     & 40 {\small $\pm$ 10.25}    \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_2.0\_align\_32           & 118.1 {\small $\pm$ 21.9}   & nan                      & 107 {\small $\pm$ 19}      & 11.1 {\small $\pm$ 0.94}   \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_2.0\_align\_4            & 1591.8 {\small $\pm$ 328.8} & nan                      & 952 {\small $\pm$ 181}     & 41.5 {\small $\pm$ 2.16}   \\
- Llama-3.1-8B\_ds\_pg19\_loss\_cosine\_hybrid\_2.0\_align\_8            & 1619.8 {\small $\pm$ 247.4} & nan                      & 1120 {\small $\pm$ 106}    & 39 {\small $\pm$ 1}        \\
- Llama-3.1-8B\_lowdim\_128\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 1858.9 {\small $\pm$ 283.6} & 5145 {\small $\pm$ 1695} & 18967 {\small $\pm$ 3766}  & 33.5 {\small $\pm$ 2.84}   \\
- Llama-3.1-8B\_lowdim\_256\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 1810.6 {\small $\pm$ 236}   & 5105 {\small $\pm$ 1693} & 23576 {\small $\pm$ 5844}  & 34.1 {\small $\pm$ 5.5}    \\
- Llama-3.1-8B\_lowdim\_256\_lowproj                                & 1730.8 {\small $\pm$ 384.3} & 4870 {\small $\pm$ 1680} & 21448 {\small $\pm$ 5583}  & 29.4 {\small $\pm$ 3.29}   \\
- Llama-3.1-8B\_lowdim\_32\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8  & 1804.8 {\small $\pm$ 297.8} & 5103 {\small $\pm$ 748}  & 13584 {\small $\pm$ 3823}  & 34.7 {\small $\pm$ 5.37}   \\
- Llama-3.1-8B\_lowdim\_32\_lowproj                                 & 1745 {\small $\pm$ 306}     & 5312 {\small $\pm$ 330}  & 10250 {\small $\pm$ 3256}  & 35.7 {\small $\pm$ 5.1}    \\
- Llama-3.1-8B\_lowdim\_512\_lowproj                                & 1652.9 {\small $\pm$ 404.5} & 5072 {\small $\pm$ 799}  & 25852 {\small $\pm$ 7528}  & 36.2 {\small $\pm$ 5.88}   \\
- Llama-3.1-8B\_lowdim\_64\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8  & 1853.3 {\small $\pm$ 256.2} & 5512 {\small $\pm$ 456}  & 14367 {\small $\pm$ 3209}  & 30.8 {\small $\pm$ 5.27}   \\
- Llama-3.1-8B {\small lr=0.1}                                   & 1063.5 {\small $\pm$ 394.4} & 3028 {\small $\pm$ 1321} & 4861 {\small $\pm$ 1033}   & 74.4 {\small $\pm$ 7.94}   \\
- Llama-3.1-8B {\small lr=0.5}                                   & 934.4 {\small $\pm$ 123.2}  & 2758 {\small $\pm$ 486}  & 15424 {\small $\pm$ 1437}  & 138 {\small $\pm$ 11.78}   \\
- Llama-3.1-8B {\small lr=1.0}                                   & 1286.4 {\small $\pm$ 524.8} & 3381 {\small $\pm$ 1521} & 29061 {\small $\pm$ 4605}  & 186.6 {\small $\pm$ 13.59} \\
- Llama-3.1-8B {\small lr=5.0}                                   & 1558.8 {\small $\pm$ 207.7} & 4341 {\small $\pm$ 731}  & 101139 {\small $\pm$ 6274} & 248.2 {\small $\pm$ 19.68} \\
- Llama-3.1-8B                                                   & 1298.4 {\small $\pm$ 537.5} & 3760 {\small $\pm$ 1418} & 738 {\small $\pm$ 265}     & 40.8 {\small $\pm$ 13.16}  \\
-\hline
-\end{tabular}
-\end{table*}
-
-\section{Full progressive experiments metrics for SmolLM2-1.7B}
-{\color{red} TODO}
-
-\begin{table*}
-    \begin{tabular}{lllll}
-\hline
- Model                                                          & Compressed Tokens          & Information Gain        & Trajectory Length         & PCA 99\%                    \\
-\hline
- SmolLM2-1.7B\_loss\_cosine\_hybrid\_1.0\_align\_16                   & 126.5 {\small $\pm$ 63.3}  & 366 {\small $\pm$ 155}  & 66 {\small $\pm$ 22}      & 11.3 {\small $\pm$ 2.19}   \\
- SmolLM2-1.7B\_loss\_cosine\_hybrid\_1.0\_align\_20                   & 96.1 {\small $\pm$ 56.2}   & 254 {\small $\pm$ 114}  & 50 {\small $\pm$ 20}      & 8.8 {\small $\pm$ 3.54}    \\
- SmolLM2-1.7B\_loss\_cosine\_hybrid\_1.0\_align\_4                    & 186.9 {\small $\pm$ 47.3}  & 530 {\small $\pm$ 104}  & 85 {\small $\pm$ 8}       & 13.3 {\small $\pm$ 1.73}   \\
- SmolLM2-1.7B\_loss\_cosine\_hybrid\_1.0\_align\_8                    & 148.1 {\small $\pm$ 56.7}  & 432 {\small $\pm$ 157}  & 75 {\small $\pm$ 18}      & 11.9 {\small $\pm$ 1.97}   \\
- SmolLM2-1.7B\_lowdim\_128\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 363.2 {\small $\pm$ 67.2}  & 1065 {\small $\pm$ 213} & 2236 {\small $\pm$ 1198}  & 10.4 {\small $\pm$ 1.5}    \\
- SmolLM2-1.7B\_lowdim\_128\_lowproj                                & 431.9 {\small $\pm$ 115.6} & 1252 {\small $\pm$ 288} & 1236 {\small $\pm$ 653}   & 13.9 {\small $\pm$ 2.51}   \\
- SmolLM2-1.7B\_lowdim\_256\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 468 {\small $\pm$ 243.7}   & 1350 {\small $\pm$ 621} & 6544 {\small $\pm$ 9765}  & 11.6 {\small $\pm$ 3.61}   \\
- SmolLM2-1.7B\_lowdim\_256\_lowproj                                & 487.7 {\small $\pm$ 152.7} & 1449 {\small $\pm$ 402} & 2265 {\small $\pm$ 1405}  & 16 {\small $\pm$ 4.47}     \\
- SmolLM2-1.7B\_lowdim\_32\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8  & 292.7 {\small $\pm$ 113.3} & 851 {\small $\pm$ 327}  & 1144 {\small $\pm$ 705}   & 11.1 {\small $\pm$ 3.99}   \\
- SmolLM2-1.7B\_lowdim\_32\_lowproj                                 & 335.8 {\small $\pm$ 78.7}  & 1007 {\small $\pm$ 284} & 543 {\small $\pm$ 218}    & 14.2 {\small $\pm$ 1.99}   \\
- SmolLM2-1.7B\_lowdim\_512\_lowproj                                & 557.1 {\small $\pm$ 158.8} & 1615 {\small $\pm$ 350} & 2590 {\small $\pm$ 1163}  & 17.7 {\small $\pm$ 3.95}   \\
- SmolLM2-1.7B\_lowdim\_64\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8  & 321.4 {\small $\pm$ 148.3} & 914 {\small $\pm$ 305}  & 1668 {\small $\pm$ 2014}  & 10.4 {\small $\pm$ 2.29}   \\
- SmolLM2-1.7B\_lowdim\_64\_lowproj                                 & 403.2 {\small $\pm$ 77.7}  & 1195 {\small $\pm$ 177} & 778 {\small $\pm$ 167}    & 13.8 {\small $\pm$ 1.94}   \\
- SmolLM2-1.7B {\small lr=0.1}                                   & 370.2 {\small $\pm$ 113.1} & 1119 {\small $\pm$ 350} & 1027 {\small $\pm$ 167}   & 29.2 {\small $\pm$ 2.93}   \\
- SmolLM2-1.7B {\small lr=0.5}                                   & 540.5 {\small $\pm$ 139.4} & 1450 {\small $\pm$ 350} & 5225 {\small $\pm$ 827}   & 66.8 {\small $\pm$ 9.14}   \\
- SmolLM2-1.7B {\small lr=1.0}                                   & 502.5 {\small $\pm$ 180.6} & 1428 {\small $\pm$ 473} & 9442 {\small $\pm$ 1810}  & 83 {\small $\pm$ 16.34}    \\
- SmolLM2-1.7B {\small lr=5.0}                                   & 552.9 {\small $\pm$ 96.7}  & 1511 {\small $\pm$ 229} & 38142 {\small $\pm$ 4712} & 110.3 {\small $\pm$ 15.58} \\
- SmolLM2-1.7B                                                   & 233.8 {\small $\pm$ 62}    & 668 {\small $\pm$ 109}  & 91 {\small $\pm$ 15}      & 14.7 {\small $\pm$ 1.27}   \\
-\hline
-\end{tabular}
-\end{table*}
-
-\section{Full progressive experiments metrics for pythia-1.4b}
-{\color{red} TODO}
-
-\begin{table*}
-    \begin{tabular}{lllll}
-\hline
- Model                                                         & Compressed Tokens          & Information Gain        & Trajectory Length         & PCA 99\%                  \\
-\hline
- pythia-1.4b\_loss\_cosine\_hybrid\_1.0\_align\_16                   & 155.5 {\small $\pm$ 35.5}  & 427 {\small $\pm$ 66}   & 69 {\small $\pm$ 16}      & 13.5 {\small $\pm$ 1.5}  \\
- pythia-1.4b\_loss\_cosine\_hybrid\_1.0\_align\_20                   & 116.6 {\small $\pm$ 26.1}  & 307 {\small $\pm$ 35}   & 58 {\small $\pm$ 10}      & 11.9 {\small $\pm$ 0.83} \\
- pythia-1.4b\_loss\_cosine\_hybrid\_1.0\_align\_4                    & 182.7 {\small $\pm$ 31.1}  & 553 {\small $\pm$ 63}   & 83 {\small $\pm$ 9}       & 14.6 {\small $\pm$ 1.96} \\
- pythia-1.4b\_loss\_cosine\_hybrid\_1.0\_align\_8                    & 178.7 {\small $\pm$ 33.1}  & 524 {\small $\pm$ 92}   & 80 {\small $\pm$ 13}      & 14.3 {\small $\pm$ 1.79} \\
- pythia-1.4b\_lowdim\_128\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 468.3 {\small $\pm$ 68.6}  & 1448 {\small $\pm$ 106} & 4699 {\small $\pm$ 2414}  & 20 {\small $\pm$ 4.96}   \\
- pythia-1.4b\_lowdim\_128\_lowproj                                & 373 {\small $\pm$ 81.8}    & 1168 {\small $\pm$ 240} & 1915 {\small $\pm$ 1133}  & 15.8 {\small $\pm$ 3.22} \\
- pythia-1.4b\_lowdim\_256\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 498.2 {\small $\pm$ 92.7}  & 1555 {\small $\pm$ 146} & 5396 {\small $\pm$ 3309}  & 19.6 {\small $\pm$ 5.89} \\
- pythia-1.4b\_lowdim\_256\_lowproj                                & 375.5 {\small $\pm$ 100.7} & 1189 {\small $\pm$ 314} & 2135 {\small $\pm$ 1312}  & 16.5 {\small $\pm$ 2.16} \\
- pythia-1.4b\_lowdim\_32\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8  & 423.1 {\small $\pm$ 104.4} & 1317 {\small $\pm$ 221} & 2498 {\small $\pm$ 1438}  & 15.5 {\small $\pm$ 4.57} \\
- pythia-1.4b\_lowdim\_32\_lowproj                                 & 358.2 {\small $\pm$ 80.6}  & 1137 {\small $\pm$ 241} & 1551 {\small $\pm$ 954}   & 15.1 {\small $\pm$ 3.01} \\
- pythia-1.4b\_lowdim\_512\_lowproj                                & 415.5 {\small $\pm$ 76.3}  & 1333 {\small $\pm$ 200} & 2863 {\small $\pm$ 1433}  & 18 {\small $\pm$ 2.49}   \\
- pythia-1.4b\_lowdim\_64\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8  & 447.8 {\small $\pm$ 81.9}  & 1398 {\small $\pm$ 186} & 3309 {\small $\pm$ 2569}  & 16.9 {\small $\pm$ 4.01} \\
- pythia-1.4b\_lowdim\_64\_lowproj                                 & 392.8 {\small $\pm$ 96.6}  & 1240 {\small $\pm$ 286} & 1920 {\small $\pm$ 1191}  & 16.7 {\small $\pm$ 3.69} \\
- pythia-1.4b {\small lr=0.1}                                   & 274.3 {\small $\pm$ 56.2}  & 846 {\small $\pm$ 106}  & 956 {\small $\pm$ 123}    & 23.2 {\small $\pm$ 1.99} \\
- pythia-1.4b {\small lr=0.5}                                   & 543.8 {\small $\pm$ 56.8}  & 1694 {\small $\pm$ 125} & 6730 {\small $\pm$ 390}   & 49 {\small $\pm$ 3.32}   \\
- pythia-1.4b {\small lr=1.0}                                   & 558.2 {\small $\pm$ 74.1}  & 1737 {\small $\pm$ 158} & 11381 {\small $\pm$ 993}  & 63.3 {\small $\pm$ 6.21} \\
- pythia-1.4b {\small lr=5.0}                                   & 517.2 {\small $\pm$ 87.3}  & 1534 {\small $\pm$ 140} & 33749 {\small $\pm$ 3699} & 128 {\small $\pm$ 13.18} \\
- pythia-1.4b                                                   & 188.2 {\small $\pm$ 27.8}  & 581 {\small $\pm$ 101}  & 83 {\small $\pm$ 14}      & 15.7 {\small $\pm$ 1.85} \\
-\hline
-\end{tabular}
-\end{table*}
-
-\section{Full progressive experiments metrics for Qwen3-4B}
-
-{\color{red} TODO}
-
-\begin{table*}
-    \begin{tabular}{lllll}
-\hline
- Model                                                      & Compressed Tokens          & Information Gain         & Trajectory Length               & PCA 99\%                    \\
-\hline
- Qwen3-4B\_loss\_cosine\_hybrid\_1.0\_align\_16                   & 170.9 {\small $\pm$ 71.3}  & 711 {\small $\pm$ 265}   & 109 {\small $\pm$ 28}           & 13.9 {\small $\pm$ 2.47}   \\
- Qwen3-4B\_loss\_cosine\_hybrid\_1.0\_align\_20                   & 168.9 {\small $\pm$ 39.6}  & 695 {\small $\pm$ 132}   & 106 {\small $\pm$ 12}           & 13.9 {\small $\pm$ 1.37}   \\
- Qwen3-4B\_loss\_cosine\_hybrid\_1.0\_align\_4                    & 166.9 {\small $\pm$ 56.1}  & 699 {\small $\pm$ 193}   & 104 {\small $\pm$ 18}           & 13.8 {\small $\pm$ 1.54}   \\
- Qwen3-4B\_loss\_cosine\_hybrid\_1.0\_align\_8                    & 197.1 {\small $\pm$ 74}    & 792 {\small $\pm$ 243}   & 118 {\small $\pm$ 25}           & 15.1 {\small $\pm$ 2.12}   \\
- Qwen3-4B\_lowdim\_128\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 870.8 {\small $\pm$ 160.5} & 3400 {\small $\pm$ 300}  & 9040 {\small $\pm$ 3358}        & 31 {\small $\pm$ 5.42}     \\
- Qwen3-4B\_lowdim\_128\_lowproj                                & 863.6 {\small $\pm$ 172}   & 3358 {\small $\pm$ 280}  & 6943 {\small $\pm$ 1378}        & 31.9 {\small $\pm$ 2.91}   \\
- Qwen3-4B\_lowdim\_256\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 895.7 {\small $\pm$ 219.4} & 3470 {\small $\pm$ 476}  & 9813 {\small $\pm$ 3019}        & 32.5 {\small $\pm$ 4.25}   \\
- Qwen3-4B\_lowdim\_256\_lowproj                                & 874.4 {\small $\pm$ 124.2} & 3433 {\small $\pm$ 277}  & 7614 {\small $\pm$ 843}         & 33.1 {\small $\pm$ 4.21}   \\
- Qwen3-4B\_lowdim\_32\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8  & 774.9 {\small $\pm$ 156.4} & 3063 {\small $\pm$ 556}  & 4243 {\small $\pm$ 1543}        & 25.9 {\small $\pm$ 4.48}   \\
- Qwen3-4B\_lowdim\_32\_lowproj                                 & 713.5 {\small $\pm$ 238.3} & 2514 {\small $\pm$ 825}  & 3398 {\small $\pm$ 1601}        & 22.5 {\small $\pm$ 4.13}   \\
- Qwen3-4B\_lowdim\_512\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8 & 841.6 {\small $\pm$ 143}   & 3312 {\small $\pm$ 503}  & 10205 {\small $\pm$ 1944}       & 36.7 {\small $\pm$ 5.83}   \\
- Qwen3-4B\_lowdim\_512\_lowproj {\small lr=0.1}                & 984.1 {\small $\pm$ 150.4} & 3884 {\small $\pm$ 528}  & 131088 {\small $\pm$ 63814}     & 56.6 {\small $\pm$ 11.36}  \\
- Qwen3-4B\_lowdim\_512\_lowproj {\small lr=0.5}                & 919.3 {\small $\pm$ 326.7} & 3072 {\small $\pm$ 1473} & 1851450 {\small $\pm$ 862053}   & 69.6 {\small $\pm$ 11.71}  \\
- Qwen3-4B\_lowdim\_512\_lowproj {\small lr=1.0}                & 776.6 {\small $\pm$ 289.9} & 2966 {\small $\pm$ 1037} & 4006817 {\small $\pm$ 1835061}  & 76.4 {\small $\pm$ 14.08}  \\
- Qwen3-4B\_lowdim\_512\_lowproj {\small lr=5.0}                & 839.9 {\small $\pm$ 235.4} & 2604 {\small $\pm$ 704}  & 30117796 {\small $\pm$ 7779598} & 107.2 {\small $\pm$ 15.07} \\
- Qwen3-4B\_lowdim\_512\_lowproj                                & 908.7 {\small $\pm$ 126.1} & 3583 {\small $\pm$ 247}  & 11028 {\small $\pm$ 3922}       & 35.8 {\small $\pm$ 2.96}   \\
- Qwen3-4B\_lowdim\_64\_lowproj\_loss\_cosine\_hybrid\_1.0\_align\_8  & 811.8 {\small $\pm$ 189.1} & 3181 {\small $\pm$ 567}  & 7120 {\small $\pm$ 2953}        & 30.7 {\small $\pm$ 4.17}   \\
- Qwen3-4B\_lowdim\_64\_lowproj                                 & 815.1 {\small $\pm$ 176.8} & 3153 {\small $\pm$ 369}  & 5117 {\small $\pm$ 2022}        & 27.2 {\small $\pm$ 4.6}    \\
- Qwen3-4B {\small lr=0.1}                                   & 584.7 {\small $\pm$ 111.7} & 2216 {\small $\pm$ 192}  & 2161 {\small $\pm$ 239}         & 41.8 {\small $\pm$ 3.03}   \\
- Qwen3-4B {\small lr=0.5}                                   & 726.6 {\small $\pm$ 132.1} & 2840 {\small $\pm$ 498}  & 9830 {\small $\pm$ 1066}        & 71.7 {\small $\pm$ 9.2}    \\
- Qwen3-4B {\small lr=1.0}                                   & 778.2 {\small $\pm$ 123.7} & 2947 {\small $\pm$ 538}  & 17606 {\small $\pm$ 1505}       & 104.4 {\small $\pm$ 11.59} \\
- Qwen3-4B {\small lr=5.0}                                   & 607.1 {\small $\pm$ 181.8} & 2026 {\small $\pm$ 903}  & 46470 {\small $\pm$ 8222}       & 139 {\small $\pm$ 33.91}   \\
- Qwen3-4B                                                   & 197.7 {\small $\pm$ 32.7}  & 813 {\small $\pm$ 100}   & 120 {\small $\pm$ 12}           & 15 {\small $\pm$ 1.18}     \\
-\hline
-\end{tabular}
-\end{table*}
 
 ----
 
