@@ -383,7 +383,7 @@ After optimization, the effective embedding $\mathbf{e}$ can be materialized onc
 \subsection{Attention Mass}
 \label{sec:attention_mass}
 
-To quantify attention hijacking (Section~\ref{sec:attention}), we measure how much attention mass other positions allocate to the first position (position $0$), which corresponds to \texttt{[mem]} in crammed inputs or the BOS token in the uncompressed baseline.
+To quantify attention hijacking (Section~\ref{sec:attention}), we measure how much attention mass other positions allocate to the first position (position $0$), which corresponds to the compression embedding in crammed inputs or the BOS token in the uncompressed baseline.
 Let $\mathbf{A}_l \in [0,1]^{S \times S}$ denote the attention matrix at layer $l$ after averaging over heads.
 For a given prefix length $s \le S$, we define the attention mass on position $0$ as
 %
@@ -401,10 +401,10 @@ We report $100 \cdot m_l(s)$ as a percentage, and average over a set of target p
 \subsection{Information Gain}
 
 As a primary cramming metric we use information gain \cite{kuratov2025cramming}, defined as the reduction in total cross-entropy (in bits) on the target sequence when conditioning on the learned compression embedding.
-Let $H_{LM}$ be the sum of per-token cross-entropies for the original token sequence, and let $H_{[mem]+LM}$ be the corresponding quantity when the model is conditioned on \texttt{[mem]}.
+Let $H_{LM}$ be the sum of per-token cross-entropies for the original token sequence, and let $H_{\mathrm{comp}+LM}$ be the corresponding quantity when the model is conditioned on the compression embedding.
 
 \begin{equation}
-    C_H = H_{LM} - H_{[mem]+LM}
+    C_H = H_{LM} - H_{\mathrm{comp}+LM}
 \end{equation}
 
 \citet{kuratov2025cramming} show that cramming capacity is better characterized by information gain than by raw token count, and that this quantity is relatively stable across datasets.
@@ -555,14 +555,14 @@ Across settings, we observe that alignment qualitatively changes attention behav
 \label{sec:attention}
 
 We analyze attention patterns to understand how compression embeddings achieve reconstruction.
-We measure attention mass using the definition in Section~\ref{sec:attention_mass}, comparing attention to position 0 in the crammed setting (\texttt{[mem]}) to attention to the BOS token in the uncompressed baseline.
+We measure attention mass using the definition in Section~\ref{sec:attention_mass}, comparing attention to position 0 in the crammed setting (compression embedding) to attention to the BOS token in the uncompressed baseline.
 
 Table~\ref{tab:attn_hijacking} shows that attention hijacking is highly model-dependent when aggregated over layers.
-SmolLM2 and Pythia exhibits strong correlation between BOS and \texttt{[mem]} attention profiles: compression token takes more attention mass on the same layers as BOS token does. Pythia often assigns comparable or even higher average attention mass to \texttt{[mem]} than to BOS. This may mean than \texttt{[mem]} token works similary to BOS token: it works like attention sink, but rather helping model, its hardly overrides generation and breaks language modeling abilities (Section~\ref{sec:semantic_evaluation}) - thats why we called this attention pattern hijacking: it breaks model.
+SmolLM2 and Pythia exhibits strong correlation between BOS and compression-embedding attention profiles: the compression embedding takes more attention mass on the same layers as the BOS token does. Pythia often assigns comparable or even higher average attention mass to the compression embedding than to BOS. This may mean than the compression embedding works similarly to the BOS token: it works like attention sink, but rather helping model, its hardly overrides generation and breaks language modeling abilities (Section~\ref{sec:semantic_evaluation}) - thats why we called this attention pattern hijacking: it breaks model.
 
-In contrast, Llama and Gemma show much lower \texttt{[mem]} attention mass than BOS on average and weak (or negative) correlation, suggesting that hijacking concentrates in specific layers rather than uniformly matching the BOS pattern.
+In contrast, Llama and Gemma show much lower compression-embedding attention mass than BOS on average and weak (or negative) correlation, suggesting that hijacking concentrates in specific layers rather than uniformly matching the BOS pattern.
 
-We next hypothesize that if compression token and BOS tokens are similar in phenomenon of attention sink it may be a problem to have in a sequence both an compression embedding and a BOS token due to possible conflict for the same characteristics for embeddings in hidden states.
+We next hypothesize that if the compression embedding and the BOS token are similar in phenomenon of attention sink it may be a problem to have in a sequence both a compression embedding and a BOS token due to possible conflict for the same characteristics for embeddings in hidden states.
 
 It also may be hard to force model to generate BOS token due to it never generates it during normal generation.
 
@@ -571,13 +571,13 @@ Removing BOS token improved crammed tokens count, information gain and reduced a
 
 \begin{table*}[]
     \centering
-    \caption{Attention hijacking summary. ``Compression Token'' is attention mass to position 0 for \texttt{[mem]} in the crammed input; ``BOS Token'' is attention mass to position 0 for the uncompressed baseline; ``Diff'' is (Compression$-$BOS). ``Correlation'' is the Pearson correlation between per-layer attention-mass profiles. \bcancel{B} stands for removed BOS token for cramming compression column.}
+    \caption{Attention hijacking summary. ``Compression Embedding'' is attention mass to position 0 for the compression embedding in the crammed input; ``BOS Token'' is attention mass to position 0 for the uncompressed baseline; ``Diff'' is (Compression$-$BOS). ``Correlation'' is the Pearson correlation between per-layer attention-mass profiles. \bcancel{B} stands for removed BOS token for cramming compression column.}
     \label{tab:attn_hijacking}
 
 
     \begin{tabular}{llllr}
     \hline
-     Model                               & Compression Token (\%)      & BOS Token Original (\%)     & Diff (\%)                    &   Correlation \\
+     Model                               & Compression Embedding (\%)  & BOS Token Original (\%)     & Diff (\%)                    &   Correlation \\
     \hline
      Llama-3.2-1B {\small lr=0.1}        & 20.71 {\small $\pm$ 5.74}  & 67.37 {\small $\pm$ 1.41}  & -46.66 {\small $\pm$ 6.5}   &        0.2884 \\
      Llama-3.2-3B {\small lr=0.1}        & 15.97 {\small $\pm$ 1.15}  & 70 {\small $\pm$ 1.14}     & -54.03 {\small $\pm$ 1.01}  &       -0.1907 \\
@@ -636,17 +636,17 @@ If cramming encodes semantics, compressed prefixes should preserve model capabil
 We evaluate on HellaSwag and ARC under two conditions:
 \begin{enumerate}
     \item Original prefix (baseline)
-    \item \texttt{[mem]} + Original prefix
+    \item Compression embedding + original prefix
 \end{enumerate}
 
-For the second condition, we optimize a separate \texttt{[mem]} embedding per sample for perfect reconstruction of the corresponding prefix.
+For the second condition, we optimize a separate compression embedding per sample for perfect reconstruction of the corresponding prefix.
 Each benchmark instance provides four candidate continuations; we select the continuation with the lowest normalized negative log-likelihood (per suffix token).
 Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 
 \paragraph{Results.}
 \begin{table}[t]
     \centering
-    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized \texttt{[mem]} embedding. \bcancel{B} symbol stands for experiments with removed BOS token.}
+    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized compression embedding. \bcancel{B} symbol stands for experiments with removed BOS token.}
     \label{tab:semantic_evaluation}
 
 
@@ -668,8 +668,8 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 
 \end{table}
 
-Table~\ref{tab:semantic_evaluation} shows that prepending the crammed \texttt{[mem]} embedding causes a large and consistent drop in downstream accuracy across model families.
-In most settings, performance collapses to (or below) the random-guessing baseline, indicating a failure mode stronger than ordinary degradation: \texttt{[mem]} breaks the model's ability to use the prefix to score candidate suffixes.
+Table~\ref{tab:semantic_evaluation} shows that prepending the crammed compression embedding causes a large and consistent drop in downstream accuracy across model families.
+In most settings, performance collapses to (or below) the random-guessing baseline, indicating a failure mode stronger than ordinary degradation: the compression embedding breaks the model's ability to use the prefix to score candidate suffixes.
 This collapse is not explained by nominal cramming capacity (in tokens or information gain): even models that can reconstruct long prefixes fail to preserve downstream behavior.
 These results support the mechanistic picture suggested by attention analysis: cramming achieves reconstruction by overriding model computation rather than encoding a transferable semantic representation.
 
@@ -893,11 +893,11 @@ Compared to cramming, prefix tuning typically attracts less attention mass than 
 
 \begin{table*}[]
     \centering
-    \caption{Prefix-tuning attention mass, computed with the same metric as Table~\ref{tab:attn_hijacking} but for learned prefix tokens instead of \texttt{[mem]}.}
+    \caption{Prefix-tuning attention mass, computed with the same metric as Table~\ref{tab:attn_hijacking} but for learned prefix tokens instead of the compression embedding.}
     \label{tab:prefix_tuning_attention_hijacking}
 \begin{tabular}{llllr}
 \hline
- Model        & Compression Token (\%)     & BOS Token Original (\%)    & Diff (\%)                   &   Correlation \\
+ Model        & Compression Emb. (\%) & BOS Token Original (\%)    & Diff (\%)                   &   Correlation \\
 \hline
  SmolLM2-135M & 26.53 {\small $\pm$ 2.78} & 41.74 {\small $\pm$ 6.35} & -15.21 {\small $\pm$ 7.13} &        0.8691 \\
  SmolLM2-360M & 28.07 {\small $\pm$ 4.8}  & 49.81 {\small $\pm$ 7.67} & -21.74 {\small $\pm$ 8.13} &        0.6066 \\
