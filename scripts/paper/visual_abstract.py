@@ -369,7 +369,7 @@ def main() -> None:
     ax.set_xlabel(f"PC1 {{{ev1:.3f}}}")
     ax.set_ylabel(f"PC2 {{{ev2:.3f}}}")
     ax.tick_params(axis="both", which="major", labelsize=20)
-    ax.axis("equal")
+    ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.15)
 
     plt.tight_layout()
@@ -383,7 +383,32 @@ def main() -> None:
     if zoom_start > 0:
         joined_path = out_path[:-4] + "_joined.png"
         joined_pdf = out_path[:-4] + "_joined.pdf"
-        fig2, axes = plt.subplots(1, 2, figsize=(20.0, 8.5))
+        # Two-pass layout:
+        # 1) draw once to infer data aspect ratios (dx/dy) of each panel
+        # 2) rebuild the figure with width ratios matching the aspects
+        tmp_fig, tmp_axes = plt.subplots(1, 2, figsize=(20.0, 8.5))
+        _draw_panel(tmp_axes[0], 0, anchor_sel_full, anchor_xy_full, anchor_indices_full, colors_full)
+        _draw_panel(tmp_axes[1], zoom_start, anchor_sel, anchor_xy, anchor_indices, colors_zoom)
+        for ax_i in tmp_axes:
+            ax_i.set_aspect("equal", adjustable="box")
+
+        def _data_aspect(ax) -> float:
+            x0, x1 = ax.get_xlim()
+            y0, y1 = ax.get_ylim()
+            dx = max(float(x1 - x0), 1e-9)
+            dy = max(float(y1 - y0), 1e-9)
+            return dx / dy
+
+        full_aspect = _data_aspect(tmp_axes[0])
+        zoom_aspect = _data_aspect(tmp_axes[1])
+        plt.close(tmp_fig)
+
+        fig2, axes = plt.subplots(
+            1,
+            2,
+            figsize=(20.0, 8.5),
+            gridspec_kw={"width_ratios": [max(full_aspect, 1e-6), max(zoom_aspect, 1e-6)]},
+        )
         _draw_panel(axes[0], 0, anchor_sel_full, anchor_xy_full, anchor_indices_full, colors_full)
         axes[0].set_title("Full")
         _draw_panel(axes[1], zoom_start, anchor_sel, anchor_xy, anchor_indices, colors_zoom)
@@ -432,11 +457,11 @@ def main() -> None:
             ax_i.set_xlabel(f"PC1 {{{ev1:.3f}}}")
             ax_i.set_ylabel(f"PC2 {{{ev2:.3f}}}")
             ax_i.tick_params(axis="both", which="major", labelsize=20)
-            ax_i.axis("equal")
+            ax_i.set_aspect("equal", adjustable="box")
             ax_i.grid(True, alpha=0.15)
         plt.tight_layout()
-        plt.savefig(joined_path, dpi=int(args.dpi))
-        plt.savefig(joined_pdf, dpi=int(args.dpi))
+        plt.savefig(joined_path, dpi=int(args.dpi), bbox_inches="tight")
+        plt.savefig(joined_pdf, dpi=int(args.dpi), bbox_inches="tight")
         plt.close(fig2)
         print(f"Saved: {joined_path}")
         print(f"Saved: {joined_pdf}")
