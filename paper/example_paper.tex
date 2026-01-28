@@ -496,8 +496,10 @@ Table~\ref{tab:attn_hijacking} shows that attention hijacking is highly model-de
 SmolLM2 exhibits strong correlation between BOS and \texttt{[mem]} attention profiles, while Pythia often assigns comparable or even higher average attention mass to \texttt{[mem]} than to BOS.
 In contrast, Llama and Gemma show much lower \texttt{[mem]} attention mass than BOS on average and weak (or negative) correlation, suggesting that hijacking concentrates in specific layers rather than uniformly matching the BOS pattern.
 
-To further investigate weather BOS token makes cramming harder, we compare progressive cramming with and without BOS token in Table~\ref{tab:progressive_no_bos_token}.
+We next hypotesize that if compression token and BOS tokens are similar in phenomenon of attention sink it may be a problem to have in a sequence both an compression embedding and a BOS token.
+And considered experiments with removed BOS token. We compare progressive cramming with and without BOS token in Table~\ref{tab:progressive_no_bos_token}.
 Removing BOS token had no significant effect on the compressed token count and information gain.
+
 
 {\color{red} TODO move this table to appendix? }
 
@@ -595,8 +597,6 @@ In most settings, performance collapses to (or below) the random-guessing baseli
 This collapse is not explained by nominal cramming capacity (in tokens or information gain): even models that can reconstruct long prefixes fail to preserve downstream behavior.
 These results support the mechanistic picture suggested by attention analysis: cramming achieves reconstruction by overriding model computation rather than encoding a transferable semantic representation.
 
-We also hypotesized that removing BOS token will make cramming easier because we observed a lot of errors in decoding first token in sections\ref{sec:prior_limitations} and section\ref{sec:pca_reconstruction}.
-
 
 % =============================================================================
 \section{Discussion}
@@ -613,9 +613,9 @@ Perfect reconstruction accuracy is insufficient; future work must evaluate capab
 
 {\color{red} TODO what if we remove bos token? will it be easier  to compress? Add Llama Results last exp to tab:progressive\_no\_bos\_token}
 
-{\color{red} how no bos token affects semantic evaluation?}
+% {\color{red} how no bos token affects semantic evaluation?} - done
 
-{\color{red} how much bos token is similar to bos token?}
+% {\color{red} how much bos token is similar to bos token?}  -- won't fix
 
 {\color{red} looks like attention sliv (sink?)}
 
