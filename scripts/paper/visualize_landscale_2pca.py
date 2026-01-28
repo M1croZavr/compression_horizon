@@ -8,7 +8,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
 from datasets import Dataset
 from sklearn.decomposition import PCA
 from tqdm.auto import tqdm
@@ -107,75 +106,6 @@ def _load_model_and_tokenizer(
     if tok.pad_token is None and tok.eos_token is not None:
         tok.pad_token = tok.eos_token
     return model, tok
-
-
-def _compute_loss_batch(
-    compression_embeddings_flat: torch.Tensor,
-    original_shape: Tuple[int, int],
-    model: AutoModelForCausalLM,
-    device: torch.device,
-    input_ids: torch.Tensor,
-    input_text_embeds: torch.Tensor,
-    attention_mask: torch.Tensor,
-    target_outputs: Any,
-    loss_type: str,
-    batch_size: int,
-) -> np.ndarray:
-    model.eval()
-    losses: List[np.ndarray] = []
-    num_embeddings = int(compression_embeddings_flat.shape[0])
-    mem_tokens = int(original_shape[0])
-
-    for batch_start in tqdm(range(0, num_embeddings, batch_size), desc="loss"):
-        batch_end = min(batch_start + batch_size, num_embeddings)
-        batch_embeddings = compression_embeddings_flat[batch_start:batch_end]
-
-        with torch.no_grad():
-            bs = int(batch_embeddings.shape[0])
-            comp = batch_embeddings.reshape(bs, original_shape[0], original_shape[1]).to(device)
-            text_embeds_bs = input_text_embeds.expand(bs, -1, -1)
-            inputs_embeds = torch.cat([comp, text_embeds_bs], dim=1)
-
-            comp_attention = torch.ones((bs, mem_tokens), device=device, dtype=attention_mask.dtype)
-            attn_bs = attention_mask.expand(bs, -1)
-            extended_attention_mask = torch.cat([comp_attention, attn_bs], dim=1)
-
-            outputs = model(
-                inputs_embeds=inputs_embeds,
-                attention_mask=extended_attention_mask,
-                output_hidden_states=(loss_type != "cross_entropy"),
-            )
-
-            if loss_type == "cross_entropy":
-                labels = input_ids.clone().expand(bs, -1).clone()
-                labels[attn_bs == 0] = -100
-                batch_losses = F.cross_entropy(
-                    outputs.logits[:, mem_tokens - 1 : -1].flatten(0, 1),
-                    labels.flatten(),
-                    reduction="none",
-                )
-                batch_losses = batch_losses.view(bs, -1).mean(dim=1)
-                losses.append(batch_losses.float().cpu().numpy())
-            else:
-                total_layers = len(outputs.hidden_states)
-                batch_losses_t = torch.zeros(bs, device=device)
-                for layer_idx in range(total_layers):
-                    comp_hidden = outputs.hidden_states[layer_idx][:, mem_tokens:]
-                    tgt_hidden = target_outputs.hidden_states[layer_idx].expand(bs, -1, -1)
-                    if loss_type == "l2":
-                        layer_loss = F.mse_loss(comp_hidden, tgt_hidden, reduction="none").sum(dim=-1).sqrt().mean(dim=1)
-                    elif loss_type == "l1":
-                        layer_loss = F.l1_loss(comp_hidden, tgt_hidden, reduction="none").sum(dim=-1).mean(dim=1)
-                    elif loss_type == "cosine":
-                        cosine = F.cosine_similarity(comp_hidden, tgt_hidden, dim=-1)
-                        layer_loss = (1.0 - cosine).mean(dim=1)
-                    else:
-                        raise ValueError(f"Unsupported loss_type: {loss_type}")
-                    batch_losses_t += layer_loss
-                batch_losses_t = batch_losses_t / float(total_layers)
-                losses.append(batch_losses_t.float().cpu().numpy())
-
-    return np.concatenate(losses, axis=0)
 
 
 def _compute_accuracy_batch(
@@ -278,75 +208,6 @@ def _plot_surface(
     plt.close()
 
 
-def _render_combined_frame(
-    X_mesh: np.ndarray,
-    Y_mesh: np.ndarray,
-    Z_loss: np.ndarray,
-    Z_acc: np.ndarray,
-    coords_xy: np.ndarray,
-    current_idx: int,
-    loss_type: str,
-    sample_id: int,
-) -> np.ndarray:
-    fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.2))
-
-    im0 = axes[0].pcolormesh(X_mesh, Y_mesh, Z_loss, shading="auto", cmap="viridis")
-    fig.colorbar(im0, ax=axes[0], label=f"Loss ({loss_type})")
-    axes[0].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
-    axes[0].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
-    if coords_xy.shape[0] >= 1 and 0 <= current_idx < coords_xy.shape[0]:
-        axes[0].scatter(
-            coords_xy[current_idx, 0],
-            coords_xy[current_idx, 1],
-            s=220,
-            marker="*",
-            c="red",
-            edgecolors="black",
-            linewidths=1.0,
-            zorder=20,
-        )
-    axes[0].set_title("Loss")
-    axes[0].set_xlabel("PC1")
-    axes[0].set_ylabel("PC2")
-    axes[0].axis("equal")
-
-    im1 = axes[1].pcolormesh(X_mesh, Y_mesh, Z_acc, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
-    fig.colorbar(im1, ax=axes[1], label="Teacher-forced accuracy")
-    axes[1].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
-    axes[1].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
-    if coords_xy.shape[0] >= 1 and 0 <= current_idx < coords_xy.shape[0]:
-        axes[1].scatter(
-            coords_xy[current_idx, 0],
-            coords_xy[current_idx, 1],
-            s=220,
-            marker="*",
-            c="red",
-            edgecolors="black",
-            linewidths=1.0,
-            zorder=20,
-        )
-    axes[1].set_title("Accuracy")
-    axes[1].set_xlabel("PC1")
-    axes[1].set_ylabel("PC2")
-    axes[1].axis("equal")
-
-    fig.suptitle(f"PC1-PC2 landscapes (sample_id={sample_id})")
-    fig.tight_layout()
-    fig.canvas.draw()
-    # Extract RGB pixels in a matplotlib-version-safe way.
-    # Newer matplotlib may not expose canvas.tostring_rgb(); prefer buffer_rgba().
-    if hasattr(fig.canvas, "buffer_rgba"):
-        rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)
-        img = rgba[:, :, :3].copy()
-    else:
-        w, h = fig.canvas.get_width_height()
-        # tostring_argb -> [A, R, G, B] per pixel
-        argb = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8).reshape(h, w, 4)
-        img = argb[:, :, 1:4].copy()
-    plt.close(fig)
-    return img
-
-
 def _render_accuracy_frame(
     X_mesh: np.ndarray,
     Y_mesh: np.ndarray,
@@ -392,30 +253,14 @@ def _render_accuracy_frame(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Draw loss/accuracy landscape over PC1-PC2 for one progressive sample trajectory"
-    )
+    parser = argparse.ArgumentParser(description="Draw accuracy landscape over PC1-PC2 for one progressive sample trajectory")
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to progressive_prefixes dataset directory")
     parser.add_argument("--sample_id", type=int, required=True, help="Single sample_id to visualize")
     parser.add_argument("--output_dir", type=str, default=None, help="Directory to save figures/npz")
     parser.add_argument("--model_checkpoint", type=str, default=None, help="Override HF model checkpoint")
-    parser.add_argument(
-        "--loss_type",
-        type=str,
-        default=None,
-        choices=["l2", "l1", "cosine", "cross_entropy"],
-        help="Override loss type (default: infer from dataset row)",
-    )
     parser.add_argument("--mesh_resolution", type=int, default=40, help="Grid resolution for PC1/PC2")
     parser.add_argument("--padding", type=float, default=0.15, help="Fractional padding added to PCA bounds")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for model forward passes")
-    parser.add_argument(
-        "--accuracy-only",
-        "--accuracy_only",
-        default=True,
-        action=argparse.BooleanOptionalAction,
-        help="If true (default), compute and plot only accuracy (png/pdf or gif). Use --no-accuracy-only to also compute loss.",
-    )
     parser.add_argument(
         "--num-frames",
         "--num_frames",
@@ -444,18 +289,11 @@ def main() -> None:
     rows_sorted = sorted(rows, key=lambda r: int(r.get("stage_index", 0)))
     stage_labels = [f"L{int(r.get('stage_seq_len', -1))}" for r in rows_sorted]
 
-    # Infer model checkpoint and loss type
+    # Infer model checkpoint
     inferred_model = _most_common_str([str(r.get("model_checkpoint", "")).strip() for r in rows_sorted])
     model_checkpoint = args.model_checkpoint or inferred_model
     if model_checkpoint is None:
         raise ValueError("Could not infer `model_checkpoint` from dataset; please pass --model_checkpoint")
-
-    inferred_loss_type = None
-    if rows_sorted:
-        lt = rows_sorted[0].get("loss_type", None)
-        if isinstance(lt, str) and lt.strip():
-            inferred_loss_type = lt.strip().lower()
-    loss_type = (args.loss_type or inferred_loss_type or "l2").lower()
 
     # Device/dtype
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -499,19 +337,14 @@ def main() -> None:
     y_range = np.linspace(pc2_lo, pc2_hi, int(args.mesh_resolution))
     X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
 
-    # Precompute tokenization + target outputs once (full length for loss / shared context).
-    # Accuracy will be sliced per-frame to match the starred stage's stage_seq_len.
+    # Precompute tokenization once. Accuracy will be sliced per-frame to match
+    # the starred stage's stage_seq_len.
     enc = tok(reference_text, truncation=True, padding=False, return_tensors="pt")
     input_ids_full = enc["input_ids"].to(device)
     attention_mask_full = enc["attention_mask"].to(device)
     input_embeddings_layer = model.get_input_embeddings()
     with torch.no_grad():
         input_text_embeds_full = input_embeddings_layer(input_ids_full).to(dtype=torch_dtype)
-        target_outputs = model(
-            inputs_embeds=input_text_embeds_full,
-            attention_mask=attention_mask_full,
-            output_hidden_states=(loss_type != "cross_entropy"),
-        )
 
     def _slice_inputs_for_seq_len(seq_len: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Use attention_mask_full to determine max available non-pad length.
@@ -522,27 +355,6 @@ def main() -> None:
             input_text_embeds_full[:, :use_len, :],
             attention_mask_full[:, :use_len],
         )
-
-    def _compute_loss_surface_for_anchor(anchor_coords: np.ndarray) -> np.ndarray:
-        mesh_points = np.repeat(anchor_coords.reshape(1, -1), X_mesh.size, axis=0)
-        mesh_points[:, 0] = X_mesh.reshape(-1)
-        mesh_points[:, 1] = Y_mesh.reshape(-1)
-        reconstructed = pca.inverse_transform(mesh_points).astype(np.float32, copy=False)
-        reconstructed_t = torch.tensor(reconstructed, dtype=torch.float32)
-
-        losses = _compute_loss_batch(
-            compression_embeddings_flat=reconstructed_t.to(dtype=torch_dtype),
-            original_shape=original_shape,
-            model=model,
-            device=device,
-            input_ids=input_ids_full,
-            input_text_embeds=input_text_embeds_full,
-            attention_mask=attention_mask_full,
-            target_outputs=target_outputs,
-            loss_type=loss_type,
-            batch_size=int(args.batch_size),
-        )
-        return losses.reshape(X_mesh.shape)
 
     def _compute_accuracy_surface_for_anchor(anchor_coords: np.ndarray, seq_len: int) -> np.ndarray:
         mesh_points = np.repeat(anchor_coords.reshape(1, -1), X_mesh.size, axis=0)
@@ -570,9 +382,6 @@ def main() -> None:
         anchor_coords = coords[current_idx].copy()
         current_seq_len = int(rows_sorted[current_idx].get("stage_seq_len", 1))
         Z_acc = _compute_accuracy_surface_for_anchor(anchor_coords, seq_len=current_seq_len)
-        Z_loss = None
-        if not bool(args.accuracy_only):
-            Z_loss = _compute_loss_surface_for_anchor(anchor_coords)
 
         # Save NPZ (single frame)
         npz_path = os.path.join(out_dir, "landscape_pc1_pc2.npz")
@@ -588,18 +397,14 @@ def main() -> None:
             "anchor_coords": anchor_coords,
             "explained_variance_ratio": pca.explained_variance_ratio_,
             "model_checkpoint": np.array([model_checkpoint]),
-            "loss_type": np.array([loss_type]),
             "dataset_path": np.array([args.dataset_path]),
             "sample_id": np.array([int(args.sample_id)], dtype=np.int64),
             "created_at": np.array([datetime.now().isoformat()]),
         }
-        if Z_loss is not None:
-            npz_kwargs["loss"] = Z_loss
         np.savez_compressed(npz_path, **npz_kwargs)
         print(f"Saved NPZ: {npz_path}")
 
         acc_out = os.path.join(out_dir, "landscape_accuracy_pc1_pc2.png")
-        combined_out = os.path.join(out_dir, "landscape_pc1_pc2_combined.png")
 
         _plot_surface(
             X_mesh=X_mesh,
@@ -616,68 +421,6 @@ def main() -> None:
             vmax=1.0,
         )
         print(f"Saved: {acc_out}")
-
-        if not bool(args.accuracy_only):
-            loss_out = os.path.join(out_dir, "landscape_loss_pc1_pc2.png")
-            assert Z_loss is not None
-            _plot_surface(
-                X_mesh=X_mesh,
-                Y_mesh=Y_mesh,
-                Z_mesh=Z_loss,
-                coords_xy=coords_xy,
-                stage_labels=stage_labels,
-                current_idx=current_idx,
-                title=f"Loss landscape on PC1-PC2 (sample_id={args.sample_id}, loss_type={loss_type})",
-                colorbar_label=f"Loss ({loss_type})",
-                outfile=loss_out,
-                cmap="viridis",
-            )
-            print(f"Saved: {loss_out}")
-
-            fig, axes = plt.subplots(1, 2, figsize=(15.5, 6.2))
-            im0 = axes[0].pcolormesh(X_mesh, Y_mesh, Z_loss, shading="auto", cmap="viridis")
-            fig.colorbar(im0, ax=axes[0], label=f"Loss ({loss_type})")
-            axes[0].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
-            axes[0].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
-            axes[0].scatter(
-                coords_xy[current_idx, 0],
-                coords_xy[current_idx, 1],
-                s=220,
-                marker="*",
-                c="red",
-                edgecolors="black",
-                linewidths=1.0,
-                zorder=20,
-            )
-            axes[0].set_title("Loss")
-            axes[0].set_xlabel("PC1")
-            axes[0].set_ylabel("PC2")
-            axes[0].axis("equal")
-
-            im1 = axes[1].pcolormesh(X_mesh, Y_mesh, Z_acc, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
-            fig.colorbar(im1, ax=axes[1], label="Teacher-forced accuracy")
-            axes[1].plot(coords_xy[:, 0], coords_xy[:, 1], color="white", alpha=0.65, linewidth=1.5)
-            axes[1].scatter(coords_xy[:, 0], coords_xy[:, 1], s=35, c="grey", alpha=0.9, edgecolors="black", linewidths=0.4)
-            axes[1].scatter(
-                coords_xy[current_idx, 0],
-                coords_xy[current_idx, 1],
-                s=220,
-                marker="*",
-                c="red",
-                edgecolors="black",
-                linewidths=1.0,
-                zorder=20,
-            )
-            axes[1].set_title("Accuracy")
-            axes[1].set_xlabel("PC1")
-            axes[1].set_ylabel("PC2")
-            axes[1].axis("equal")
-
-            fig.suptitle(f"PC1-PC2 landscapes (sample_id={args.sample_id})")
-            fig.tight_layout()
-            _savefig_with_pdf(combined_out, dpi=220)
-            plt.close(fig)
-            print(f"Saved: {combined_out}")
         return
 
     # Multi-frame GIF
@@ -689,7 +432,6 @@ def main() -> None:
     if sampled.size == 0:
         sampled = np.array([0], dtype=int)
 
-    loss_stack: List[np.ndarray] = []
     acc_stack: List[np.ndarray] = []
     anchors: List[np.ndarray] = []
     frames: List[np.ndarray] = []
@@ -701,30 +443,15 @@ def main() -> None:
         sampled_seq_lens.append(seq_len)
         anchors.append(anchor_coords)
         Z_acc = _compute_accuracy_surface_for_anchor(anchor_coords, seq_len=seq_len)
-        if not bool(args.accuracy_only):
-            Z_loss = _compute_loss_surface_for_anchor(anchor_coords)
-            loss_stack.append(Z_loss)
         acc_stack.append(Z_acc)
-        if bool(args.accuracy_only):
-            frame = _render_accuracy_frame(
-                X_mesh=X_mesh,
-                Y_mesh=Y_mesh,
-                Z_acc=Z_acc,
-                coords_xy=coords_xy,
-                current_idx=int(idx),
-                sample_id=int(args.sample_id),
-            )
-        else:
-            frame = _render_combined_frame(
-                X_mesh=X_mesh,
-                Y_mesh=Y_mesh,
-                Z_loss=Z_loss,
-                Z_acc=Z_acc,
-                coords_xy=coords_xy,
-                current_idx=int(idx),
-                loss_type=loss_type,
-                sample_id=int(args.sample_id),
-            )
+        frame = _render_accuracy_frame(
+            X_mesh=X_mesh,
+            Y_mesh=Y_mesh,
+            Z_acc=Z_acc,
+            coords_xy=coords_xy,
+            current_idx=int(idx),
+            sample_id=int(args.sample_id),
+        )
         frames.append(frame)
 
     gif_path = os.path.join(out_dir, "landscape_pc1_pc2.gif")
@@ -745,13 +472,10 @@ def main() -> None:
         "anchor_coords": np.stack(anchors, axis=0),
         "explained_variance_ratio": pca.explained_variance_ratio_,
         "model_checkpoint": np.array([model_checkpoint]),
-        "loss_type": np.array([loss_type]),
         "dataset_path": np.array([args.dataset_path]),
         "sample_id": np.array([int(args.sample_id)], dtype=np.int64),
         "created_at": np.array([datetime.now().isoformat()]),
     }
-    if not bool(args.accuracy_only):
-        npz_kwargs["loss"] = np.stack(loss_stack, axis=0)
     np.savez_compressed(npz_path, **npz_kwargs)
     print(f"Saved NPZ: {npz_path}")
 
