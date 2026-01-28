@@ -5,6 +5,7 @@ from typing import Any, Dict, Tuple
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import ConnectionPatch, Rectangle
 
 matplotlib.use("Agg")
 
@@ -99,7 +100,18 @@ def main() -> None:
 
     # Plot styling
     if sns is not None:
+        # seaborn sets its own rcParams for axes titles/labels; we override right after.
         sns.set_theme(style="whitegrid")
+    matplotlib.rcParams.update(
+        {
+            "font.size": 25,  # default text
+            "axes.titlesize": 25,
+            "xtick.labelsize": 25,
+            "ytick.labelsize": 25,
+            "axes.labelsize": 20,
+            "legend.fontsize": 25,
+        }
+    )
 
     npz = _load_npz(args.npz_path)
 
@@ -147,23 +159,26 @@ def main() -> None:
         )
     anchor_xy_all = anchor_coords[:, :2]
 
-    n_anchors_total = int(anchor_xy_all.shape[0])
-    if args.num_anchors is None or args.num_anchors <= 0 or args.num_anchors >= n_anchors_total:
-        anchor_sel = np.arange(n_anchors_total, dtype=np.int64)
-    else:
-        anchor_sel = np.unique(np.linspace(0, n_anchors_total - 1, num=int(args.num_anchors), dtype=np.int64))
-
-    if bool(args.skip_first_anchor) and anchor_sel.size > 0:
-        anchor_sel = anchor_sel[1:]
-
-    anchor_xy = anchor_xy_all[anchor_sel]
-    anchor_indices = sampled_indices[anchor_sel]
-
     zoom_start = int(args.zoom_in_start_point)
     if zoom_start < 0 or zoom_start >= coords_xy.shape[0]:
         raise ValueError(f"--zoom_in_start_point out of range: {zoom_start} (valid: 0..{coords_xy.shape[0]-1})")
 
-    # Filter anchors by zoom start (keep only anchors whose trajectory index is >= zoom_start).
+    n_anchors_total = int(anchor_xy_all.shape[0])
+    if args.num_anchors is None or args.num_anchors <= 0 or args.num_anchors >= n_anchors_total:
+        anchor_sel_full = np.arange(n_anchors_total, dtype=np.int64)
+    else:
+        anchor_sel_full = np.unique(np.linspace(0, n_anchors_total - 1, num=int(args.num_anchors), dtype=np.int64))
+
+    if bool(args.skip_first_anchor) and anchor_sel_full.size > 0:
+        anchor_sel_full = anchor_sel_full[1:]
+
+    anchor_xy_full = anchor_xy_all[anchor_sel_full]
+    anchor_indices_full = sampled_indices[anchor_sel_full]
+
+    # Zoom-filtered anchors (subset of the above)
+    anchor_sel = anchor_sel_full
+    anchor_xy = anchor_xy_full
+    anchor_indices = anchor_indices_full
     if zoom_start > 0 and anchor_indices.size > 0:
         keep = anchor_indices >= zoom_start
         anchor_sel = anchor_sel[keep]
@@ -193,165 +208,166 @@ def main() -> None:
         out_path = os.path.join(os.path.dirname(args.npz_path), "visual_abstract_pc1_pc2.png")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    fig, ax = plt.subplots(1, 1, figsize=(10.5, 8.5))
-
-    # Anchor colors (gradient)
-    if sns is not None:
-        # Use a pleasant scientific-looking palette.
-        colors = np.array(sns.color_palette("rocket_r", n_colors=max(int(len(anchor_sel)), 1)))
-        # Ensure RGBA for later use
-        if colors.shape[1] == 3:
-            colors = np.concatenate([colors, np.ones((colors.shape[0], 1), dtype=colors.dtype)], axis=1)
-    else:
-        cmap = plt.get_cmap("viridis")
-        colors = cmap(np.linspace(0.05, 0.95, num=len(anchor_sel)))
-
-    # Near-ideal regions for each anchor (accuracy > threshold) as continuous overlays.
-    # Use a lightness-to-white gradient inside the region (clean colors, no opacity gradient).
-    # Draw first (beneath trajectory + anchors).
     thr = float(args.threshold)
-    max_region_alpha = 0.6
-    near_perfect_area_by_anchor: Dict[int, float] = {}
-    for k, (aidx, color) in enumerate(zip(anchor_sel.tolist(), colors)):
-        acc_map = acc_per_anchor[int(aidx)]
-        gx = grid_x_all[int(aidx), pair_idx]
-        gy = grid_y_all[int(aidx), pair_idx]
-        cell_area = _estimate_cell_area(gx, gy)
-        mask = acc_map > thr
-        near_perfect_area_by_anchor[int(aidx)] = float(mask.sum()) * cell_area if cell_area > 0 else float(mask.sum())
-        if not np.any(mask):
-            continue
-        # Constant opacity (no opacity gradient).
-        alpha_grid = (max_region_alpha * mask.astype(np.float32)).astype(np.float32)
 
-        # Color gradient (towards white) by distance from region center:
-        # farther from the anchor point in PC space -> whiter.
-        center_x = float(anchor_xy_all[int(aidx), 0])
-        center_y = float(anchor_xy_all[int(aidx), 1])
-        dist = np.sqrt((gx - center_x) ** 2 + (gy - center_y) ** 2).astype(np.float32)
-        dist_in = dist[mask]
-        if dist_in.size > 0:
-            d_min = float(np.min(dist_in))
-            d_max = float(np.max(dist_in))
-        else:
-            d_min = 0.0
-            d_max = 0.0
-        if d_max > d_min:
-            whiten = (dist - d_min) / (d_max - d_min + 1e-12)
-        else:
-            whiten = np.zeros_like(dist, dtype=np.float32)
-        whiten = np.clip(whiten, 0.0, 1.0) * mask.astype(np.float32)
+    def _make_colors(n: int) -> np.ndarray:
+        if sns is not None:
+            cols = np.array(sns.color_palette("rocket_r", n_colors=max(int(n), 1)))
+            if cols.shape[1] == 3:
+                cols = np.concatenate([cols, np.ones((cols.shape[0], 1), dtype=cols.dtype)], axis=1)
+            return cols
+        cmap = plt.get_cmap("viridis")
+        return cmap(np.linspace(0.05, 0.95, num=max(int(n), 1)))
 
-        anchor_rgb = np.array(color[:3], dtype=np.float32)
-        rgb = anchor_rgb[None, None, :] * (1.0 - whiten[..., None]) + 1.0 * whiten[..., None]
-        rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32)
-        rgba_img = np.zeros((acc_map.shape[0], acc_map.shape[1], 4), dtype=np.float32)
-        rgba_img[:, :, :3] = rgb
-        rgba_img[:, :, 3] = alpha_grid
-
-        ax.imshow(
-            rgba_img,
-            origin="lower",
-            extent=[
-                float(gx.min()),
-                float(gx.max()),
-                float(gy.min()),
-                float(gy.max()),
-            ],
-            interpolation="nearest",
-            zorder=1 + 0.001 * float(k),
-        )
-
-    # Background trajectory scatter (draw above regions)
-    coords_xy_plot = coords_xy[zoom_start:]
-    ax.scatter(
-        coords_xy_plot[:, 0],
-        coords_xy_plot[:, 1],
-        s=40,
-        c="black",
-        alpha=float(args.scatter_alpha),
-        linewidths=0,
-        zorder=2,
-    )
-
-    # Anchor markers + labels (on top). Size is proportional to near-ideal area.
-    areas = np.array([float(near_perfect_area_by_anchor.get(int(anchor_sel[k]), 0.0)) for k in range(len(anchor_sel))])
-    if areas.size > 0 and np.isfinite(areas).any():
-        a_min = float(np.nanmin(areas))
-        a_max = float(np.nanmax(areas))
+    colors_full = _make_colors(int(len(anchor_sel_full)))
+    if len(anchor_sel) == len(anchor_sel_full):
+        colors_zoom = colors_full
     else:
-        a_min = 0.0
-        a_max = 0.0
+        keep_full = anchor_indices_full >= zoom_start
+        colors_zoom = colors_full[keep_full]
 
-    def _size_from_area(area: float) -> float:
-        # Map area to marker size range for readability.
-        # Use sqrt scaling to compress dynamic range.
-        if not np.isfinite(area) or area <= 0 or a_max <= a_min:
-            return 110.0
-        t = (float(area) - a_min) / (a_max - a_min + 1e-12)
-        t = float(np.clip(t, 0.0, 1.0))
-        return 90.0 + 260.0 * (t**0.5)
+    def _draw_panel(ax, zoom_start_point: int, anchor_sel_local, anchor_xy_local, anchor_indices_local, colors_local):
+        max_region_alpha = 0.8
+        near_perfect_area_by_anchor: Dict[int, float] = {}
 
-    for k, ((x, y), idx, color) in enumerate(zip(anchor_xy, anchor_indices.tolist(), colors)):
-        aidx = int(anchor_sel[k])
-        area = float(near_perfect_area_by_anchor.get(aidx, 0.0))
-        size = _size_from_area(area)
-        ax.scatter(
-            [x],
-            [y],
-            s=size,
-            c=[color],
-            edgecolors="black",
-            linewidths=0.8,
-            zorder=5,
-        )
-        ax.text(
-            float(x),
-            float(y),
-            f"{idx}",
-            fontsize=20,
-            ha="left",
-            va="bottom",
-            color="black",
-            zorder=6,
-        )
-
-    # Zoom-in limits (based on shown trajectory, shown anchors, and their grid extents).
-    x_mins: list[float] = [float(np.min(coords_xy_plot[:, 0]))]
-    x_maxs: list[float] = [float(np.max(coords_xy_plot[:, 0]))]
-    y_mins: list[float] = [float(np.min(coords_xy_plot[:, 1]))]
-    y_maxs: list[float] = [float(np.max(coords_xy_plot[:, 1]))]
-    if anchor_xy.size > 0:
-        x_mins.append(float(np.min(anchor_xy[:, 0])))
-        x_maxs.append(float(np.max(anchor_xy[:, 0])))
-        y_mins.append(float(np.min(anchor_xy[:, 1])))
-        y_maxs.append(float(np.max(anchor_xy[:, 1])))
-        for aidx in anchor_sel.tolist():
+        for k, (aidx, color) in enumerate(zip(anchor_sel_local.tolist(), colors_local)):
             acc_map = acc_per_anchor[int(aidx)]
-            mask = acc_map > thr
-            if not np.any(mask):
-                continue
             gx = grid_x_all[int(aidx), pair_idx]
             gy = grid_y_all[int(aidx), pair_idx]
-            x_mins.append(float(gx[mask].min()))
-            x_maxs.append(float(gx[mask].max()))
-            y_mins.append(float(gy[mask].min()))
-            y_maxs.append(float(gy[mask].max()))
-    x_min = float(np.min(x_mins))
-    x_max = float(np.max(x_maxs))
-    y_min = float(np.min(y_mins))
-    y_max = float(np.max(y_maxs))
-    pad = float(args.zoom_in_padding)
-    dx = x_max - x_min
-    dy = y_max - y_min
-    ax.set_xlim(x_min - pad * dx, x_max + pad * dx)
-    ax.set_ylim(y_min - pad * dy, y_max + pad * dy)
+            cell_area = _estimate_cell_area(gx, gy)
+            mask = acc_map > thr
+            near_perfect_area_by_anchor[int(aidx)] = float(mask.sum()) * cell_area if cell_area > 0 else float(mask.sum())
+            if not np.any(mask):
+                continue
+            alpha_grid = (max_region_alpha * mask.astype(np.float32)).astype(np.float32)
+
+            center_x = float(anchor_xy_all[int(aidx), 0])
+            center_y = float(anchor_xy_all[int(aidx), 1])
+            dist = np.sqrt((gx - center_x) ** 2 + (gy - center_y) ** 2).astype(np.float32)
+            dist_in = dist[mask]
+            if dist_in.size > 0:
+                d_min = float(np.min(dist_in))
+                d_max = float(np.max(dist_in))
+            else:
+                d_min = 0.0
+                d_max = 0.0
+            if d_max > d_min:
+                whiten = (dist - d_min) / (d_max - d_min + 1e-12)
+            else:
+                whiten = np.zeros_like(dist, dtype=np.float32)
+            whiten = np.clip(whiten, 0.0, 1.0) * mask.astype(np.float32)
+
+            anchor_rgb = np.array(color[:3], dtype=np.float32)
+            rgb = anchor_rgb[None, None, :] * (1.0 - whiten[..., None]) + 1.0 * whiten[..., None]
+            rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32)
+            rgba_img = np.zeros((acc_map.shape[0], acc_map.shape[1], 4), dtype=np.float32)
+            rgba_img[:, :, :3] = rgb
+            rgba_img[:, :, 3] = alpha_grid
+
+            ax.imshow(
+                rgba_img,
+                origin="lower",
+                extent=[
+                    float(gx.min()),
+                    float(gx.max()),
+                    float(gy.min()),
+                    float(gy.max()),
+                ],
+                interpolation="nearest",
+                zorder=1 + 0.001 * float(k),
+            )
+
+        coords_xy_plot = coords_xy[int(zoom_start_point) :]
+        ax.scatter(
+            coords_xy_plot[:, 0],
+            coords_xy_plot[:, 1],
+            s=40,
+            c="black",
+            alpha=float(args.scatter_alpha),
+            linewidths=0,
+            zorder=2,
+        )
+
+        areas = np.array(
+            [float(near_perfect_area_by_anchor.get(int(anchor_sel_local[k]), 0.0)) for k in range(len(anchor_sel_local))]
+        )
+        if areas.size > 0 and np.isfinite(areas).any():
+            a_min = float(np.nanmin(areas))
+            a_max = float(np.nanmax(areas))
+        else:
+            a_min = 0.0
+            a_max = 0.0
+
+        def _size_from_area(area: float) -> float:
+            if not np.isfinite(area) or area <= 0 or a_max <= a_min:
+                return 110.0
+            t = (float(area) - a_min) / (a_max - a_min + 1e-12)
+            t = float(np.clip(t, 0.0, 1.0))
+            return 90.0 + 260.0 * (t**0.5)
+
+        for k, ((x, y), idx, color) in enumerate(zip(anchor_xy_local, anchor_indices_local.tolist(), colors_local)):
+            aidx = int(anchor_sel_local[k])
+            area = float(near_perfect_area_by_anchor.get(aidx, 0.0))
+            size = _size_from_area(area)
+            ax.scatter(
+                [x],
+                [y],
+                s=size,
+                c=[color],
+                edgecolors="black",
+                linewidths=0.8,
+                zorder=5,
+            )
+            ax.text(
+                float(x),
+                float(y),
+                f"{idx}",
+                fontsize=20,
+                ha="left",
+                va="bottom",
+                color="black",
+                zorder=6,
+            )
+
+        # Zoom-in limits based on trajectory, anchors, and actual near-ideal regions.
+        x_mins: list[float] = [float(np.min(coords_xy_plot[:, 0]))]
+        x_maxs: list[float] = [float(np.max(coords_xy_plot[:, 0]))]
+        y_mins: list[float] = [float(np.min(coords_xy_plot[:, 1]))]
+        y_maxs: list[float] = [float(np.max(coords_xy_plot[:, 1]))]
+        if anchor_xy_local.size > 0:
+            x_mins.append(float(np.min(anchor_xy_local[:, 0])))
+            x_maxs.append(float(np.max(anchor_xy_local[:, 0])))
+            y_mins.append(float(np.min(anchor_xy_local[:, 1])))
+            y_maxs.append(float(np.max(anchor_xy_local[:, 1])))
+            for aidx in anchor_sel_local.tolist():
+                acc_map = acc_per_anchor[int(aidx)]
+                mask = acc_map > thr
+                if not np.any(mask):
+                    continue
+                gx = grid_x_all[int(aidx), pair_idx]
+                gy = grid_y_all[int(aidx), pair_idx]
+                x_mins.append(float(gx[mask].min()))
+                x_maxs.append(float(gx[mask].max()))
+                y_mins.append(float(gy[mask].min()))
+                y_maxs.append(float(gy[mask].max()))
+        x_min = float(np.min(x_mins))
+        x_max = float(np.max(x_maxs))
+        y_min = float(np.min(y_mins))
+        y_max = float(np.max(y_maxs))
+        pad = float(args.zoom_in_padding)
+        dx = max(x_max - x_min, 1e-6)
+        dy = max(y_max - y_min, 1e-6)
+        ax.set_xlim(x_min - pad * dx, x_max + pad * dx)
+        ax.set_ylim(y_min - pad * dy, y_max + pad * dy)
+
+    fig, ax = plt.subplots(1, 1, figsize=(10.5, 8.5))
+    _draw_panel(ax, zoom_start, anchor_sel, anchor_xy, anchor_indices, colors_zoom)
 
     fig_title = f"Visual abstract: PC1-PC2 accuracy regions (>{thr:.2f}), cumulative={ev_cum_2:.3f}"
     print(fig_title)
 
-    ax.set_xlabel(f"PC1 {{{ev1:.3f}}}", fontsize=25)
-    ax.set_ylabel(f"PC2 {{{ev2:.3f}}}", fontsize=25)
+    ax.set_xlabel(f"PC1 {{{ev1:.3f}}}")
+    ax.set_ylabel(f"PC2 {{{ev2:.3f}}}")
     ax.tick_params(axis="both", which="major", labelsize=20)
     ax.axis("equal")
     ax.grid(True, alpha=0.15)
@@ -362,6 +378,68 @@ def main() -> None:
     plt.close(fig)
     print(f"Saved: {out_path}")
     print(f"Saved: {out_path[:-4] + '.pdf'}")
+
+    # Joined figure: original (full) + zoomed-in side-by-side
+    if zoom_start > 0:
+        joined_path = out_path[:-4] + "_joined.png"
+        joined_pdf = out_path[:-4] + "_joined.pdf"
+        fig2, axes = plt.subplots(1, 2, figsize=(20.0, 8.5))
+        _draw_panel(axes[0], 0, anchor_sel_full, anchor_xy_full, anchor_indices_full, colors_full)
+        axes[0].set_title("Full")
+        _draw_panel(axes[1], zoom_start, anchor_sel, anchor_xy, anchor_indices, colors_zoom)
+        axes[1].set_title("Zoom-in")
+
+        # Draw dashed rectangle on the left panel showing the zoomed region,
+        # and dashed connectors to the zoom panel.
+        # full_xlim = axes[0].get_xlim()
+        # full_ylim = axes[0].get_ylim()
+        zoom_xlim = axes[1].get_xlim()
+        zoom_ylim = axes[1].get_ylim()
+
+        rect = Rectangle(
+            (zoom_xlim[0], zoom_ylim[0]),
+            zoom_xlim[1] - zoom_xlim[0],
+            zoom_ylim[1] - zoom_ylim[0],
+            fill=False,
+            linestyle="--",
+            linewidth=2.0,
+            edgecolor="black",
+            zorder=50,
+        )
+        axes[0].add_patch(rect)
+
+        # Connect corresponding corners (keep it readable: two diagonals).
+        corners_left = [
+            (float(zoom_xlim[0]), float(zoom_ylim[0])),
+            (float(zoom_xlim[1]), float(zoom_ylim[1])),
+        ]
+        corners_right = corners_left
+        for (xa, ya), (xb, yb) in zip(corners_left, corners_right):
+            con = ConnectionPatch(
+                xyA=(xa, ya),
+                coordsA=axes[0].transData,
+                xyB=(xb, yb),
+                coordsB=axes[1].transData,
+                linestyle="--",
+                linewidth=2.0,
+                color="black",
+                alpha=0.6,
+                zorder=49,
+            )
+            fig2.add_artist(con)
+
+        for ax_i in axes:
+            ax_i.set_xlabel(f"PC1 {{{ev1:.3f}}}")
+            ax_i.set_ylabel(f"PC2 {{{ev2:.3f}}}")
+            ax_i.tick_params(axis="both", which="major", labelsize=20)
+            ax_i.axis("equal")
+            ax_i.grid(True, alpha=0.15)
+        plt.tight_layout()
+        plt.savefig(joined_path, dpi=int(args.dpi))
+        plt.savefig(joined_pdf, dpi=int(args.dpi))
+        plt.close(fig2)
+        print(f"Saved: {joined_path}")
+        print(f"Saved: {joined_pdf}")
 
 
 if __name__ == "__main__":
