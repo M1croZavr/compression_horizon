@@ -80,7 +80,7 @@ def pick_best_run(runs: List[RunMetrics]) -> Optional[RunMetrics]:
 def to_percentage_cell(val: Optional[float]) -> str:
     if val is None:
         return ""
-    return f"{val * 100:.2f}%"
+    return f"{val * 100:.2f}{{\\small %}}"
 
 
 def main() -> int:
@@ -153,7 +153,7 @@ def main() -> int:
         model_slug = model_mapping.get(model_slug, model_slug)
         rows.append(
             [
-                model_slug,
+                "\\small " + model_slug,
                 to_percentage_cell(hs_best.baseline_token_accuracy if hs_best else None),
                 to_percentage_cell(hs_best.compressed_token_accuracy if hs_best else None),
                 to_percentage_cell(arc_best.baseline_token_accuracy if arc_best else None),
@@ -172,6 +172,11 @@ def main() -> int:
     result = result.split("\n")
     result.insert(2, "                   & \multicolumn{2}{c}{\\textbf{HellaSwag}} & \multicolumn{2}{c}{\\textbf{ARC-E}} \\\\")
     result = "\n".join(result)
+    result = result.replace("\\textbackslash{}", "\\")
+    result = result.replace("\$", "$")
+    result = result.replace("\\{", "{")
+    result = result.replace("\\}", "}")
+
     print(result)
     return 0
 
