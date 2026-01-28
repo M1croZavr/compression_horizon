@@ -139,7 +139,7 @@ def _compute_accuracy_batch(
             attn_bs = attention_mask.expand(bs, -1)
             extended_attention_mask = torch.cat([comp_attention, attn_bs], dim=1)
 
-            outputs = model(inputs_embeds=inputs_embeds, attention_mask=extended_attention_mask)
+            outputs = model(inputs_embeds=inputs_embeds, attention_mask=extended_attention_mask, use_cache=False)
             pred_logits = outputs.logits[:, mem_tokens - 1 : -1]
             pred_tokens = pred_logits.argmax(dim=-1)
 
@@ -262,6 +262,7 @@ def _render_accuracy_grid_frame(
     grids_y: List[np.ndarray],
     acc_surfaces: List[np.ndarray],
     coords: np.ndarray,
+    explained_variance_ratio: np.ndarray,
     current_idx: int,
     sample_id: int,
 ) -> np.ndarray:
@@ -301,9 +302,11 @@ def _render_accuracy_grid_frame(
                 zorder=20,
             )
 
-        ax.set_title(f"PC{i+1} vs PC{j+1}", fontsize=12)
-        ax.set_xlabel(f"PC{i+1}")
-        ax.set_ylabel(f"PC{j+1}")
+        vx = float(explained_variance_ratio[i]) if i < len(explained_variance_ratio) else float("nan")
+        vy = float(explained_variance_ratio[j]) if j < len(explained_variance_ratio) else float("nan")
+        ax.set_title(f"PC{i+1} {{{vx:.3f}}} vs PC{j+1} {{{vy:.3f}}}", fontsize=12)
+        ax.set_xlabel(f"PC{i+1} {{{vx:.3f}}}")
+        ax.set_ylabel(f"PC{j+1} {{{vy:.3f}}}")
         ax.axis("equal")
 
     # Hide unused axes
@@ -404,8 +407,12 @@ def main() -> None:
     if n_components < 2:
         raise ValueError(f"PCA requires >=2 components; got n_components={n_components}")
 
-    pca_dim = 4 if bool(args.pca4) else 2
-    pca_dim = int(min(pca_dim, n_components))
+    # # Important: always fit PCA with up to 4 components, even if we only plot PC1-PC2.
+    # # Otherwise, when plotting only one pair (PC1,PC2), the per-frame anchor would be
+    # # overwritten entirely by the mesh grid and the landscape would not change across frames.
+    # # Fitting with >=3 components lets us keep the remaining PCs fixed to the current anchor.
+    # pca_dim = int(min(4, n_components))
+    pca_dim = n_components
     if pca_dim < 2:
         raise ValueError(f"Need at least 2 PCA components; got pca_dim={pca_dim}")
 
@@ -415,7 +422,10 @@ def main() -> None:
     # Default anchor: penultimate stage embedding in the sorted trajectory
     penultimate_idx = max(0, len(rows_sorted) - 2)
 
-    pair_indices = [(i, j) for i in range(pca_dim) for j in range(i + 1, pca_dim)]
+    if bool(args.pca4):
+        pair_indices = [(i, j) for i in range(pca_dim) for j in range(i + 1, pca_dim)]
+    else:
+        pair_indices = [(0, 1)]
     if not pair_indices:
         raise ValueError("No PCA pairs available to plot.")
 
@@ -488,6 +498,8 @@ def main() -> None:
             coords_pair = coords[:, [i, j]]
             out_name = f"landscape_accuracy_pc{i+1}_pc{j+1}.png"
             acc_out = os.path.join(out_dir, out_name)
+            vx = float(pca.explained_variance_ratio_[i]) if i < len(pca.explained_variance_ratio_) else float("nan")
+            vy = float(pca.explained_variance_ratio_[j]) if j < len(pca.explained_variance_ratio_) else float("nan")
             _plot_surface(
                 X_mesh=X_mesh,
                 Y_mesh=Y_mesh,
@@ -495,12 +507,12 @@ def main() -> None:
                 coords_xy=coords_pair,
                 stage_labels=stage_labels,
                 current_idx=current_idx,
-                title=f"Accuracy landscape on PC{i+1}-PC{j+1} (sample_id={args.sample_id})",
+                title=f"Accuracy landscape on PC{i+1} {{{vx:.3f}}} - PC{j+1} {{{vy:.3f}}} (sample_id={args.sample_id})",
                 colorbar_label="Teacher-forced accuracy",
                 outfile=acc_out,
                 cmap="magma",
-                x_label=f"PC{i+1}",
-                y_label=f"PC{j+1}",
+                x_label=f"PC{i+1} {{{vx:.3f}}}",
+                y_label=f"PC{j+1} {{{vy:.3f}}}",
                 vmin=0.0,
                 vmax=1.0,
             )
@@ -568,6 +580,8 @@ def main() -> None:
 
         if len(pair_indices) == 1:
             (i0, j0) = pair_indices[0]
+            vx = float(pca.explained_variance_ratio_[i0]) if i0 < len(pca.explained_variance_ratio_) else float("nan")
+            vy = float(pca.explained_variance_ratio_[j0]) if j0 < len(pca.explained_variance_ratio_) else float("nan")
             frame = _render_accuracy_frame(
                 X_mesh=grids_x[0],
                 Y_mesh=grids_y[0],
@@ -575,8 +589,8 @@ def main() -> None:
                 coords_xy=coords[:, [i0, j0]],
                 current_idx=int(idx),
                 sample_id=int(args.sample_id),
-                x_label=f"PC{i0+1}",
-                y_label=f"PC{j0+1}",
+                x_label=f"PC{i0+1} {{{vx:.3f}}}",
+                y_label=f"PC{j0+1} {{{vy:.3f}}}",
             )
         else:
             frame = _render_accuracy_grid_frame(
@@ -585,6 +599,7 @@ def main() -> None:
                 grids_y=grids_y,
                 acc_surfaces=acc_surfaces,
                 coords=coords,
+                explained_variance_ratio=pca.explained_variance_ratio_,
                 current_idx=int(idx),
                 sample_id=int(args.sample_id),
             )
