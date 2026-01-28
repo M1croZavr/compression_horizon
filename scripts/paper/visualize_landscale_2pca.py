@@ -172,6 +172,8 @@ def _plot_surface(
     colorbar_label: str,
     outfile: str,
     cmap: str,
+    x_label: str = "PC1",
+    y_label: str = "PC2",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
 ) -> None:
@@ -199,8 +201,8 @@ def _plot_surface(
         if i == 0 or i == len(stage_labels) - 1 or i == current_idx:
             plt.text(coords_xy[i, 0], coords_xy[i, 1], lab, fontsize=10, color="black")
 
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
     plt.title(title)
     plt.axis("equal")
     plt.tight_layout()
@@ -215,6 +217,8 @@ def _render_accuracy_frame(
     coords_xy: np.ndarray,
     current_idx: int,
     sample_id: int,
+    x_label: str,
+    y_label: str,
 ) -> np.ndarray:
     fig, ax = plt.subplots(1, 1, figsize=(9.5, 7.5))
 
@@ -234,11 +238,82 @@ def _render_accuracy_frame(
             zorder=20,
         )
     ax.set_title("Accuracy")
-    ax.set_xlabel("PC1")
-    ax.set_ylabel("PC2")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
     ax.axis("equal")
 
     fig.suptitle(f"Accuracy landscape (sample_id={sample_id})")
+    fig.tight_layout()
+    fig.canvas.draw()
+    if hasattr(fig.canvas, "buffer_rgba"):
+        rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        img = rgba[:, :, :3].copy()
+    else:
+        w, h = fig.canvas.get_width_height()
+        argb = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8).reshape(h, w, 4)
+        img = argb[:, :, 1:4].copy()
+    plt.close(fig)
+    return img
+
+
+def _render_accuracy_grid_frame(
+    pair_indices: List[Tuple[int, int]],
+    grids_x: List[np.ndarray],
+    grids_y: List[np.ndarray],
+    acc_surfaces: List[np.ndarray],
+    coords: np.ndarray,
+    current_idx: int,
+    sample_id: int,
+) -> np.ndarray:
+    # 2x3 grid for up to 6 pairs; falls back gracefully for fewer pairs.
+    n_pairs = int(len(pair_indices))
+    if n_pairs < 1:
+        raise ValueError("n_pairs must be >= 1")
+
+    n_cols = 3 if n_pairs > 1 else 1
+    n_rows = int((n_pairs + n_cols - 1) // n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20.5 if n_pairs > 1 else 9.5, 6.2 * n_rows))
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
+    axes = axes.flatten()
+
+    # Shared colorbar across subplots
+    mappable = None
+    for k, (i, j) in enumerate(pair_indices):
+        ax = axes[k]
+        X_mesh = grids_x[k]
+        Y_mesh = grids_y[k]
+        Z_acc = acc_surfaces[k]
+        mappable = ax.pcolormesh(X_mesh, Y_mesh, Z_acc, shading="auto", cmap="magma", vmin=0.0, vmax=1.0)
+
+        coords_pair = coords[:, [i, j]]
+        ax.plot(coords_pair[:, 0], coords_pair[:, 1], color="white", alpha=0.65, linewidth=1.2)
+        ax.scatter(coords_pair[:, 0], coords_pair[:, 1], s=22, c="grey", alpha=0.9, edgecolors="black", linewidths=0.3)
+        if coords_pair.shape[0] >= 1 and 0 <= current_idx < coords_pair.shape[0]:
+            ax.scatter(
+                coords_pair[current_idx, 0],
+                coords_pair[current_idx, 1],
+                s=180,
+                marker="*",
+                c="red",
+                edgecolors="black",
+                linewidths=0.9,
+                zorder=20,
+            )
+
+        ax.set_title(f"PC{i+1} vs PC{j+1}", fontsize=12)
+        ax.set_xlabel(f"PC{i+1}")
+        ax.set_ylabel(f"PC{j+1}")
+        ax.axis("equal")
+
+    # Hide unused axes
+    for k in range(n_pairs, len(axes)):
+        axes[k].axis("off")
+
+    if mappable is not None:
+        fig.colorbar(mappable, ax=axes[:n_pairs].tolist(), label="Teacher-forced accuracy", shrink=0.9)
+
+    fig.suptitle(f"Accuracy landscapes (sample_id={sample_id})")
     fig.tight_layout()
     fig.canvas.draw()
     if hasattr(fig.canvas, "buffer_rgba"):
@@ -261,6 +336,12 @@ def main() -> None:
     parser.add_argument("--mesh_resolution", type=int, default=40, help="Grid resolution for PC1/PC2")
     parser.add_argument("--padding", type=float, default=0.15, help="Fractional padding added to PCA bounds")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for model forward passes")
+    parser.add_argument(
+        "--pca4",
+        default=False,
+        action="store_true",
+        help="If set, compute accuracy landscapes for all pairs among the first 4 PCs (up to 6 pairs).",
+    )
     parser.add_argument(
         "--num-frames",
         "--num_frames",
@@ -323,19 +404,20 @@ def main() -> None:
     if n_components < 2:
         raise ValueError(f"PCA requires >=2 components; got n_components={n_components}")
 
-    pca = PCA(n_components=n_components, random_state=42)
+    pca_dim = 4 if bool(args.pca4) else 2
+    pca_dim = int(min(pca_dim, n_components))
+    if pca_dim < 2:
+        raise ValueError(f"Need at least 2 PCA components; got pca_dim={pca_dim}")
+
+    pca = PCA(n_components=pca_dim, random_state=42)
     coords = pca.fit_transform(X)
-    coords_xy = coords[:, :2]
 
     # Default anchor: penultimate stage embedding in the sorted trajectory
     penultimate_idx = max(0, len(rows_sorted) - 2)
 
-    # Grid bounds on PC1/PC2
-    pc1_lo, pc1_hi = _expanded_bounds(float(coords_xy[:, 0].min()), float(coords_xy[:, 0].max()), float(args.padding))
-    pc2_lo, pc2_hi = _expanded_bounds(float(coords_xy[:, 1].min()), float(coords_xy[:, 1].max()), float(args.padding))
-    x_range = np.linspace(pc1_lo, pc1_hi, int(args.mesh_resolution))
-    y_range = np.linspace(pc2_lo, pc2_hi, int(args.mesh_resolution))
-    X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
+    pair_indices = [(i, j) for i in range(pca_dim) for j in range(i + 1, pca_dim)]
+    if not pair_indices:
+        raise ValueError("No PCA pairs available to plot.")
 
     # Precompute tokenization once. Accuracy will be sliced per-frame to match
     # the starred stage's stage_seq_len.
@@ -356,10 +438,19 @@ def main() -> None:
             attention_mask_full[:, :use_len],
         )
 
-    def _compute_accuracy_surface_for_anchor(anchor_coords: np.ndarray, seq_len: int) -> np.ndarray:
+    def _make_mesh_for_pair(i: int, j: int) -> Tuple[np.ndarray, np.ndarray]:
+        lo_i, hi_i = _expanded_bounds(float(coords[:, i].min()), float(coords[:, i].max()), float(args.padding))
+        lo_j, hi_j = _expanded_bounds(float(coords[:, j].min()), float(coords[:, j].max()), float(args.padding))
+        x_range = np.linspace(lo_i, hi_i, int(args.mesh_resolution))
+        y_range = np.linspace(lo_j, hi_j, int(args.mesh_resolution))
+        return np.meshgrid(x_range, y_range)
+
+    def _compute_accuracy_surface_for_anchor_pair(
+        anchor_coords: np.ndarray, seq_len: int, i: int, j: int, X_mesh: np.ndarray, Y_mesh: np.ndarray
+    ) -> np.ndarray:
         mesh_points = np.repeat(anchor_coords.reshape(1, -1), X_mesh.size, axis=0)
-        mesh_points[:, 0] = X_mesh.reshape(-1)
-        mesh_points[:, 1] = Y_mesh.reshape(-1)
+        mesh_points[:, i] = X_mesh.reshape(-1)
+        mesh_points[:, j] = Y_mesh.reshape(-1)
         reconstructed = pca.inverse_transform(mesh_points).astype(np.float32, copy=False)
         reconstructed_t = torch.tensor(reconstructed, dtype=torch.float32)
 
@@ -381,102 +472,153 @@ def main() -> None:
         current_idx = int(penultimate_idx)
         anchor_coords = coords[current_idx].copy()
         current_seq_len = int(rows_sorted[current_idx].get("stage_seq_len", 1))
-        Z_acc = _compute_accuracy_surface_for_anchor(anchor_coords, seq_len=current_seq_len)
+        grids_x: List[np.ndarray] = []
+        grids_y: List[np.ndarray] = []
+        acc_surfaces: List[np.ndarray] = []
+
+        for i, j in pair_indices:
+            X_mesh, Y_mesh = _make_mesh_for_pair(i, j)
+            Z_acc = _compute_accuracy_surface_for_anchor_pair(
+                anchor_coords, seq_len=current_seq_len, i=i, j=j, X_mesh=X_mesh, Y_mesh=Y_mesh
+            )
+            grids_x.append(X_mesh)
+            grids_y.append(Y_mesh)
+            acc_surfaces.append(Z_acc)
+
+            coords_pair = coords[:, [i, j]]
+            out_name = f"landscape_accuracy_pc{i+1}_pc{j+1}.png"
+            acc_out = os.path.join(out_dir, out_name)
+            _plot_surface(
+                X_mesh=X_mesh,
+                Y_mesh=Y_mesh,
+                Z_mesh=Z_acc,
+                coords_xy=coords_pair,
+                stage_labels=stage_labels,
+                current_idx=current_idx,
+                title=f"Accuracy landscape on PC{i+1}-PC{j+1} (sample_id={args.sample_id})",
+                colorbar_label="Teacher-forced accuracy",
+                outfile=acc_out,
+                cmap="magma",
+                x_label=f"PC{i+1}",
+                y_label=f"PC{j+1}",
+                vmin=0.0,
+                vmax=1.0,
+            )
+            print(f"Saved: {acc_out}")
 
         # Save NPZ (single frame)
-        npz_path = os.path.join(out_dir, "landscape_pc1_pc2.npz")
-        npz_kwargs: Dict[str, Any] = {
-            "pc1_grid": X_mesh,
-            "pc2_grid": Y_mesh,
-            "accuracy": Z_acc,
-            "coords_xy": coords_xy,
-            "stage_index": np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
-            "stage_seq_len": np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
-            "current_idx": np.array([current_idx], dtype=np.int64),
-            "current_seq_len": np.array([current_seq_len], dtype=np.int64),
-            "anchor_coords": anchor_coords,
-            "explained_variance_ratio": pca.explained_variance_ratio_,
-            "model_checkpoint": np.array([model_checkpoint]),
-            "dataset_path": np.array([args.dataset_path]),
-            "sample_id": np.array([int(args.sample_id)], dtype=np.int64),
-            "created_at": np.array([datetime.now().isoformat()]),
-        }
-        np.savez_compressed(npz_path, **npz_kwargs)
-        print(f"Saved NPZ: {npz_path}")
-
-        acc_out = os.path.join(out_dir, "landscape_accuracy_pc1_pc2.png")
-
-        _plot_surface(
-            X_mesh=X_mesh,
-            Y_mesh=Y_mesh,
-            Z_mesh=Z_acc,
-            coords_xy=coords_xy,
-            stage_labels=stage_labels,
-            current_idx=current_idx,
-            title=f"Accuracy landscape on PC1-PC2 (sample_id={args.sample_id})",
-            colorbar_label="Teacher-forced accuracy",
-            outfile=acc_out,
-            cmap="magma",
-            vmin=0.0,
-            vmax=1.0,
+        npz_path = os.path.join(out_dir, "landscape_pca_pairs.npz")
+        np.savez_compressed(
+            npz_path,
+            pair_indices=np.array(pair_indices, dtype=np.int64),
+            grid_x=np.stack(grids_x, axis=0),
+            grid_y=np.stack(grids_y, axis=0),
+            accuracy=np.stack(acc_surfaces, axis=0),
+            coords=coords,
+            stage_index=np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
+            stage_seq_len=np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
+            current_idx=np.array([current_idx], dtype=np.int64),
+            current_seq_len=np.array([current_seq_len], dtype=np.int64),
+            anchor_coords=anchor_coords,
+            explained_variance_ratio=pca.explained_variance_ratio_,
+            model_checkpoint=np.array([model_checkpoint]),
+            dataset_path=np.array([args.dataset_path]),
+            sample_id=np.array([int(args.sample_id)], dtype=np.int64),
+            created_at=np.array([datetime.now().isoformat()]),
         )
-        print(f"Saved: {acc_out}")
+        print(f"Saved NPZ: {npz_path}")
         return
 
     # Multi-frame GIF
     import imageio.v2 as imageio
 
-    n_traj = int(coords_xy.shape[0])
+    n_traj = int(coords.shape[0])
     sampled = np.linspace(0, max(n_traj - 1, 0), num=num_frames, dtype=int)
     sampled = np.unique(sampled)
     if sampled.size == 0:
         sampled = np.array([0], dtype=int)
 
-    acc_stack: List[np.ndarray] = []
     anchors: List[np.ndarray] = []
+    acc_stack_by_pair: Dict[Tuple[int, int], List[np.ndarray]] = {p: [] for p in pair_indices}
     frames: List[np.ndarray] = []
 
     sampled_seq_lens: List[int] = []
+    grids_x: List[np.ndarray] = []
+    grids_y: List[np.ndarray] = []
+    for i, j in pair_indices:
+        X_mesh, Y_mesh = _make_mesh_for_pair(i, j)
+        grids_x.append(X_mesh)
+        grids_y.append(Y_mesh)
+
     for idx in tqdm(sampled.tolist(), desc="Computing landscapes frames"):
         anchor_coords = coords[int(idx)].copy()
         seq_len = int(rows_sorted[int(idx)].get("stage_seq_len", 1))
         sampled_seq_lens.append(seq_len)
         anchors.append(anchor_coords)
-        Z_acc = _compute_accuracy_surface_for_anchor(anchor_coords, seq_len=seq_len)
-        acc_stack.append(Z_acc)
-        frame = _render_accuracy_frame(
-            X_mesh=X_mesh,
-            Y_mesh=Y_mesh,
-            Z_acc=Z_acc,
-            coords_xy=coords_xy,
-            current_idx=int(idx),
-            sample_id=int(args.sample_id),
-        )
+
+        acc_surfaces: List[np.ndarray] = []
+        for k, (i, j) in enumerate(pair_indices):
+            X_mesh = grids_x[k]
+            Y_mesh = grids_y[k]
+            Z_acc = _compute_accuracy_surface_for_anchor_pair(
+                anchor_coords, seq_len=seq_len, i=i, j=j, X_mesh=X_mesh, Y_mesh=Y_mesh
+            )
+            acc_stack_by_pair[(i, j)].append(Z_acc)
+            acc_surfaces.append(Z_acc)
+
+        if len(pair_indices) == 1:
+            (i0, j0) = pair_indices[0]
+            frame = _render_accuracy_frame(
+                X_mesh=grids_x[0],
+                Y_mesh=grids_y[0],
+                Z_acc=acc_surfaces[0],
+                coords_xy=coords[:, [i0, j0]],
+                current_idx=int(idx),
+                sample_id=int(args.sample_id),
+                x_label=f"PC{i0+1}",
+                y_label=f"PC{j0+1}",
+            )
+        else:
+            frame = _render_accuracy_grid_frame(
+                pair_indices=pair_indices,
+                grids_x=grids_x,
+                grids_y=grids_y,
+                acc_surfaces=acc_surfaces,
+                coords=coords,
+                current_idx=int(idx),
+                sample_id=int(args.sample_id),
+            )
         frames.append(frame)
 
-    gif_path = os.path.join(out_dir, "landscape_pc1_pc2.gif")
+    if len(pair_indices) == 1:
+        (i0, j0) = pair_indices[0]
+        gif_path = os.path.join(out_dir, f"landscape_accuracy_pc{i0+1}_pc{j0+1}.gif")
+    else:
+        gif_path = os.path.join(out_dir, "landscape_accuracy_pca_pairs.gif")
     imageio.mimsave(gif_path, frames, duration=1000, loop=0)
     print(f"Saved GIF: {gif_path}")
 
     # Save NPZ (multi-frame)
-    npz_path = os.path.join(out_dir, "landscape_pc1_pc2.npz")
-    npz_kwargs = {
-        "pc1_grid": X_mesh,
-        "pc2_grid": Y_mesh,
-        "accuracy": np.stack(acc_stack, axis=0),
-        "coords_xy": coords_xy,
-        "stage_index": np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
-        "stage_seq_len": np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
-        "sampled_indices": sampled.astype(np.int64),
-        "sampled_seq_len": np.array(sampled_seq_lens, dtype=np.int64),
-        "anchor_coords": np.stack(anchors, axis=0),
-        "explained_variance_ratio": pca.explained_variance_ratio_,
-        "model_checkpoint": np.array([model_checkpoint]),
-        "dataset_path": np.array([args.dataset_path]),
-        "sample_id": np.array([int(args.sample_id)], dtype=np.int64),
-        "created_at": np.array([datetime.now().isoformat()]),
-    }
-    np.savez_compressed(npz_path, **npz_kwargs)
+    acc_stack = np.stack([np.stack(acc_stack_by_pair[p], axis=0) for p in pair_indices], axis=1)
+    npz_path = os.path.join(out_dir, "landscape_pca_pairs.npz")
+    np.savez_compressed(
+        npz_path,
+        pair_indices=np.array(pair_indices, dtype=np.int64),
+        grid_x=np.stack(grids_x, axis=0),
+        grid_y=np.stack(grids_y, axis=0),
+        accuracy=acc_stack,
+        coords=coords,
+        stage_index=np.array([int(r.get("stage_index", 0)) for r in rows_sorted], dtype=np.int64),
+        stage_seq_len=np.array([int(r.get("stage_seq_len", -1)) for r in rows_sorted], dtype=np.int64),
+        sampled_indices=sampled.astype(np.int64),
+        sampled_seq_len=np.array(sampled_seq_lens, dtype=np.int64),
+        anchor_coords=np.stack(anchors, axis=0),
+        explained_variance_ratio=pca.explained_variance_ratio_,
+        model_checkpoint=np.array([model_checkpoint]),
+        dataset_path=np.array([args.dataset_path]),
+        sample_id=np.array([int(args.sample_id)], dtype=np.int64),
+        created_at=np.array([datetime.now().isoformat()]),
+    )
     print(f"Saved NPZ: {npz_path}")
 
 
