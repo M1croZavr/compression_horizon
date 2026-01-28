@@ -407,19 +407,38 @@ def main() -> None:
             1,
             2,
             figsize=(20.0, 8.5),
-            gridspec_kw={"width_ratios": [max(full_aspect, 1e-6), max(zoom_aspect, 1e-6)]},
+            gridspec_kw={
+                "width_ratios": [max(full_aspect, 1e-6), max(zoom_aspect, 1e-6)],
+                "wspace": 0.06,
+            },
         )
+        fig2.subplots_adjust(wspace=0.06)
         _draw_panel(axes[0], 0, anchor_sel_full, anchor_xy_full, anchor_indices_full, colors_full)
         axes[0].set_title("Full")
         _draw_panel(axes[1], zoom_start, anchor_sel, anchor_xy, anchor_indices, colors_zoom)
+        # Title will be updated after we compute the zoom factor.
         axes[1].set_title("Zoom-in")
 
         # Draw dashed rectangle on the left panel showing the zoomed region,
         # and dashed connectors to the zoom panel.
-        # full_xlim = axes[0].get_xlim()
-        # full_ylim = axes[0].get_ylim()
+        full_xlim = axes[0].get_xlim()
+        full_ylim = axes[0].get_ylim()
         zoom_xlim = axes[1].get_xlim()
         zoom_ylim = axes[1].get_ylim()
+
+        dx_full = max(float(full_xlim[1] - full_xlim[0]), 1e-9)
+        dy_full = max(float(full_ylim[1] - full_ylim[0]), 1e-9)
+        dx_zoom = max(float(zoom_xlim[1] - zoom_xlim[0]), 1e-9)
+        dy_zoom = max(float(zoom_ylim[1] - zoom_ylim[0]), 1e-9)
+        ratio_x = dx_full / dx_zoom
+        ratio_y = dy_full / dy_zoom
+        zoom_factor = float(np.sqrt(ratio_x * ratio_y))
+        if np.isfinite(zoom_factor):
+            if abs(zoom_factor - round(zoom_factor)) < 0.05:
+                ztxt = str(int(round(zoom_factor)))
+            else:
+                ztxt = f"{zoom_factor:.1f}"
+            axes[1].set_title(f"Zoom-in (×{ztxt})")
 
         rect = Rectangle(
             (zoom_xlim[0], zoom_ylim[0]),
