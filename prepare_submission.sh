@@ -24,15 +24,15 @@ read -n 1 -s
 
 find -name .ipynb_checkpoints -type d -exec rm -rf {} +
 
-if ! grep --binary-files=without-match -PRi 'sber|allakhverdov|Nikita|korzh|iudin|karimov|elvir|tarasov|mrsndmn|\brsi\b|[а-яА-ЯёЁ]' . |  grep -v 'TeXBLEU/tokenizer.json\|TeXBLEU/new_embeddings.pth\|.csv' |  grep -q .; then
+if ! grep --binary-files=without-match -PRi 'sber|allakhverdov|Nikita|korzh|iudin|karimov|elvir|tarasov|mrsndmn|lashukov|\brsi\b|[а-яА-ЯёЁ]' . |  grep -v 'TeXBLEU/tokenizer.json\|TeXBLEU/new_embeddings.pth\|.csv' |  grep -q .; then
     echo "✅ No matching deanon substrings found."
 else
-    grep --binary-files=without-match -PRi 'sber|allakhverdov|Nikita|korzh|iudin|karimov|elvir|tarasov|mrsndmn|\brsi\b|[а-яА-ЯёЁ]' . |  grep -v 'TeXBLEU/tokenizer.json\|TeXBLEU/new_embeddings.pth\|.csv' | head
+    grep --binary-files=without-match -PRi 'sber|allakhverdov|Nikita|korzh|iudin|karimov|elvir|tarasov|mrsndmn|lashukov|\brsi\b|[а-яА-ЯёЁ]' . |  grep -v 'TeXBLEU/tokenizer.json\|TeXBLEU/new_embeddings.pth\|.csv' | head
     echo "❌ Matching deanon substrings found!"
     exit 1
 fi
 
-if ! find . -type f -regex '.*/\(sber\|allakhverdov\|Nikita\|korzh\|iudin\|karimov\|elvir\|mrsndmn\|tarasov\|rsi\).*' | grep -q .; then
+if ! find . -type f -regex '.*/\(sber\|allakhverdov\|Nikita\|korzh\|iudin\|karimov\|elvir\|mrsndmn\|lashukov\|tarasov\|rsi\).*' | grep -q .; then
     echo "✅ No matching deanon files found."
 else
     echo "❌ Matching deanon files found!"
