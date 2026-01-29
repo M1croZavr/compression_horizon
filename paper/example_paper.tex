@@ -271,47 +271,46 @@ where the cramming loss is the cross-entropy over the target sequence:
     \mathcal{L}_{\text{cram}}(\mathbf{e}; \mathbf{x}, \mathcal{M}) = -\sum_{i=1}^{n} \log p_{\mathcal{M}}(x_i \mid \mathbf{e}, x_1, \ldots, x_{i-1})
 \end{equation}
 
-\subsection{Limitations of Prior Work}\label{sec:prior_limitations}
+\subsection{Limitations of Prior Work}
+\label{sec:prior_limitations}
 
 Prior work on prompt compression and reconstruction typically evaluates success
-using a fixed convergence threshold (e.g., 99\% token-level accuracy) under a
-predefined token budget.
-While convenient, this protocol obscures several important failure modes.
+using a fixed accuracy threshold (e.g., 99\% token-level reconstruction under
+teacher forcing), often in conjunction with a fixed token budget.
+Our results indicate that this evaluation protocol substantially underestimates
+critical failure modes that emerge during autoregressive generation.
 
-\paragraph{The 99\% threshold and the ``last 1\%'' problem.}
-A 99\% reconstruction threshold implicitly treats the remaining 1\% of tokens as
-negligible.
-However, in autoregressive decoding, even a single early mismatch can cascade and
-lead to complete divergence in subsequent generations.
-Empirically, we observe that reconstruction errors are highly concentrated at the
-earliest token positions.
-As shown in Table~\ref{tab:compression_reconstruction_summary}, mismatches almost
-exclusively occur at token indices 0 and 1, while later positions are typically reconstructed perfectly under teacher forcing.
-This concentration indicates that the ``last 1\%'' of errors is not uniformly
-distributed noise, but instead corresponds to structurally critical failures that
-dominate downstream behavior.
+\paragraph{The ``last 1\%'' problem.}
+While a 99\% reconstruction accuracy suggests near-perfect training performance,
+the remaining errors are not uniformly distributed nor benign.
+As shown in Table~\ref{tab:compression_reconstruction_summary}, reconstruction
+mismatches are almost entirely concentrated at the earliest token positions,
+specifically at indices 0 and 1.
+Even when mean teacher-forcing convergence exceeds 97--99\%, the probability of an
+incorrect prediction at the first or second token during inference approaches
+100\% across most model sizes and training variants.
 
-\paragraph{Early-token brittleness under full cramming.}
-The prevalence of mismatches at the first two tokens suggests a brittle regime in
-which compression appears successful under teacher forcing, yet fails under greedy
-generation.
-Such early errors are especially problematic: once the autoregressive process
-deviates from the target prefix, subsequent tokens are conditioned on an incorrect
-history, rendering later reconstruction accuracy largely irrelevant.
+\paragraph{Early-token errors induce autoregressive collapse.}
+Errors at the earliest positions have a disproportionate impact under greedy
+decoding.
+Once the autoregressive process deviates at the first or second token, all
+subsequent tokens are generated conditioned on an incorrect prefix, leading to
+rapid and irreversible divergence.
+Consistently across all evaluated models, we observe that mean greedy convergence
+drops below 2\% whenever compression training fails to achieve perfect
+reconstruction.
+In practice, a single early mismatch nullifies the utility of the remaining
+correctly reconstructed tokens, despite high aggregate training accuracy.
 
-\paragraph{Fixed token budgets obscure information-theoretic limits.}
-Finally, evaluating reconstruction under a fixed token budget masks the true
-capacity limits of compression.
-A method may appear competitive simply because it saturates the allotted budget,
-not because it approaches the minimal description length of the input.
-By contrast, progressive cramming reveals how reconstruction quality degrades as
-token budgets are varied, exposing trade-offs between compression rate, early-token
-stability, and downstream generation fidelity.
-The summary statistics in Table~\ref{tab:compression_reconstruction_summary}
-highlight that comparable final convergence values can correspond to qualitatively
-different mismatch profiles, underscoring the limitations of budget-constrained
-evaluation protocols.
-
+\paragraph{Fixed-budget evaluation obscures brittleness.}
+Finally, evaluation under a fixed token budget further masks this brittleness.
+Methods with similar final convergence values may exhibit qualitatively different
+failure modes, depending on whether reconstruction errors occur early or late in
+the sequence.
+As demonstrated in Table~\ref{tab:compression_reconstruction_summary}, high average
+token-level accuracy does not guarantee usable autoregressive behavior.
+Instead, perfect reconstruction of the earliest tokens emerges as a necessary
+condition for reliable decoding from compressed representations.
 
 % =============================================================================
 \section{Method: Progressive Cramming}
@@ -425,13 +424,14 @@ We evaluate progressive cramming on PG19 \cite{Rae2020CompressiveTransformerPG19
 Table~\ref{tab:full_vs_progressive} compares progressive cramming (targeting 100\% reconstruction) to ``full'' cramming baselines that use fixed token budgets and may terminate below perfect accuracy.
 Because autoregressive decoding is brittle to early errors (Section~\ref{sec:prior_limitations}), we interpret this comparison primarily through the lens of \emph{perfect} reconstruction: progressive cramming trades a fixed-budget constraint for a fixed-accuracy constraint.
 In the default setting, progressive cramming underperforms full cramming in both information gain and reconstructed length.
-However, adding regularization via activation alignment and low-dimensional projection (Section~\ref{sec:activation_alignment_exp}) can recover capacity; for Llama-3.1-8B we reach $5103 \pm 748$ bits of information gain, comparable to $4865.7 \pm 546.6$ reported by \citet{kuratov2025cramming}.
+However, adding regularization via activation alignment and low-dimensional projection (Section~\ref{sec:activation_alignment_exp}) can recover capacity; for Llama-3.1-8B we reach $5103 \pm 748$ bits of information gain, comparable to $4865.7 \pm 546.6$ reported by \citet{kuratov2025cramming}. A detailed comparison across additional model sizes can be found in Table~\ref{tab:full_vs_progressive_appendix} (Appendix~\ref{app:1}).
 
 \begin{table}[]
     \centering
     \caption{Full vs. progressive cramming on PG19 (mean $\pm$ std over samples). ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}
     \label{tab:full_vs_progressive}
 
+    \begin{small}
     \begin{tabular}{llll}
         \hline
          Type                                           & Tokens                  & Info Gain                & Accuracy                   \\
@@ -445,6 +445,7 @@ However, adding regularization via activation alignment and low-dimensional proj
          Progr.                                         & 544 {\small $\pm$ 57}   & 1694 {\small $\pm$ 125}  & 1.0                        \\
         \hline
         \end{tabular}
+    \end{small}
 
 \end{table}
 
@@ -454,6 +455,7 @@ However, adding regularization via activation alignment and low-dimensional proj
     \caption{Progressive cramming variants and key metrics across model families. For each family we report baseline progressive cramming, low-dimensional projection only (``dim''), activation alignment only ($\alpha$, $L$), and their combination.}
     \label{tab:all_progressive_modifications}
 
+    \begin{small}
     \begin{tabular}{lllll}
         \hline
          Model                                                               & Compressed Tokens           & Information Gain         & Trajectory Length         & PCA 99\%                  \\
@@ -479,6 +481,7 @@ However, adding regularization via activation alignment and low-dimensional proj
          gemma-3-4b-pt {\small dim=256} {\small $\alpha=1.0$} {\small $L=8$} & 217.1 {\small $\pm$ 146.2}  & 719 {\small $\pm$ 425}   & 1091 {\small $\pm$ 557}   & 13.3 {\small $\pm$ 2.69} \\
         \hline
     \end{tabular}
+    \end{small}
 
 \end{table*}
 
@@ -581,8 +584,7 @@ Removing BOS increases reconstructed length and information gain (and reduces co
     \centering
     \caption{Attention hijacking summary. ``Compression Embedding'' is attention mass to position 0 for the compression embedding in the crammed input; ``BOS Token'' is attention mass to position 0 for the uncompressed baseline; ``Diff'' is (Compression$-$BOS). ``Correlation'' is the Pearson correlation between per-layer attention-mass profiles. \bcancel{B} stands for removed BOS token for cramming compression column.}
     \label{tab:attn_hijacking}
-
-
+    \begin{small}
     \begin{tabular}{llllr}
     \hline
      Model                               & Compression Embedding (\%)  & BOS Token Original (\%)     & Diff (\%)                    &   Correlation \\
@@ -608,6 +610,7 @@ Removing BOS increases reconstructed length and information gain (and reduces co
      gemma-3-4b-pt\ \bcancel{B} {\small lr=0.1} & 6.84 {\small $\pm$ 0.4}    & 63.56 {\small $\pm$ 1.02}  & -56.72 {\small $\pm$ 1.22}  &       -0.1461 \\
     \hline
     \end{tabular}
+    \end{small}
 
 \end{table*}
 
@@ -617,6 +620,7 @@ Removing BOS increases reconstructed length and information gain (and reduces co
     \caption{Progressive cramming with and without the BOS token. \bcancel{B} denotes runs where the BOS token is removed.}
     \label{tab:progressive_no_bos_token}
 
+    \begin{small}
     \begin{tabular}{lll}
     \hline
      Model                                     & Cram Tokens             & Info Gain                \\
@@ -631,6 +635,7 @@ Removing BOS increases reconstructed length and information gain (and reduces co
      gemma-3-4b-pt \bcancel{B} {\small lr=0.1} & 207 {\small $\pm$ 86}   & 1196 {\small $\pm$ 445}  \\
     \hline
     \end{tabular}
+    \end{small}
 
 \end{table}
 
@@ -661,7 +666,7 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
     \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends a per-instance optimized compression embedding in the full cramming setup (reconstruction is targeted but not guaranteed to be perfect). \bcancel{B} denotes experiments with the BOS token removed.}
     \label{tab:semantic_evaluation}
 
-
+    \begin{small}
     \begin{tabular}{lllll}
         \hline
                            & \multicolumn{2}{c}{\textbf{HellaSwag}} & \multicolumn{2}{c}{\textbf{ARC-E}} \\
@@ -677,6 +682,7 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
          \small gemma-3-4b \bcancel{B}   & 28.84{\small \%} & 26.18{\small \%} & 34.62{\small \%} & 24.16{\small \%} \\
         \hline
     \end{tabular}
+    \end{small}
 
 \end{table}
 
@@ -691,8 +697,9 @@ We introduced progressive cramming, which grows the reconstruction target token-
 Across model families, progressive trajectories are low-dimensional, and attention-mass analyses show that crammed embeddings can become intermediate-layer attention sinks, consistent with attention hijacking.
 Critically, downstream evaluation indicates that optimizing embeddings for reconstruction can coincide with large capability drops, even when the original prefix remains in context, so reconstruction accuracy alone is not a sufficient criterion for meaningful compression.
 
-Our study remains limited in scope: we evaluate a small set of model families and checkpoints and use a small number of PG19 samples, and our mechanistic probes are correlational rather than causal.
-Future work should broaden model coverage (including additional architectures and instruction-tuned variants), strengthen causal analysis via targeted interventions, and develop a \emph{fast} compressor that produces semantically meaningful compression embeddings (ideally retaining factual precision) for retrieval-style workloads such as needle-in-a-haystack benchmarks, without per-example optimization.
+Our study remains limited in scope: we use a small number of PG19 samples, and our mechanistic probes are correlational rather than causal.
+Future work should strengthen causal analysis via targeted interventions, and develop a \emph{fast} compressor that produces semantically meaningful compression embeddings.
+
 
 % ---------------------------------------------------------------------------
 % TODO / notes (kept for future revisions; all commented intentionally)
@@ -704,6 +711,7 @@ Future work should broaden model coverage (including additional architectures an
 % TODO а сколько реально нужно компонент, чтобы достичь идеальной точности для генеративной реконструкции?
 % {\color{red} TODO - how and why exactly softcapping?}
 % {\color{red} TODO - shared subspaces?}
+% вообще занятно, конечно, можно ради интересна замерить бенч с добавленным рандомным токеном перед префиксом, или эмбеддом усредненным по всему словарю
 % {\color{red} TODO - does filtering only perfectly-compressed prefixes for sem evaluation - what acccuracy would they have?}
 % {\color{red} TODO - ranged loss weight increase for tokens?}
 % {\color{red} TODO visualize Optimization Landscape.}
@@ -736,6 +744,7 @@ which we feel must be specifically highlighted here.
 \newpage
 \appendix
 % \onecolumn
+
 \section{Hyperparameters}
 
 We used 10 samples from PG19 for most experiments.
@@ -744,52 +753,21 @@ We optimized with AdamW. For each model, we swept the learning rate over \(\{0.0
 We ran up to 10{,}000 optimization steps per sample in all experiments; for progressive runs, we additionally capped the optimization of each newly added token at 1{,}000 steps.
 We used 100 warmup steps for all models.
 
-
-\begin{table*}
-    \centering
-    \caption{Results of the learning-rate sweep across models and settings.}
-    \label{tab:all_learning_rates}
-
-    \begin{tabular}{lllll}
-        \hline
-         Model                         & Compressed Tokens           & Information Gain         & Trajectory Length         & PCA 99\%                    \\
-        \hline
-         Llama-3.1-8B                  & 1298.4 {\small $\pm$ 537.5} & 3760 {\small $\pm$ 1418} & 738 {\small $\pm$ 265}    & 40.8 {\small $\pm$ 13.16}  \\
-         Llama-3.1-8B {\small lr=0.1}  & 1063.5 {\small $\pm$ 394.4} & 3028 {\small $\pm$ 1321} & 4861 {\small $\pm$ 1033}  & 74.4 {\small $\pm$ 7.94}   \\
-         Llama-3.1-8B {\small lr=0.5}  & 934.4 {\small $\pm$ 123.2}  & 2758 {\small $\pm$ 486}  & 15424 {\small $\pm$ 1437} & 138 {\small $\pm$ 11.78}   \\
-         Llama-3.1-8B {\small lr=1.0}  & 1286.4 {\small $\pm$ 524.8} & 3381 {\small $\pm$ 1521} & 29061 {\small $\pm$ 4605} & 186.6 {\small $\pm$ 13.59} \\
-         \midrule
-         pythia-1.4b                   & 188.2 {\small $\pm$ 27.8}   & 581 {\small $\pm$ 101}   & 83 {\small $\pm$ 14}      & 15.7 {\small $\pm$ 1.85}   \\
-         pythia-1.4b {\small lr=0.1}   & 274.3 {\small $\pm$ 56.2}   & 846 {\small $\pm$ 106}   & 956 {\small $\pm$ 123}    & 23.2 {\small $\pm$ 1.99}   \\
-         pythia-1.4b {\small lr=0.5}   & 543.8 {\small $\pm$ 56.8}   & 1694 {\small $\pm$ 125}  & 6730 {\small $\pm$ 390}   & 49 {\small $\pm$ 3.32}     \\
-         pythia-1.4b {\small lr=1.0}   & 558.2 {\small $\pm$ 74.1}   & 1737 {\small $\pm$ 158}  & 11381 {\small $\pm$ 993}  & 63.3 {\small $\pm$ 6.21}   \\
-         \midrule
-         SmolLM2-1.7B {\small lr=0.1}  & 370.2 {\small $\pm$ 113.1}  & 1119 {\small $\pm$ 350}  & 1027 {\small $\pm$ 167}   & 29.2 {\small $\pm$ 2.93}   \\
-         SmolLM2-1.7B {\small lr=0.5}  & 540.5 {\small $\pm$ 139.4}  & 1450 {\small $\pm$ 350}  & 5225 {\small $\pm$ 827}   & 66.8 {\small $\pm$ 9.14}   \\
-         SmolLM2-1.7B {\small lr=1.0}  & 502.5 {\small $\pm$ 180.6}  & 1428 {\small $\pm$ 473}  & 9442 {\small $\pm$ 1810}  & 83 {\small $\pm$ 16.34}    \\
-         gemma-3-4b-pt {\small lr=0.1} & 286.5 {\small $\pm$ 164.6}  & 949 {\small $\pm$ 466}   & 1044 {\small $\pm$ 328}   & 31.8 {\small $\pm$ 9.21}   \\
-         \midrule
-         gemma-3-4b-pt {\small lr=0.5} & 498.6 {\small $\pm$ 86.5}   & 1437 {\small $\pm$ 308}  & 6055 {\small $\pm$ 925}   & 71.6 {\small $\pm$ 11.34}  \\
-         gemma-3-4b-pt {\small lr=1.0} & 558 {\small $\pm$ 86.1}     & 1258 {\small $\pm$ 511}  & 12173 {\small $\pm$ 1004} & 101.6 {\small $\pm$ 10.66} \\
-        \hline
-    \end{tabular}
-
-\end{table*}
-
 \section{Compute}
 
 Each experiment ran on a single NVIDIA A100 80GB GPU, with up to 16 GPUs used in parallel across experiments. Training time depends on the sequence length and loss type, ranging from a few minutes (short sequences, small models) to approximately 24 hours (long sequences, large models). The total compute used for this research (including debugging and unsuccessful experiments) is approximately 2800 GPU-hours.
 
 
 \section{Full cramming vs progressive.}
+\label{app:1}
 
-In Table~\ref{tab:full_vs_progressive_appendix} we present results from section~\ref{sec:experiments} for full and compressive cramming comparison for different model sizes of Llama and Pythia families.
+In Table~\ref{tab:full_vs_progressive_appendix} we present results from Section~\ref{sec:experiments} for full and compressive cramming comparison for different model sizes of Llama and Pythia families.
 
-\begin{table}
-    \centering
+\begin{table}[!htbp]
     \caption{Full vs. progressive cramming on PG19. ``Full'' cramming uses a fixed token budget and may stop below perfect reconstruction \cite{kuratov2025cramming}; progressive cramming fixes reconstruction at 100\% and reports the achieved token count.}
     \label{tab:full_vs_progressive_appendix}
-
+    \begin{center}
+    \begin{small}
     \begin{tabular}{llll}
         \hline
          Type                                           & Tokens                  & Info Gain                & Accuracy                   \\
@@ -819,18 +797,54 @@ In Table~\ref{tab:full_vs_progressive_appendix} we present results from section~
          Progr.                                         & 544 {\small $\pm$ 57}   & 1694 {\small $\pm$ 125}  & 1.0                        \\
         \hline
         \end{tabular}
-
+    \end{small}
+    \end{center}
+\vskip -0.1in
 \end{table}
+
+\begin{table*}[tb]
+    \caption{Results of the learning-rate sweep across models and settings. ``Compressed Tokens'' is the achieved prefix length $n$, ``Trajectory Length'' is $L_{\text{traj}}$, and ``PCA 99\%'' is the number of principal components explaining 99\% of trajectory variance.}
+    \label{tab:all_learning_rates}
+    \begin{center}
+    \begin{small}
+    \begin{tabular}{lllll}
+        \hline
+         Model                         & Compressed Tokens           & Information Gain         & Trajectory Length         & PCA 99\%                    \\
+        \hline
+         Llama-3.1-8B                  & 1298.4 {\small $\pm$ 537.5} & 3760 {\small $\pm$ 1418} & 738 {\small $\pm$ 265}    & 40.8 {\small $\pm$ 13.16}  \\
+         Llama-3.1-8B {\small lr=0.1}  & 1063.5 {\small $\pm$ 394.4} & 3028 {\small $\pm$ 1321} & 4861 {\small $\pm$ 1033}  & 74.4 {\small $\pm$ 7.94}   \\
+         Llama-3.1-8B {\small lr=0.5}  & 934.4 {\small $\pm$ 123.2}  & 2758 {\small $\pm$ 486}  & 15424 {\small $\pm$ 1437} & 138 {\small $\pm$ 11.78}   \\
+         Llama-3.1-8B {\small lr=1.0}  & 1286.4 {\small $\pm$ 524.8} & 3381 {\small $\pm$ 1521} & 29061 {\small $\pm$ 4605} & 186.6 {\small $\pm$ 13.59} \\
+         \midrule
+         pythia-1.4b                   & 188.2 {\small $\pm$ 27.8}   & 581 {\small $\pm$ 101}   & 83 {\small $\pm$ 14}      & 15.7 {\small $\pm$ 1.85}   \\
+         pythia-1.4b {\small lr=0.1}   & 274.3 {\small $\pm$ 56.2}   & 846 {\small $\pm$ 106}   & 956 {\small $\pm$ 123}    & 23.2 {\small $\pm$ 1.99}   \\
+         pythia-1.4b {\small lr=0.5}   & 543.8 {\small $\pm$ 56.8}   & 1694 {\small $\pm$ 125}  & 6730 {\small $\pm$ 390}   & 49 {\small $\pm$ 3.32}     \\
+         pythia-1.4b {\small lr=1.0}   & 558.2 {\small $\pm$ 74.1}   & 1737 {\small $\pm$ 158}  & 11381 {\small $\pm$ 993}  & 63.3 {\small $\pm$ 6.21}   \\
+         \midrule
+         SmolLM2-1.7B {\small lr=0.1}  & 370.2 {\small $\pm$ 113.1}  & 1119 {\small $\pm$ 350}  & 1027 {\small $\pm$ 167}   & 29.2 {\small $\pm$ 2.93}   \\
+         SmolLM2-1.7B {\small lr=0.5}  & 540.5 {\small $\pm$ 139.4}  & 1450 {\small $\pm$ 350}  & 5225 {\small $\pm$ 827}   & 66.8 {\small $\pm$ 9.14}   \\
+         SmolLM2-1.7B {\small lr=1.0}  & 502.5 {\small $\pm$ 180.6}  & 1428 {\small $\pm$ 473}  & 9442 {\small $\pm$ 1810}  & 83 {\small $\pm$ 16.34}    \\
+          \midrule
+         gemma-3-4b-pt {\small lr=0.1} & 286.5 {\small $\pm$ 164.6}  & 949 {\small $\pm$ 466}   & 1044 {\small $\pm$ 328}   & 31.8 {\small $\pm$ 9.21}   \\
+         gemma-3-4b-pt {\small lr=0.5} & 498.6 {\small $\pm$ 86.5}   & 1437 {\small $\pm$ 308}  & 6055 {\small $\pm$ 925}   & 71.6 {\small $\pm$ 11.34}  \\
+         gemma-3-4b-pt {\small lr=1.0} & 558 {\small $\pm$ 86.1}     & 1258 {\small $\pm$ 511}  & 12173 {\small $\pm$ 1004} & 101.6 {\small $\pm$ 10.66} \\
+        \hline
+    \end{tabular}
+    \end{small}
+    \end{center}
+  \vskip -0.1in
+\end{table*}
 
 \section{Progressive across models scales}
 
-Table~\ref{tab:progressive_for_model_scales} larger models tend to use more trajectory directions (higher PCA 99\%).
+Table~\ref{tab:progressive_for_model_scales} shows that larger models tend to use more trajectory directions (higher PCA 99\%).
 
 
-\begin{table*}[]
-    \centering
+\begin{table*}[tb]
     \caption{Progressive cramming trajectory statistics on PG19. ``Compressed Tokens'' is the achieved prefix length $n$, ``Trajectory Length'' is $L_{\text{traj}}$, and ``PCA 99\%'' is the number of principal components explaining 99\% of trajectory variance.}
     \label{tab:progressive_for_model_scales}
+    \begin{center}
+    \begin{small}
 
     \begin{tabular}{lllll}
         \hline
@@ -853,20 +867,29 @@ Table~\ref{tab:progressive_for_model_scales} larger models tend to use more traj
         gemma-3-4b-pt {\small lr=0.1} & 286.5 {\small $\pm$ 164.6}  & 949 {\small $\pm$ 466}   & 1044 {\small $\pm$ 328}  & 31.8 {\small $\pm$ 9.21}  \\
         \hline
     \end{tabular}
-
+    \end{small}
+    \end{center}
+    \vskip -0.1in
 
 \end{table*}
 
 \section{Prefix tuning}
 
+Prefix tuning introduces a separate trainable prefix embedding at each transformer layer, avoiding the per-layer forward-pass bottleneck of soft-prompt setups such as full or progressive cramming. The trade-off is parameter cost: it requires $L$ times more trainable embeddings, where $L$ is the number of hidden layers in the LLM.
+
 To separate ``cramming'' from general soft-prompt steering, we evaluate prefix tuning baselines.
 Table~\ref{tab:prefix_tuning_attention_hijacking} reports the same attention-mass metric for prefix tokens.
 Compared to cramming, prefix tuning typically attracts less attention mass than BOS and shows weaker or more variable correlation patterns, indicating that attention hijacking is not an inevitable consequence of prepending learned embeddings but depends on the optimization objective.
 
-\begin{table*}[]
+We also evaluated compression limits under prefix tuning. Table~\ref{tab:prefix_tuning_accuracy} shows that, for Llama~3 models at 3B and 8B, we cannot reach the cramming limits; however, in the prefix-tuning setup these models can still compress up to 8k tokens with perfect reconstruction accuracy, while 16k tokens results in out-of-memory (OOM) failures. For the 1B Llama~3 model, the limit is about 4096 tokens, which is roughly \(10\times\) higher than with progressive cramming. This gain comes at a higher parameter cost: prefix tuning requires \(L\)-times more trainable embeddings (one per layer), i.e., \(16\times\) more parameters for a 16-layer model.
+For Pythia, the prefix-tuning setup increases the compression limit by about \(20\times\) for Pythia-410M and by about \(8\times\) for Pythia-1.4B relative to progressive cramming.
+
+
+\begin{table*}[tb]
     \centering
     \caption{Prefix-tuning attention mass, computed with the same metric as Table~\ref{tab:attn_hijacking} but for learned prefix tokens instead of the compression embedding.}
     \label{tab:prefix_tuning_attention_hijacking}
+\begin{small}
 \begin{tabular}{llllr}
 \hline
  Model        & Compression Emb. (\%) & BOS Token Original (\%)    & Diff (\%)                   &   Correlation \\
@@ -878,31 +901,56 @@ Compared to cramming, prefix tuning typically attracts less attention mass than 
  Qwen3-4B     & 1.95 {\small $\pm$ 0.22}  & 50.84 {\small $\pm$ 1.54} & -48.89 {\small $\pm$ 1.46} &        0.0771 \\
 \hline
 \end{tabular}
+\end{small}
+\vskip -0.1in
 \end{table*}
 
 
-\begin{table}[]
+\begin{table}[tb]
     \centering
     \caption{Prefix-tuning reconstruction accuracy compared to progressive cramming. ``Tokens'' denotes the number of learned prefix tokens (or reconstructed tokens for progressive cramming).}
     \label{tab:prefix_tuning_accuracy}
+    \begin{small}
 
 \begin{tabular}{llll}
 \hline
- Experiment      & Type          & Tokens                 & Accuracy           \\
+ Experiment      & Type          & Tokens                  & Accuracy                   \\
 \hline
- Llama-3.2-1B         & Progr.        & 402 {\small $\pm$ 85}  & 1.0                \\
  \midrule
- Llama-3.2-3B         & Progr.        & 902 {\small $\pm$ 207} & 1.0                \\
+ Llama-3.2-1B         & Progr.        & 402 {\small $\pm$ 85}   & 1.0                        \\
+ Llama-3.2-1B         & Full PrefixT. & 4096                    & 1 {\small $\pm$ 0}         \\
+ Llama-3.2-1B         & Full PrefixT. & 8192                    & 0.977 {\small $\pm$ 0.032} \\
+ Llama-3.2-1B         & Full PrefixT. & 16384                   & 0.767 {\small $\pm$ 0.105} \\
  \midrule
- Llama-3.2-3B         & Full PrefixT. & 8192                   & 1 {\small $\pm$ 0} \\
- Pythia160m          & Progr.        & 11 {\small $\pm$ 2}    & 1.0                \\
+ Llama-3.2-3B         & Progr.        & 902 {\small $\pm$ 207}  & 1.0                        \\
+ Llama-3.2-3B         & Full PrefixT. & 8192                    & 1 {\small $\pm$ 0}         \\
  \midrule
- Pythia410m          & Progr.        & 102 {\small $\pm$ 41}  & 1.0                \\
+ Llama-3.1-8B         & Progr.        & 1064 {\small $\pm$ 394} & 1.0                        \\
+ Llama-3.1-8B         & Full PrefixT. & 8192                    & 1 {\small $\pm$ 0}         \\
  \midrule
- Pythia1.4b          & Progr.        & 544 {\small $\pm$ 57}  & 1.0                \\
+ Pythia160m          & Progr.        & 11 {\small $\pm$ 2}     & 1.0                        \\
+ Pythia160m          & Full PrefixT. & 1024                    & 0.488 {\small $\pm$ 0.06}  \\
+ Pythia160m          & Full PrefixT. & 2048                    & 0.394 {\small $\pm$ 0.034} \\
+ Pythia160m          & Full PrefixT. & 4096                    & 0.263 {\small $\pm$ 0.025} \\
+ Pythia160m          & Full PrefixT. & 8192                    & 0.168 {\small $\pm$ 0.018} \\
+ Pythia160m          & Full PrefixT. & 16384                   & 0.139 {\small $\pm$ 0.026} \\
+ \midrule
+ Pythia410m          & Progr.        & 102 {\small $\pm$ 41}   & 1.0                        \\
+ Pythia410m          & Full PrefixT. & 2048                    & 1 {\small $\pm$ 0}         \\
+ Pythia410m          & Full PrefixT. & 4096                    & 0.964 {\small $\pm$ 0.071} \\
+ Pythia410m          & Full PrefixT. & 8192                    & 0.588 {\small $\pm$ 0.106} \\
+ Pythia410m          & Full PrefixT. & 16384                   & 0.418 {\small $\pm$ 0.158} \\
+ \midrule
+ Pythia1.4b          & Progr.        & 544 {\small $\pm$ 57}   & 1.0                        \\
+ Pythia1.4b          & Full PrefixT. & 4096                    & 1 {\small $\pm$ 0}         \\
+ Pythia1.4b          & Full PrefixT. & 8192                    & 0.979 {\small $\pm$ 0.015} \\
+ Pythia1.4b          & Full PrefixT. & 16384                   & 0.663 {\small $\pm$ 0.12}  \\
 \hline
 \end{tabular}
 
+
+    \end{small}
+\vskip -0.1in
 \end{table}
 
 
@@ -918,7 +966,7 @@ Notably, lowercasing (which should preserve high-level semantics) induces a mark
 
 
 
-\begin{figure*}[t]
+\begin{figure*}[tb]
     \centering
     \centerline{\includegraphics[width=\linewidth]{Llama3.1-8B-text-modifications_lr-0p1.pdf}}
     \caption{Progressive trajectories projected onto PCA components (Llama-3.1-8B, one PG19 sample). All variants share the same 64-token prefix; the suffix is either original (Base), randomly permuted (Random), greedily sampled continuation (Sampled), or lowercased (Lowercased). Circles mark the start and squares mark the end. Axis titles report the signed explained-variance fraction.}
@@ -950,10 +998,11 @@ Notably, lowercasing (which should preserve high-level semantics) induces a mark
 
 Table~\ref{tab:full_activation_alignment_and_low_dim_projections} reports the full sweep over activation alignment strength \(\alpha\), number of aligned layers \(L\), and projection dimension, together with the resulting progressive cramming metrics.
 
-\begin{table*}
+\begin{table*}[tb]
     \centering
     \caption{Full sweep of activation alignment and low-dimensional projection hyperparameters. ``$\alpha$'' is alignment strength, ``$L$'' is the number of aligned layers, and ``dim'' is projection dimension.}\label{tab:full_activation_alignment_and_low_dim_projections}
 
+    \begin{small}
     \begin{tabular}{lllll}
         \hline
          Model                                                               & Compressed Tokens           & Information Gain         & Trajectory Length         & PCA 99\%                  \\
@@ -1006,7 +1055,8 @@ Table~\ref{tab:full_activation_alignment_and_low_dim_projections} reports the fu
          Qwen3-4B {\small dim=256} {\small $\alpha=1.0$} {\small $L=8$}      & 895.7 {\small $\pm$ 219.4}  & 3470 {\small $\pm$ 476}  & 9813 {\small $\pm$ 3019}  & 32.5 {\small $\pm$ 4.25} \\
         \hline
     \end{tabular}
-
+    \end{small}
+\vskip -0.1in
 
 \end{table*}
 
@@ -1022,11 +1072,12 @@ Three takeaways stand out:
 \end{itemize}
 
 
-\begin{table*}[]
+\begin{table*}[tb]
     \centering
     \caption{Effect of low-dimensional projection size on progressive cramming. ``dim'' in the model column denotes the projection dimension $k$ (Section~\ref{sec:lowdim}).}
     \label{tab:low_dim_projection_results}
 
+    \begin{small}
     \begin{tabular}{lllll}
         \hline
          Model                          & Compressed Tokens           & Information Gain         & Trajectory Length          & PCA 99\%                  \\
@@ -1060,34 +1111,52 @@ Three takeaways stand out:
          gemma-3-4b-pt {\small dim=512} & 217.4 {\small $\pm$ 169.1}  & 639 {\small $\pm$ 439}   & 1297 {\small $\pm$ 975}    & 12.3 {\small $\pm$ 5.95} \\
         \hline
         \end{tabular}
+        \end{small}
+\vskip -0.1in
 
 \end{table*}
 
-
 \begin{table*}[t]
 \centering
-\caption{Compression reconstruction accuracy across model sizes and input setups.
-We report mean final (training) convergence, mean greedy generation convergence,
-and the percentage of samples with a token mismatch at indices 0, 1, and 2.
-Results for Llama-3.1-8B are shown as placeholders and will be populated in future work.}
+\caption{Compression reconstruction accuracy under non-ideal training convergence.
+We report mean teacher-forcing accuracy over all compressed samples, mean greedy
+decoding accuracy when generating autoregressively from the compression token,
+and the fraction of samples with a token mismatch at indices 0, 1, and 2.
+Variants include ignoring the BOS loss during training (no BOS) and upweighting
+the loss of the first two tokens by a factor of three (2 leading).}
 \label{tab:compression_reconstruction_summary}
+\begin{small}
 
-\begin{tabular}{lll r c r r r}
+\begin{tabular}{lll r c c c c}
 \toprule
 Model & Tokens & Setup & Final conv. & Greedy conv. & \multicolumn{3}{c}{Mismatch (\%)} \\
 \cmidrule(lr){6-8}
  &  &  &  &  & @0 & @1 & @2 \\
 \midrule
-Llama-3.2-1B & 512  & common    & 0.9881 & 0.0078 & 90.0\%  & 100.0\% & 0.0\% \\
+Llama-3.2-1B & 512  & common    & 0.9881 & 0.0073 & 90.0\%  & 100.0\% & 0.0\% \\
 Llama-3.2-1B & 512  & no BOS    & 0.9902 & 0.0006 & 100.0\% & 100.0\% & 0.0\% \\
 Llama-3.2-1B & 512  & 2 leading & 0.9902 & 0.0203 & 0.0\%   & 100.0\% & 0.0\% \\
 \midrule
 Llama-3.2-3B & 1024 & common    & 0.9672 & 0.0005 & 100.0\% & 100.0\% & 0.0\% \\
 Llama-3.2-3B & 1024 & no BOS    & 0.9578 & 0.0079 & 100.0\% & 100.0\% & 0.0\% \\
 Llama-3.2-3B & 1024 & 2 leading & 0.9605 & 0.0156 & 0.0\%   & 100.0\% & 0.0\% \\
+\midrule
+Llama-3.1-8B & 1568 & common    & 0.9706 & 0.0030 & 100.0\% & 100.0\% & 0.0\% \\
+Llama-3.1-8B & 1568 & no BOS    & 0.9670 & 0.0078 & 100.0\% & 100.0\% & 0.0\% \\
+Llama-3.1-8B & 1568 & 2 leading & 0.9670 & 0.0165 & 20.0\%  & 100.0\% & 0.0\% \\
 \bottomrule
 \end{tabular}
+
+\end{small}
+\vskip -0.1in
 \end{table*}
+
+
+\section{Analysis of the Recostruction Accuracy}
+\label{app:I}
+
+As noted in Section~\ref{sec:prior_limitations}, a 99\% token-level accuracy threshold is insufficient to guarantee correct reconstruction when evaluation is performed without \emph{teacher forcing} (i.e., when generated tokens are fed back into the prefix rather than replacing them with the ground-truth tokens). Table~\ref{tab:compression_reconstruction_summary} shows that under non-progressive training, the remaining $\sim$1\% error is concentrated in the first few positions (indices 0-2); these early mistakes then compound, leading to divergent generations.
+
 
 % ----
 

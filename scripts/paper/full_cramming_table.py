@@ -103,15 +103,45 @@ def main() -> None:
             # Llama-3.2-1B
             # TODO
             {"train": "progr", "id": "sl_4096_Llama-3.2-1B_lr_0.1"},
+            # {"train": "prefix", "id": "pt_sl_1024_Llama-3.2-1B"},
+            # {"train": "prefix", "id": "pt_sl_2048_Llama-3.2-1B"},
+            {"train": "prefix", "id": "pt_sl_4096_Llama-3.2-1B"},
+            {"train": "prefix", "id": "pt_sl_8192_Llama-3.2-1B"},
+            {"train": "prefix", "id": "pt_sl_16384_Llama-3.2-1B"},
             # Llama-3.2-3B
             {"train": "progr", "id": "sl_4096_Llama-3.2-3B_lr_0.1"},
+            # {"train": "prefix", "id": "pt_sl_1024_Llama-3.2-3B"},
+            # {"train": "prefix", "id": "pt_sl_2048_Llama-3.2-3B"},
+            # {"train": "prefix", "id": "pt_sl_4096_Llama-3.2-3B"},
             {"train": "prefix", "id": "pt_sl_8192_Llama-3.2-3B"},
-            {"train": "prefix", "id": "pt_sl_16384_Llama-3.2-3B"},
+            # {"train": "prefix", "id": "pt_sl_16384_Llama-3.2-3B"}, # OOM
+            #
+            {"train": "progr", "id": "sl_4096_Meta-Llama-3.1-8B_lr_0.1"},
+            # {"train": "prefix", "id": "pt_sl_1024_Meta-Llama-3.1-8B"},
+            # {"train": "prefix", "id": "pt_sl_2048_Meta-Llama-3.1-8B"},
+            # {"train": "prefix", "id": "pt_sl_4096_Meta-Llama-3.1-8B"},
+            {"train": "prefix", "id": "pt_sl_8192_Meta-Llama-3.1-8B"},
+            # {"train": "prefix", "id": "pt_sl_16384_Meta-Llama-3.1-8B"}, # OOM
             # Llama-3.1-8B TODO
             # Pythia TODO
             {"train": "progr", "id": "sl_4096_pythia-160m_lr_0.5"},
+            {"train": "prefix", "id": "pt_sl_1024_pythia-160m"},
+            {"train": "prefix", "id": "pt_sl_2048_pythia-160m"},
+            {"train": "prefix", "id": "pt_sl_4096_pythia-160m"},
+            {"train": "prefix", "id": "pt_sl_8192_pythia-160m"},
+            {"train": "prefix", "id": "pt_sl_16384_pythia-160m"},
             {"train": "progr", "id": "sl_4096_pythia-410m_lr_0.5"},
+            # {"train": "prefix", "id": "pt_sl_1024_pythia-410m"},
+            {"train": "prefix", "id": "pt_sl_2048_pythia-410m"},
+            {"train": "prefix", "id": "pt_sl_4096_pythia-410m"},
+            {"train": "prefix", "id": "pt_sl_8192_pythia-410m"},
+            {"train": "prefix", "id": "pt_sl_16384_pythia-410m"},
             {"train": "progr", "id": "sl_4096_pythia-1.4b_lr_0.5"},
+            # {"train": "prefix", "id": "pt_sl_1024_pythia-1.4b"},
+            # {"train": "prefix", "id": "pt_sl_2048_pythia-1.4b"},
+            {"train": "prefix", "id": "pt_sl_4096_pythia-1.4b"},
+            {"train": "prefix", "id": "pt_sl_8192_pythia-1.4b"},
+            {"train": "prefix", "id": "pt_sl_16384_pythia-1.4b"},
         ]
 
     if args.type == "prefix_tuning":
@@ -254,6 +284,9 @@ def main() -> None:
             if prev_exp is None or prev_exp != experiment:
                 num_cols = len(columns)
                 result_table_rows.append([f"\multicolumn{{{num_cols}}}{{l}}{{\\textbf{{{experiment}}}}} \\\\ REMOVE"])
+        else:
+            if prev_exp is None or prev_exp != experiment:
+                result_table_rows.append(["\midrule REMOVE "])
 
         if is_progressive:
             exp_type = "Progr."
@@ -265,11 +298,15 @@ def main() -> None:
             result_table_rows.append([experiment, exp_type, max_tokens, accuracy])
         else:
             result_table_rows.append([exp_type, max_tokens, info_gain, accuracy])
-        if is_progressive and i != len(ordered_summaries) - 1:
-            if "L3.1" in experiment:
-                result_table_rows.append(["\midrule \midrule REMOVE "])
-            else:
-                result_table_rows.append(["\midrule REMOVE "])
+        if args.type != "prefix_tuning":
+            if is_progressive and i != len(ordered_summaries) - 1:
+                if "L3.1" in experiment:
+                    result_table_rows.append(["\midrule \midrule REMOVE "])
+                else:
+                    result_table_rows.append(["\midrule REMOVE "])
+        # else:
+        #     if i > 0 and i % 4 == 0 and i != len(ordered_summaries) - 1:
+        #         result_table_rows.append(["\midrule REMOVE "])
 
         prev_exp = experiment
 
