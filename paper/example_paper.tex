@@ -226,7 +226,7 @@ A parallel line of research addresses context compression for the purpose of red
 
 \citet{chevalier-etal-2023-autocompressors} adapt pre-trained language models into AutoCompressors that learn to compress long contexts into compact summary vectors through an unsupervised objective. These summary vectors function as soft prompts, enabling the model to condition on compressed representations of previous segments during language modeling. Their approach processes documents in segments, accumulating summary information across the sequence.
 
-The In-context Autoencoder (ICAE) of \citet{ge2024ICAE} employs a LoRA-adapted encoder to compress contexts into memory slots that the target LLM can condition upon. Pre-trained with both autoencoding and language modeling objectives, ICAE achieves $4\times$ context compression while maintaining the ability to respond to various prompts. The method draws interesting parallels between working memory in cognitive science and context representation in LLMs.
+The In-Context Autoencoder (ICAE) \cite{ge2024ICAE} employs a LoRA-adapted encoder to compress contexts into memory slots that the target LLM can condition upon. Pre-trained with both autoencoding and language modeling objectives, ICAE achieves $4\times$ context compression while maintaining the ability to respond to various prompts. The method draws interesting parallels between working memory in cognitive science and context representation in LLMs.
 
 These semantic compression methods are designed to preserve information relevant for downstream tasks such as question answering or summarization, tolerating lossy compression of details not essential for the target application. In contrast, our work and the cramming literature focus on near-lossless reconstruction, which provides a cleaner setting for studying the fundamental capacity and mechanisms of embedding-based information storage.
 
@@ -279,8 +279,7 @@ lead to complete divergence in subsequent generations.
 Empirically, we observe that reconstruction errors are highly concentrated at the
 earliest token positions.
 As shown in Table~\ref{tab:compression_reconstruction_summary}, mismatches almost
-exclusively occur at token indices 0 and 1, while later positions are typically
-reconstructed perfectly.
+exclusively occur at token indices 0 and 1, while later positions are typically reconstructed perfectly under teacher forcing.
 This concentration indicates that the ``last 1\%'' of errors is not uniformly
 distributed noise, but instead corresponds to structurally critical failures that
 dominate downstream behavior.
