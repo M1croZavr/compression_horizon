@@ -555,8 +555,8 @@ Across settings, we observe that alignment qualitatively changes attention behav
 \subsection{Attention Hijacking}
 \label{sec:attention}
 
-We analyze attention patterns to understand how compression embeddings achieve reconstruction.
-We measure attention mass using the definition in Section~\ref{sec:attention_mass}, comparing attention to position 0 in the crammed setting (compression embedding) to attention to the BOS token in the uncompressed baseline.
+Perfect reconstruction can arise from qualitatively different mechanisms, ranging from faithful information encoding to brittle steering that overrides the model's normal computation; to probe the mechanism, we analyze whether the compression embedding becomes an \emph{attention sink} that captures a disproportionate fraction of attention, analogous to (and potentially competing with) the BOS token.
+We quantify this effect using the attention-mass metric from Section~\ref{sec:attention_mass}, comparing attention directed to position 0 in the crammed setting (compression embedding) against attention directed to position 0 in the uncompressed baseline (BOS).
 
 Table~\ref{tab:attn_hijacking} shows that attention hijacking is highly model-dependent when aggregated over layers.
 SmolLM2 and Pythia exhibit strong correlation between the layer-wise attention-mass profiles for the BOS token and the compression embedding.
@@ -630,7 +630,9 @@ Removing BOS increases reconstructed length and information gain (and reduces co
 \subsection{Downstream Evaluation}
 \label{sec:semantic_evaluation}
 
-If cramming preserves semantic information, conditioning on a compression embedding should preserve downstream capabilities that depend on the prefix.
+We test whether cramming preserves the \emph{useful} information in a prefix by evaluating standard multiple-choice benchmarks (HellaSwag and ARC) under likelihood-based scoring.
+These benchmarks use relatively short contexts, so they isolate capability failures that occur even when the task does not require long-range context retention.
+If the compression embedding faithfully encodes the prefix in a way the model can consume, accuracy should remain close to the uncompressed baseline; large drops indicate that conditioning on the compression embedding disrupts the model's ability to leverage the prefix for downstream reasoning.
 
 \paragraph{Setup.}
 We evaluate on HellaSwag and ARC under two conditions:
@@ -668,14 +670,9 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 
 \end{table}
 
-Table~\ref{tab:semantic_evaluation} shows that prepending the crammed compression embedding causes a large and consistent drop in downstream accuracy across model families.
-In most settings, performance collapses to (or below) the random-guessing baseline, indicating a failure mode stronger than ordinary degradation: the compression embedding breaks the model's ability to use the prefix to score candidate suffixes.
-This collapse is not explained by nominal cramming capacity (in tokens or information gain): even models that can reconstruct long prefixes fail to preserve downstream behavior.
-These results support the mechanistic picture suggested by attention analysis: cramming achieves reconstruction by overriding model computation rather than encoding a transferable semantic representation.
-
-
-% \paragraph{Reconstruction $\neq$ Compression.}
-% Perfect reconstruction accuracy is insufficient; future work must evaluate capability preservation.
+Table~\ref{tab:semantic_evaluation} shows that prepending a crammed compression embedding consistently reduces downstream accuracy across model families, often collapsing to (or below) random guessing.
+Together with the attention analysis, these results suggest that cramming can achieve reconstruction by overriding computation rather than encoding a transferable semantic representation.
+This highlights a key limitation of using reconstruction accuracy alone: perfect reconstruction is insufficient, and future work must explicitly evaluate capability preservation in any downstream semantic evaluation and broader capability benchmarks overall.
 
 
 \section{Limitations}
