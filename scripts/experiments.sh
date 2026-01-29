@@ -34,7 +34,6 @@ python scripts/jobs/run_jobs.py --model_checkpoint $MODEL_NAME --limit_dataset_i
 python scripts/jobs/run_jobs.py --model_checkpoint $MODEL_NAME --limit_dataset_items 10 --per_device_train_batch_size 10 --max_optimization_steps_per_sample 10000 --learning_rate 5.0 --max_sequence_lengths $SEQ_LENGTHS
 
 # Low Dim LR=0.01
-# TODO все, что ниже - не запускалось
 python scripts/jobs/run_jobs.py --model_checkpoint $MODEL_NAME --limit_dataset_items 10 --per_device_train_batch_size 10 --max_optimization_steps_per_sample 10000 --learning_rate 0.01 --max_sequence_lengths $SEQ_LENGTHS --low_dim_projection --low_dim_size 32
 python scripts/jobs/run_jobs.py --model_checkpoint $MODEL_NAME --limit_dataset_items 10 --per_device_train_batch_size 10 --max_optimization_steps_per_sample 10000 --learning_rate 0.01 --max_sequence_lengths $SEQ_LENGTHS --low_dim_projection --low_dim_size 64
 python scripts/jobs/run_jobs.py --model_checkpoint $MODEL_NAME --limit_dataset_items 10 --per_device_train_batch_size 10 --max_optimization_steps_per_sample 10000 --learning_rate 0.01 --max_sequence_lengths $SEQ_LENGTHS --low_dim_projection --low_dim_size 128

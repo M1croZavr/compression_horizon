@@ -11,7 +11,7 @@ git checkout .
 
 # Crutch single file with hardcoded path to workdir
 # sed -i "s|/workspace-SR004.nfs2/d.tarasov/compr|.|g" src/sentence_attention/artifacts/experiments.py
-# sed -i "s|/workspace-SR004.nfs2/d.tarasov/|../|g" scripts/evaluate.py
+sed -i "s|mrsndmn/pg19|hf_anon_icml_2026/pg19|g" ./scripts/activation_distillation.py ./scripts/data/generate_pg19_paraphrases.py ./scripts/experiments.sh  ./scripts/hybrid_loss.py ./scripts/paper/visualize_trajectories.sh
 
 # Удаляем все файлы, которые могут задеанонить (джобы, гит, скрипты c полными путями)
 # Скрипты джобов для воспроизводимости не нужны и из них нельзя просто выкинуть полные пути (хотя можно, но костыльно это будет и неудобно)

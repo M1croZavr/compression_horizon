@@ -183,7 +183,6 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
 
 
 # Allignment
-# TODO сделать график
 # Full experiments list tab:full_activation_alignment_and_low_dim_projections
 PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --checkpoints \
