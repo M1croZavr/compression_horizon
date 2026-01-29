@@ -685,14 +685,14 @@ Together with the attention analysis, these results suggest that high reconstruc
 This highlights a key limitation of using reconstruction accuracy alone: perfect reconstruction is insufficient, and future work must explicitly evaluate capability preservation in any downstream semantic evaluation and broader capability benchmarks overall.
 
 
-\section{Limitations}
+\section{Conclusion}
 
-Our experiments are limited in scope and do not fully characterize when compression embeddings preserve (or destroy) downstream capabilities.
-First, we study a small set of model families and checkpoints; while the observed failure mode is consistent across these models, broader coverage (including additional architectures, training recipes, and instruction-tuned variants) may reveal different behaviors.
-Second, most analyses use a small number of PG19 samples.
-Third, our mechanistic probes are correlational: attention-mass statistics and trajectory PCA help summarize behavior but do not identify the causal computation responsible for reconstruction or for capability collapse.
-Stronger causal analyses (e.g., targeted interventions and controlled ablations) are required to distinguish faithful encoding from brittle steering.
-This leaves open the practically important problem of learning a \emph{fast} compressor that produces semantically meaningful compression embeddings (and, ideally, retains sufficient factual precision) for retrieval-style workloads such as needle-in-a-haystack benchmarks, without per-example optimization.
+We introduced progressive cramming, which grows the reconstruction target token-by-token and enables controlled measurement of when embedding-based reconstruction succeeds or fails under a fixed optimization budget.
+Across model families, progressive trajectories are low-dimensional, and attention-mass analyses show that crammed embeddings can become intermediate-layer attention sinks, consistent with attention hijacking.
+Critically, downstream evaluation indicates that optimizing embeddings for reconstruction can coincide with large capability drops, even when the original prefix remains in context, so reconstruction accuracy alone is not a sufficient criterion for meaningful compression.
+
+Our study remains limited in scope: we evaluate a small set of model families and checkpoints and use a small number of PG19 samples, and our mechanistic probes are correlational rather than causal.
+Future work should broaden model coverage (including additional architectures and instruction-tuned variants), strengthen causal analysis via targeted interventions, and develop a \emph{fast} compressor that produces semantically meaningful compression embeddings (ideally retaining factual precision) for retrieval-style workloads such as needle-in-a-haystack benchmarks, without per-example optimization.
 
 % ---------------------------------------------------------------------------
 % TODO / notes (kept for future revisions; all commented intentionally)
