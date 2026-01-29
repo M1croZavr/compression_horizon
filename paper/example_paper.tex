@@ -764,6 +764,10 @@ We used 100 warmup steps for all models.
 
 \end{table*}
 
+\section{Compute}
+
+Each experiment ran on a single NVIDIA A100 80GB GPU, with up to 16 GPUs used in parallel across experiments. Training time depends on the sequence length and loss type, ranging from a few minutes (short sequences, small models) to approximately 24 hours (long sequences, large models). The total compute used for this research is approximately 2800 GPU-hours.
+
 
 \section{Full cramming vs progressive.}
 
