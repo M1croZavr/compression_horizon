@@ -349,11 +349,11 @@ Let $\mathbf{h}_l^{\text{cram}}(i)$ denote the hidden state at layer $l$ and tok
 We align activations using cosine distance:
 %
 \begin{equation}
-    \mathcal{L}_{\text{align}} = \frac{1}{n} \sum_{l \in \{1..K\}} \sum_{i=1}^{n} \left( 1 - \frac{\mathbf{h}_l^{\text{cram}}(i) \cdot \mathbf{h}_l^{\text{clean}}(i)}{\|\mathbf{h}_l^{\text{cram}}(i)\| \, \|\mathbf{h}_l^{\text{clean}}(i)\|} \right)
+    \mathcal{L}_{\text{align}} = \frac{1}{n} \sum_{l=1}^{K} \sum_{i=1}^{n} \left( 1 - \frac{\mathbf{h}_l^{\text{cram}}(i) \cdot \mathbf{h}_l^{\text{clean}}(i)}{\|\mathbf{h}_l^{\text{cram}}(i)\| \, \|\mathbf{h}_l^{\text{clean}}(i)\|} \right)
 \end{equation}
 %
 
-where $K$ is the number of layers used for alignment.
+where $K$ is the number of layers used for alignment. We align the first $K$ transformer layers (closest to the embedding layer).
 
 The full objective combines reconstruction and alignment:
 
