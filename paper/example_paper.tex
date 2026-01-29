@@ -677,35 +677,32 @@ This highlights a key limitation of using reconstruction accuracy alone: perfect
 
 \section{Limitations}
 
+Our experiments are limited in scope and do not fully characterize when compression embeddings preserve (or destroy) downstream capabilities.
+First, we study a small set of model families and checkpoints; while the observed failure mode is consistent across these models, broader coverage (including additional architectures, training recipes, and instruction-tuned variants) may reveal different behaviors.
+Second, most analyses use a small number of PG19 samples.
+Third, our mechanistic probes are correlational: attention-mass statistics and trajectory PCA help summarize behavior but do not identify the causal computation responsible for reconstruction or for capability collapse.
+Stronger causal analyses (e.g., targeted interventions and controlled ablations) are required to distinguish faithful encoding from brittle steering.
+This leaves open the practically important problem of learning a \emph{fast} compressor that produces semantically meaningful compression embeddings (and, ideally, retains sufficient factual precision) for retrieval-style workloads such as needle-in-a-haystack benchmarks, without per-example optimization.
+
+% ---------------------------------------------------------------------------
+% TODO / notes (kept for future revisions; all commented intentionally)
+% ---------------------------------------------------------------------------
 % {\color{red} how much bos token is similar to bos token?}  -- won't fix
-
-{\color{red} looks like attention sliv (sink?)}
-
-{\color{red} run more samples experiments to validate mainpaper}
-
-{\color{red} my own optimizer that explores more dimensions? if we found bad local minima, we can explore more dimensions?}
-
+% {\color{red} looks like attention sliv (sink?)}
+% {\color{red} run more samples experiments to validate mainpaper}
+% {\color{red} my own optimizer that explores more dimensions? if we found bad local minima, we can explore more dimensions?}
 % TODO а сколько реально нужно компонент, чтобы достичь идеальной точности для генеративной реконструкции?
-
 % {\color{red} TODO - how and why exactly softcapping?}
-
 % {\color{red} TODO - shared subspaces?}
-
 % {\color{red} TODO - ranged loss weight increase for tokens?}
-
 % {\color{red} TODO visualize Optimization Landscape.}
-
-
-
 % \begin{itemize}
 %     \item \todo{Models tested (only decoder-only? specific families?)}
 %     \item \todo{Sequence types (only English text? specific domains?)}
 %     \item \todo{Computational cost of progressive approach}
 %     \item \todo{PCA analysis lacks strong null hypothesis comparison}
 % \end{itemize}
-
 % ===========
-
 
 \section*{Impact Statement}
 
