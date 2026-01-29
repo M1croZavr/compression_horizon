@@ -15,7 +15,7 @@ git checkout .
 
 # Удаляем все файлы, которые могут задеанонить (джобы, гит, скрипты c полными путями)
 # Скрипты джобов для воспроизводимости не нужны и из них нельзя просто выкинуть полные пути (хотя можно, но костыльно это будет и неудобно)
-rm -rf .cursor/ .github/ .git/ paper notebooks prepare_submission.sh .github LICENSE jobs ./scripts/run_once
+rm -rf .cursor/ .github/ .git/ scripts/jobs paper notebooks prepare_submission.sh .github LICENSE jobs ./scripts/run_once
 
 echo "Following files will be deleted:"
 grep -Rl tarasov .
