@@ -208,10 +208,10 @@ This distinction matters for future work on learned compression: methods that ov
 
 Our main contributions are as follows:
 \begin{itemize}
-    \item Progressive cramming framework with activation alignment and low-dimensional projection, achieving reliable 100\% reconstruction
-    \item Analysis revealing optimization trajectories occupy low-dimensional manifolds
-    \item An empirical finding that cramming operates through attention hijacking, with compression tokens capturing 40-80\% of attention mass in fixed intermediate layers
-    \item Evidence that reconstruction success does not imply preserved downstream capabilities, establishing a distinction between pixel-level recovery and semantic encoding
+    \item We introduce progressive cramming, which grows the target prefix token-by-token and targets 100\% reconstruction, enabling a sharp success/failure boundary beyond fixed-budget, 99\% protocols.
+    \item We show that progressive optimization trajectories $\{\mathbf{e}^{(k)}\}$ are low-dimensional: across model families, 30--100 PCA components explain 99\% of per-sample trajectory variance in 2048--4096 dimensional embedding spaces.
+    \item We quantify attention-sink behavior during cramming and find that compression embeddings can capture substantial attention mass to position 0 in specific intermediate layers (often 20--60\%), with strong model-family dependence.
+    \item We demonstrate that perfect reconstruction does not imply preserved downstream utility: on likelihood-based multiple-choice evaluation (HellaSwag, ARC-Easy), prepending a perfectly reconstructing compression embedding reduces accuracy to close to random guessing across model families, even when the original prefix remains in context.
 \end{itemize}
 
 
