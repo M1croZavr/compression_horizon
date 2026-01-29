@@ -651,6 +651,7 @@ We evaluate on HellaSwag and ARC under two conditions:
 \end{enumerate}
 
 For the second condition, we optimize a separate compression embedding per benchmark instance, targeting perfect teacher-forced reconstruction of the corresponding prefix within a fixed optimization budget.
+We use the standard full cramming setup (a single embedding optimized for the entire prefix), rather than the progressive stage-wise procedure from Section~\ref{sec:progressive}.
 In practice, this optimization does not guarantee perfect reconstruction for every benchmark instance; we do not filter out imperfectly reconstructed cases, so reported downstream accuracy reflects both the effect of conditioning on the learned embedding and any residual reconstruction errors.
 Each benchmark instance provides four candidate continuations; we select the continuation with the lowest normalized negative log-likelihood (per suffix token).
 Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
@@ -658,7 +659,7 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 \paragraph{Results.}
 \begin{table}[t]
     \centering
-    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends a per-instance optimized compression embedding (reconstruction is targeted but not guaranteed to be perfect). \bcancel{B} denotes experiments with the BOS token removed.}
+    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends a per-instance optimized compression embedding in the full cramming setup (reconstruction is targeted but not guaranteed to be perfect). \bcancel{B} denotes experiments with the BOS token removed.}
     \label{tab:semantic_evaluation}
 
 
