@@ -318,7 +318,7 @@ def compute_num_pca_explained_99_var(
     cache_data: Optional[Dict[str, Any]] = None,
     cache_key_suffix: Optional[str] = None,
 ) -> float:
-    """Compute cumulative explained variance using PCA with 4 components.
+    """Compute the number of PCA components needed for 99% variance.
 
     Args:
         embeddings: List of flattened embedding arrays
@@ -326,7 +326,9 @@ def compute_num_pca_explained_99_var(
         cache_key_suffix: Optional suffix for per-sample cache key (e.g., sample_id).
 
     Returns:
-        Cumulative explained variance ratio (0.0 to 1.0), or NaN if not computable
+        The minimum number of principal components whose cumulative explained-variance
+        ratio reaches 0.99. Returns -1 if 0.99 is not reached with the fitted PCA, or
+        NaN if not computable.
     """
     if len(embeddings) < 2:
         return float("nan")
@@ -346,7 +348,7 @@ def compute_num_pca_explained_99_var(
         if cached_result is not None:
             return float(cached_result)
 
-    # Fit PCA with up to 4 components
+    # Fit PCA with as many components as the data supports.
     max_PCA_components = min(512, n_samples - 1, n_features)
     if max_PCA_components < 1:
         return float("nan")
@@ -355,13 +357,12 @@ def compute_num_pca_explained_99_var(
     pca.fit(X)
     explained_var_ratio = pca.explained_variance_ratio_
 
-    # Return cumulative explained variance
     cumulative_var = np.cumsum(explained_var_ratio)
-    num_pca_for99_var = (cumulative_var < 0.99).sum()
-    if num_pca_for99_var == max_PCA_components:
-        num_pca_for99_var = -1
-
-    result = float(num_pca_for99_var)
+    idx = int(np.searchsorted(cumulative_var, 0.99, side="left"))
+    if idx >= len(cumulative_var):
+        result = -1.0
+    else:
+        result = float(idx + 1)
 
     if cache_data is not None and cache_key_suffix is not None:
         set_metric_map_value(cache_data, "pca_99_var", cache_key_suffix, result)
