@@ -568,13 +568,13 @@ Across settings, we observe that alignment qualitatively changes attention behav
 \subsection{Attention Hijacking}
 \label{sec:attention}
 
-Perfect reconstruction can arise from qualitatively different mechanisms, ranging from faithful information encoding to brittle steering that overrides the model's normal computation; to probe the mechanism, we analyze whether the compression embedding becomes an \emph{attention sink} that captures a disproportionate fraction of attention, analogous to (and potentially competing with) the BOS token.
-We quantify this effect using the attention-mass metric from Section~\ref{sec:attention_mass}, comparing attention directed to position 0 in the crammed setting (compression embedding) against attention directed to position 0 in the uncompressed baseline (BOS).
+Perfect reconstruction can arise from qualitatively different mechanisms, ranging from faithful information encoding to brittle steering; to probe the mechanism, we measure whether the compression embedding becomes an \emph{attention sink} that captures a disproportionate fraction of attention, analogous to (and potentially competing with) the BOS token.
+We quantify attention sinks using the attention-mass metric from Section~\ref{sec:attention_mass}, comparing attention directed to position 0 in the crammed setting (compression embedding) against attention directed to position 0 in the uncompressed baseline (BOS). We refer to this phenomenon as \emph{attention hijacking} to emphasize that strong attention capture is associated with a breakdown of downstream language modeling capabilities (Section~\ref{sec:semantic_evaluation}).
 
 Table~\ref{tab:attn_hijacking} shows that attention hijacking is highly model-dependent when aggregated over layers.
 SmolLM2 and Pythia exhibit strong correlation between the layer-wise attention-mass profiles for the BOS token and the compression embedding.
 In these families, the compression embedding attracts substantial attention mass in the same layers where BOS is an attention sink; in Pythia it can match or exceed BOS attention on average.
-This suggests that the compression embedding may function as an attention sink, but one that can override the model's normal computation and degrade downstream behavior (Section~\ref{sec:semantic_evaluation}).
+This suggests that the compression embedding may function as an attention sink whose attention capture coincides with degraded downstream behavior (Section~\ref{sec:semantic_evaluation}).
 
 In contrast, Llama and Gemma show much lower compression-embedding attention mass than BOS on average and weak (or negative) correlation, suggesting that hijacking concentrates in specific layers rather than uniformly matching the BOS pattern.
 
