@@ -193,6 +193,7 @@ This achieves reliable 100\% accuracy and enables precise measurement of where c
 With these tools, we investigate the cramming mechanism.
 Analysis of optimization trajectories reveals they occupy surprisingly low-dimensional manifolds: 30-100 PCA components explain 99\% of variance in 2048-4096 dimensional embedding spaces.
 More critically, attention pattern analysis exposes \emph{how} reconstruction occurs: compression embeddings hijack 20-60\% of attention mass in intermediate layers.
+We use the term \emph{attention hijacking} to emphasize that this attention concentration is associated with a breakdown of downstream language modeling capabilities, rather than benign attention focusing.
 This concentration is invariant to sequence length -- the same layers are dominated whether cramming 32 or 512 tokens -- suggesting compression activates fixed circuits rather than scaling information density.
 
 % PARAGRAPH 5: What this means - not semantic encoding
@@ -210,7 +211,7 @@ Our main contributions are as follows:
 \begin{itemize}
     \item We introduce progressive cramming, which grows the target prefix token-by-token and targets 100\% reconstruction, enabling a sharp success/failure boundary beyond fixed-budget, 99\% protocols.
     \item We show that progressive optimization trajectories $\{\mathbf{e}^{(k)}\}$ are low-dimensional: across model families, 30--100 PCA components explain 99\% of per-sample trajectory variance in 2048--4096 dimensional embedding spaces.
-    \item We quantify attention-sink behavior during cramming and find that compression embeddings can capture substantial attention mass to position 0 in specific intermediate layers (often 20--60\%), with strong model-family dependence.
+    \item We quantify attention hijacking during cramming via attention mass to position 0 and find that compression embeddings can capture substantial mass in specific intermediate layers (often 20--60\%), with strong model-family dependence.
     \item We demonstrate that perfect reconstruction does not imply preserved downstream utility: on likelihood-based multiple-choice evaluation (HellaSwag, ARC-Easy), prepending a perfectly reconstructing compression embedding reduces accuracy to close to random guessing across model families, even when the original prefix remains in context.
 \end{itemize}
 
