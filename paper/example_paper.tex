@@ -146,7 +146,7 @@
     We further stabilize optimization with activation alignment and low-dimensional projection, enabling reliable 100\% reconstruction and more precise measurement of information gain.
     Using progressive trajectories, we find that optimization paths occupy surprisingly low-dimensional structure in the embedding space.
     Attention analysis shows that compression embeddings often become attention sinks in specific intermediate layers, which correlates with both optimization difficulty and downstream degradation.
-    On likelihood-based multiple-choice evaluation (HellaSwag, ARC-Easy), prepending a perfectly reconstructing compression embedding reduces accuracy to close to random guessing across model families, even when the original prefix remains in context.
+    On likelihood-based multiple-choice evaluation (HellaSwag, ARC-Easy), prepending a crammed compression embedding (optimized for prefix reconstruction, but not guaranteed to be perfect for every benchmark instance) reduces accuracy to close to random guessing across model families, even when the original prefix remains in context.
     These results suggest that perfect reconstruction can arise from brittle steering and attention hijacking, rather than a transferable semantic representation.
     Our results position progressive cramming as a tool for studying compression limits, while showing that perfect reconstruction is insufficient for meaningful compression.
 \end{abstract}
@@ -208,7 +208,7 @@ Our main contributions are as follows:
     \item We introduce progressive cramming, which grows the target prefix token-by-token and targets 100\% reconstruction, enabling a sharp success/failure boundary beyond fixed-budget, 99\% protocols.
     \item We show that progressive optimization trajectories $\{\mathbf{e}^{(k)}\}$ are low-dimensional: across model families, 30--100 PCA components explain 99\% of per-sample trajectory variance in 2048--4096 dimensional embedding spaces.
     \item We quantify attention hijacking during cramming via attention mass to position 0 and find that compression embeddings can capture substantial mass in specific intermediate layers (often 20--60\%), with strong model-family dependence.
-    \item We demonstrate that perfect reconstruction does not imply preserved downstream utility: on likelihood-based multiple-choice evaluation (HellaSwag, ARC-Easy), prepending a perfectly reconstructing compression embedding reduces accuracy to close to random guessing across model families, even when the original prefix remains in context.
+    \item We demonstrate that optimizing for reconstruction does not imply preserved downstream utility: on likelihood-based multiple-choice evaluation (HellaSwag, ARC-Easy), prepending a crammed compression embedding reduces accuracy to close to random guessing across model families, even when the original prefix remains in context.
 \end{itemize}
 
 
@@ -650,14 +650,15 @@ We evaluate on HellaSwag and ARC under two conditions:
     \item Compression embedding + original prefix
 \end{enumerate}
 
-For the second condition, we optimize a separate compression embedding per sample for perfect reconstruction of the corresponding prefix.
+For the second condition, we optimize a separate compression embedding per benchmark instance, targeting perfect teacher-forced reconstruction of the corresponding prefix within a fixed optimization budget.
+In practice, this optimization does not guarantee perfect reconstruction for every benchmark instance; we do not filter out imperfectly reconstructed cases, so reported downstream accuracy reflects both the effect of conditioning on the learned embedding and any residual reconstruction errors.
 Each benchmark instance provides four candidate continuations; we select the continuation with the lowest normalized negative log-likelihood (per suffix token).
 Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 
 \paragraph{Results.}
 \begin{table}[t]
     \centering
-    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends an optimized compression embedding. \bcancel{B} denotes experiments with the BOS token removed.}
+    \caption{Downstream multiple-choice evaluation on HellaSwag and ARC-Easy (4-way; chance = 25\%). ``Base'' uses the original prefix; ``Cram'' prepends a per-instance optimized compression embedding (reconstruction is targeted but not guaranteed to be perfect). \bcancel{B} denotes experiments with the BOS token removed.}
     \label{tab:semantic_evaluation}
 
 
@@ -680,7 +681,7 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 \end{table}
 
 Table~\ref{tab:semantic_evaluation} shows that prepending a crammed compression embedding consistently reduces downstream accuracy across model families, often collapsing to (or below) random guessing.
-Together with the attention analysis, these results suggest that perfect reconstruction may be achieved via brittle steering (attention hijacking) rather than a transferable semantic representation.
+Together with the attention analysis, these results suggest that high reconstruction performance can coincide with brittle steering (attention hijacking) rather than a transferable semantic representation.
 This highlights a key limitation of using reconstruction accuracy alone: perfect reconstruction is insufficient, and future work must explicitly evaluate capability preservation in any downstream semantic evaluation and broader capability benchmarks overall.
 
 
