@@ -147,12 +147,8 @@
     Using progressive trajectories, we find that optimization paths occupy surprisingly low-dimensional structure in the embedding space.
     Attention analysis shows that compression embeddings often become attention sinks in specific intermediate layers, which correlates with both optimization difficulty and downstream degradation.
     On likelihood-based multiple-choice evaluation (HellaSwag, ARC-Easy), prepending a perfectly reconstructing compression embedding reduces accuracy to close to random guessing across model families, even when the original prefix remains in context.
-    Cramming achieves reconstruction by overriding model
-    computation, not by encoding transferable semantics.
-    Our results establish progressive cramming as a tool for
-    studying compression limits while demonstrating that even
-    perfect reconstruction is insufficient for meaningful
-    compression.
+    These results suggest that perfect reconstruction can arise from brittle steering and attention hijacking, rather than a transferable semantic representation.
+    Our results position progressive cramming as a tool for studying compression limits, while showing that perfect reconstruction is insufficient for meaningful compression.
 \end{abstract}
 
 
@@ -181,7 +177,7 @@ The results were striking: single embeddings in the input space of large languag
 But \emph{how} do transformers achieve this?
 The original work focused on capacity limits -- how many tokens fit -- rather than the mechanism enabling reconstruction.
 This leaves open a fundamental question: does cramming discover dense semantic representations that the model can interpret, or does it exploit some other property of transformer computation?
-Understanding this mechanism matters beyond cramming itself; it reveals how transformers process information stored in their embedding space.
+Understanding this mechanism matters beyond cramming itself; it can shed light on how transformers process information stored in their embedding space.
 
 % PARAGRAPH 3: Methodological improvements enabling study
 We first address methodological limitations that complicate controlled study.
@@ -191,16 +187,16 @@ This achieves reliable 100\% accuracy and enables precise measurement of where c
 
 % PARAGRAPH 4: What we find - the mechanism
 With these tools, we investigate the cramming mechanism.
-Analysis of optimization trajectories reveals they occupy surprisingly low-dimensional manifolds: 30-100 PCA components explain 99\% of variance in 2048-4096 dimensional embedding spaces.
-More critically, attention pattern analysis exposes \emph{how} reconstruction occurs: compression embeddings hijack 20-60\% of attention mass in intermediate layers.
+Analysis of optimization trajectories shows they occupy surprisingly low-dimensional manifolds: 30-100 PCA components explain 99\% of variance in 2048-4096 dimensional embedding spaces.
+More critically, attention pattern analysis indicates that reconstruction is associated with attention hijacking: compression embeddings capture 20-60\% of attention mass in intermediate layers.
 We use the term \emph{attention hijacking} to emphasize that this attention concentration is associated with a breakdown of downstream language modeling capabilities, rather than benign attention focusing.
-This concentration is invariant to sequence length -- the same layers are dominated whether cramming 32 or 512 tokens -- suggesting compression activates fixed circuits rather than scaling information density.
+This concentration is invariant to sequence length -- the same layers are dominated whether cramming 32 or 512 tokens -- consistent with compression engaging relatively fixed circuits rather than scaling information density.
 
 % PARAGRAPH 5: What this means - not semantic encoding
 This mechanism has consequences.
 If cramming worked through semantic encoding, compressed prefixes should preserve downstream capabilities.
-Evaluation on HellaSwag and ARC reveals the opposite: models fail entirely, even when decompressed tokens remain in context.
-Cramming achieves reconstruction by \emph{overriding} transformer computation -- forcing specific outputs through attention capture -- rather than by encoding information the model can flexibly use.
+Evaluation on HellaSwag and ARC shows the opposite: accuracy drops toward random guessing, even when the original prefix remains in context.
+Together with the attention results, this suggests that cramming can achieve reconstruction via brittle steering (e.g., attention capture) rather than by encoding information the model can flexibly use.
 
 % PARAGRAPH 6: Implications
 These findings reframe what cramming reveals about transformers.
@@ -684,7 +680,7 @@ Under this 4-way multiple-choice protocol, random guessing yields 25\% accuracy.
 \end{table}
 
 Table~\ref{tab:semantic_evaluation} shows that prepending a crammed compression embedding consistently reduces downstream accuracy across model families, often collapsing to (or below) random guessing.
-Together with the attention analysis, these results suggest that cramming can achieve reconstruction by overriding computation rather than encoding a transferable semantic representation.
+Together with the attention analysis, these results suggest that perfect reconstruction may be achieved via brittle steering (attention hijacking) rather than a transferable semantic representation.
 This highlights a key limitation of using reconstruction accuracy alone: perfect reconstruction is insufficient, and future work must explicitly evaluate capability preservation in any downstream semantic evaluation and broader capability benchmarks overall.
 
 
