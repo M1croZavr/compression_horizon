@@ -11,6 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLan
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer
 from compression_horizon.utils.exceptions import NvidiaSMIError
+from compression_horizon.utils.launch import resolve_torch_dtype, set_launch_seed
 
 
 def load_or_create_tokenized_dataset(
@@ -217,9 +218,6 @@ if __name__ == "__main__":
         f.write(cmdline_str + "\n")
     with open(os.path.join(output_dir, "cmd_hash.txt"), "w", encoding="utf-8") as f:
         f.write(cmd_hash8 + "\n")
-
-    # Set random seed early for reproducibility
-    from compression_horizon.utils.launch import resolve_torch_dtype, set_launch_seed
 
     random_seed = getattr(training_args, "random_seed", 42)
     set_launch_seed(random_seed)
