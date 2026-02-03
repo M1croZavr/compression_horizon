@@ -85,12 +85,15 @@ class MyTrainer:
         # Hidden state: [batch, mem + sequence, hidden]
         extra_kwargs = {}
         if self.args.fix_position_ids:
-            position_ids = torch.arange(-1, token_embeddings.shape[1], device=token_embeddings.device)
-            position_ids[0] = 0
-            position_ids = position_ids.unsqueeze(0)
-            # print('position_ids', position_ids)
+            position_ids = torch.arange(
+                -num_compression_tokens,
+                token_embeddings.size(1),
+                device=token_embeddings.device,
+            )  # [mem + sequence]
+            position_ids[:num_compression_tokens] = 0
+            position_ids = position_ids.repeat(token_embeddings.size(0), 1)  # [batch, mem + sequence]
             extra_kwargs["position_ids"] = position_ids
-
+        # Hidden state: [batch, mem + sequence, hidden]
         compression_outputs = model(
             inputs_embeds=united_token_embeddings,
             attention_mask=united_attention_mask,
@@ -133,7 +136,7 @@ class MyTrainer:
                     max_new_tokens=self.args.max_sequence_length,
                     num_return_sequences=1,
                 )
-                ground_truth_text: Optional[list] = self.processing_class.batch_decode(input_ids, skip_special_tokens=True)
+                ground_truth_text: Optional[list[str]] = self.processing_class.batch_decode(input_ids, skip_special_tokens=True)
             else:
                 generated_text = None
                 ground_truth_text = None
@@ -759,12 +762,14 @@ class MyTrainer:
                     covariance = 1e-5 * sigma
                     try:
                         mvn_dist = torch.distributions.MultivariateNormal(
-                            mvn_mu.to(torch.float32), covariance_matrix=covariance.to(torch.float32)
+                            mvn_mu.to(torch.float32),
+                            covariance_matrix=covariance.to(torch.float32),
                         )
                     except Exception:
                         diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
                         mvn_dist = torch.distributions.MultivariateNormal(
-                            mvn_mu.to(torch.float32), covariance_matrix=torch.diag(diag_cov).to(torch.float32)
+                            mvn_mu.to(torch.float32),
+                            covariance_matrix=torch.diag(diag_cov).to(torch.float32),
                         )
                 else:
                     raise ValueError("cant run mv normal initialization method")
@@ -776,6 +781,8 @@ class MyTrainer:
             batch_size=self.args.per_device_train_batch_size,
             shuffle=False,
             collate_fn=self.data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
         )
 
     @staticmethod
@@ -1226,37 +1233,34 @@ class MyTrainer:
                 generated_text,
                 ground_truth_text,
             ) = (None, None, None, None, None)
+            prev_convergence = None
+            total_per_sample_convergence = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    batch_size,
+                ],
+                dtype=torch.long,
+            )  # [max_steps, batch]
+            total_per_sample_convergence_099 = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    batch_size,
+                ],
+                dtype=torch.long,
+            )  # [max_steps, batch]
+            total_per_sample_convergence_095 = torch.zeros(
+                [
+                    self.args.max_optimization_steps_per_sample,
+                    batch_size,
+                ],
+                dtype=torch.long,
+            )  # [max_steps, batch]
             progress_bar = tqdm(
                 range(self.args.max_optimization_steps_per_sample),
                 total=self.args.max_optimization_steps_per_sample,
                 # disable=True,
             )
             progress_bar.set_description("Training")
-
-            total_per_sample_convergence = torch.zeros(
-                [
-                    self.args.max_optimization_steps_per_sample,
-                    input_ids.shape[0],
-                ],
-                dtype=torch.long,
-            )
-            prev_convergence = None
-            # prev_convergence_per_sample = None
-            total_per_sample_convergence_099 = torch.zeros(
-                [
-                    self.args.max_optimization_steps_per_sample,
-                    input_ids.shape[0],
-                ],
-                dtype=torch.long,
-            )
-            total_per_sample_convergence_095 = torch.zeros(
-                [
-                    self.args.max_optimization_steps_per_sample,
-                    input_ids.shape[0],
-                ],
-                dtype=torch.long,
-            )
-
             for step_i in progress_bar:
                 # Reconstruct compression tokens from PCA coefficients if using pretrained_pca
                 if init_method == "pretrained_pca":
@@ -1368,9 +1372,15 @@ class MyTrainer:
             total_per_sample_convergence_sum = total_per_sample_convergence.sum(dim=0)
             print("total_per_sample_convergence_sum", total_per_sample_convergence_sum)
             total_per_sample_convergence_099_sum = total_per_sample_convergence_099.sum(dim=0)
-            print("total_per_sample_convergence_099_sum", total_per_sample_convergence_099_sum)
+            print(
+                "total_per_sample_convergence_099_sum",
+                total_per_sample_convergence_099_sum,
+            )
             total_per_sample_convergence_095_sum = total_per_sample_convergence_095.sum(dim=0)
-            print("total_per_sample_convergence_095_sum", total_per_sample_convergence_095_sum)
+            print(
+                "total_per_sample_convergence_095_sum",
+                total_per_sample_convergence_095_sum,
+            )
 
             # After optimizing this batch's compression tokens, record artifacts per sample (once per sample)
             with torch.no_grad():

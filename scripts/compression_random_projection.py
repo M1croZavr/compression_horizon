@@ -125,15 +125,44 @@ def evaluate_random_projection(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Random projection accuracy around a compression embedding point")
-    parser.add_argument("--params_path", type=str, required=True, help="Path to saved params .pt file (from interpolation)")
+    parser.add_argument(
+        "--params_path",
+        type=str,
+        required=True,
+        help="Path to saved params .pt file (from interpolation)",
+    )
     parser.add_argument("--anchor", type=str, default="e1", help="Which anchor to use: e0 | e1 | cp{k}")
     parser.add_argument("--num_directions", type=int, default=16, help="Number of random directions")
-    parser.add_argument("--num_radii", type=int, default=25, help="Number of radii to sample from 0..max_radius")
-    parser.add_argument("--max_radius", type=float, default=None, help="Maximum radius; default=0.5*||e1-e0||")
+    parser.add_argument(
+        "--num_radii",
+        type=int,
+        default=25,
+        help="Number of radii to sample from 0..max_radius",
+    )
+    parser.add_argument(
+        "--max_radius",
+        type=float,
+        default=None,
+        help="Maximum radius; default=0.5*||e1-e0||",
+    )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--model_checkpoint", type=str, default=None, help="Override model; otherwise read from params")
-    parser.add_argument("--output_dir", type=str, default="/tmp", help="Directory to save plot/CSV; defaults next to params")
-    parser.add_argument("--save_csv", action="store_true", help="If set, also save CSV of per-direction accuracies")
+    parser.add_argument(
+        "--model_checkpoint",
+        type=str,
+        default=None,
+        help="Override model; otherwise read from params",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="/tmp",
+        help="Directory to save plot/CSV; defaults next to params",
+    )
+    parser.add_argument(
+        "--save_csv",
+        action="store_true",
+        help="If set, also save CSV of per-direction accuracies",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(int(args.seed))
@@ -207,7 +236,14 @@ def main() -> None:
     for i in range(accs.shape[0]):
         plt.plot(radii, accs[i], color="tab:blue", alpha=0.2, linewidth=1)
     plt.plot(radii, mean_acc, color="tab:red", linewidth=2, label="mean")
-    plt.fill_between(radii, mean_acc - std_acc, mean_acc + std_acc, color="tab:red", alpha=0.2, label="std")
+    plt.fill_between(
+        radii,
+        mean_acc - std_acc,
+        mean_acc + std_acc,
+        color="tab:red",
+        alpha=0.2,
+        label="std",
+    )
     plt.xlabel("radius")
     plt.ylabel("convergence accuracy")
     plt.title(f"Random projection around {args.anchor}")

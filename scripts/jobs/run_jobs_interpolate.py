@@ -21,12 +21,36 @@ if __name__ == "__main__":
         # ["mvnormal_4", "ch_cross_entropy_init_mvnormal_seq_len_4_lvectf", "ch_cross_entropy_init_mvnormal_seq_len_4_vxzytl"],
         # ["mvnormal_4", "ch_cross_entropy_init_mvnormal_seq_len_4_jygdfi", "ch_cross_entropy_init_mvnormal_seq_len_4_vxzytl"],
         #
-        ["mvnormal_8", "ch_cross_entropy_init_mvnormal_seq_len_8_vmvyuv", "ch_cross_entropy_init_mvnormal_seq_len_8_wfehxf"],
-        ["mvnormal_8", "ch_cross_entropy_init_mvnormal_seq_len_8_vmvyuv", "ch_cross_entropy_init_mvnormal_seq_len_8_qbiwve"],
-        ["mvnormal_8", "ch_cross_entropy_init_mvnormal_seq_len_8_vmvyuv", "ch_cross_entropy_init_mvnormal_seq_len_8_igsrme"],
-        ["mvnormal_8", "ch_cross_entropy_init_mvnormal_seq_len_8_wfehxf", "ch_cross_entropy_init_mvnormal_seq_len_8_qbiwve"],
-        ["mvnormal_8", "ch_cross_entropy_init_mvnormal_seq_len_8_wfehxf", "ch_cross_entropy_init_mvnormal_seq_len_8_igsrme"],
-        ["mvnormal_8", "ch_cross_entropy_init_mvnormal_seq_len_8_qbiwve", "ch_cross_entropy_init_mvnormal_seq_len_8_igsrme"],
+        [
+            "mvnormal_8",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_vmvyuv",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_wfehxf",
+        ],
+        [
+            "mvnormal_8",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_vmvyuv",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_qbiwve",
+        ],
+        [
+            "mvnormal_8",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_vmvyuv",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_igsrme",
+        ],
+        [
+            "mvnormal_8",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_wfehxf",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_qbiwve",
+        ],
+        [
+            "mvnormal_8",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_wfehxf",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_igsrme",
+        ],
+        [
+            "mvnormal_8",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_qbiwve",
+            "ch_cross_entropy_init_mvnormal_seq_len_8_igsrme",
+        ],
         #
         # ["mvnormal_16", "ch_cross_entropy_init_mvnormal_seq_len_16_egczqf", "ch_cross_entropy_init_mvnormal_seq_len_16_cxaxop"],
         # ["mvnormal_16", "ch_cross_entropy_init_mvnormal_seq_len_16_egczqf", "ch_cross_entropy_init_mvnormal_seq_len_16_bxcseh"],

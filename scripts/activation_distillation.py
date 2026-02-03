@@ -11,14 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLan
 
 from compression_horizon.train.arguments import MyTrainingArguments
 from compression_horizon.train.trainer import MyTrainer
-
-
-class NvidiaSMIError(Exception):
-    """A custom exception for validating nvidia-smi availability."""
-
-    def __init__(self, message: str):
-        self.message = message
-        super().__init__(self.message)
+from compression_horizon.utils.exceptions import NvidiaSMIError
 
 
 def load_or_create_tokenized_dataset(
@@ -151,26 +144,15 @@ def load_or_create_tokenized_dataset(
 
 
 if __name__ == "__main__":
+    # Check for nvidia-smi availability
     try:
         subprocess.check_output(["nvidia-smi"], shell=True)
     except subprocess.CalledProcessError:
         raise NvidiaSMIError("nvidia-smi is not available")
 
+    # Parse command-line arguments and defaults
     hf_parser = transformers.HfArgumentParser(MyTrainingArguments)
     (training_args,) = hf_parser.parse_args_into_dataclasses()
-
-    def _resolve_torch_dtype(dtype_str: str):
-        s = (dtype_str or "").lower()
-        if s in {"auto"}:
-            return "auto"
-        if s in {"float32", "fp32"}:
-            return torch.float32
-        if s in {"bfloat16", "bf16"}:
-            return torch.bfloat16
-        if s in {"float16", "fp16"}:
-            return torch.float16
-        # Fallback to float32 for unknown values
-        return torch.float32
 
     # Determine output directory:
     # - If user provided --output_dir, respect it.
@@ -185,10 +167,10 @@ if __name__ == "__main__":
     else:
         default_base = "artifacts/experiments"
     os.makedirs(default_base, exist_ok=True)
-
     # Build short, human-readable prefix
-    loss_type = getattr(training_args, "loss_type", "l2")
-    hybrid_alpha = getattr(training_args, "hybrid_alpha", None)
+    loss_type = training_args.loss_type
+    hybrid_alpha = training_args.hybrid_alpha
+
     if getattr(training_args, "train_compression_head", False):
         prefix = f"ch_head_seq_len_{training_args.max_sequence_length}"
     elif training_args.progressive_train:
@@ -211,18 +193,11 @@ if __name__ == "__main__":
     args_json = json.dumps(args_dict, sort_keys=True, ensure_ascii=False, default=str)
 
     # If output_dir not provided, compose it using the prefix + args_hash
-    output_dir = training_args.output_dir
-    if not output_dir:
-        output_dir = os.path.join(default_base, f"{prefix}")
-
+    output_dir = os.path.join(default_base, f"{prefix}")
     os.makedirs(output_dir, exist_ok=True)
-
-    # Ensure logging_dir is set; default to output_dir if not provided
-    if not getattr(training_args, "logging_dir", None):
-        training_args.logging_dir = output_dir
     # Attach to args so trainer can save artifacts there (respecting any user-provided output_dir)
     training_args.output_dir = output_dir
-
+    training_args.logging_dir = output_dir
     # Also persist raw CLI (excluding --output_dir) and its hash for auditability
     argv = sys.argv[1:]
     filtered_argv: list[str] = []
@@ -250,6 +225,18 @@ if __name__ == "__main__":
     random_seed = getattr(training_args, "random_seed", 42)
     set_launch_seed(random_seed)
     print(f"Random seed set to: {random_seed}")
+
+    def _resolve_torch_dtype(dtype_str: str):
+        s = (dtype_str or "").lower()
+        if s in {"auto"}:
+            return "auto"
+        if s in {"float32", "fp32"}:
+            return torch.float32
+        if s in {"bfloat16", "bf16"}:
+            return torch.bfloat16
+        if s in {"float16", "fp16"}:
+            return torch.float16
+        return torch.float32
 
     torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
     print("torch_dtype", torch_dtype)
@@ -316,8 +303,8 @@ if __name__ == "__main__":
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
+    # Train
     transformers.logging.set_verbosity_info()
-
     trainer = MyTrainer(
         model,
         processing_class=tokenizer,
@@ -339,4 +326,4 @@ if __name__ == "__main__":
         training_artifacts = trainer.train_prefix_tuning()
     else:
         training_artifacts = trainer.train()
-    print(f"Saved compressed prefixes to: {training_artifacts}")
+    print(f"Saved compressed prefixes to: {training_artifacts}.")

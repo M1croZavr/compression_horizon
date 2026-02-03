@@ -91,7 +91,14 @@ def compute_pairwise_metrics(
 
 def plot_pairwise_heatmap(matrix: np.ndarray, labels: List[str], title: str, outfile: str):
     plt.figure(figsize=(0.8 * max(4, len(labels)), 0.8 * max(4, len(labels))))
-    sns.heatmap(matrix, xticklabels=labels, yticklabels=labels, cmap="viridis", annot=False, square=True)
+    sns.heatmap(
+        matrix,
+        xticklabels=labels,
+        yticklabels=labels,
+        cmap="viridis",
+        annot=False,
+        square=True,
+    )
     plt.title(title, fontsize=20)
     plt.xticks(fontsize=20)
     plt.yticks(fontsize=20)

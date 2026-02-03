@@ -30,7 +30,12 @@ def load_single_row(
         "text": row.get("text", ""),
         "embedding": embedding,  # [num_compression_tokens, hidden]
         "num_compression_tokens": int(row.get("num_compression_tokens", embedding.shape[0])),
-        "hidden_size": int(row.get("hidden_size", embedding.shape[1] if embedding.dim() == 2 else embedding.shape[-1])),
+        "hidden_size": int(
+            row.get(
+                "hidden_size",
+                embedding.shape[1] if embedding.dim() == 2 else embedding.shape[-1],
+            )
+        ),
         "model_checkpoint": row.get("model_checkpoint", None),
         "sample_id": row.get("sample_id", None),
         "stage_index": row.get("stage_index", None),
@@ -102,10 +107,23 @@ def generate_from_compression(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate text from only compressed token embeddings")
     parser.add_argument(
-        "--embedding_path", type=str, required=True, help="Path to compressed embedding dataset (load_from_disk)"
+        "--embedding_path",
+        type=str,
+        required=True,
+        help="Path to compressed embedding dataset (load_from_disk)",
     )
-    parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter if dataset has multiple rows")
-    parser.add_argument("--row_index", type=int, default=0, help="Row index among filtered rows (default: 0)")
+    parser.add_argument(
+        "--sample_id",
+        type=int,
+        default=None,
+        help="Optional sample_id filter if dataset has multiple rows",
+    )
+    parser.add_argument(
+        "--row_index",
+        type=int,
+        default=0,
+        help="Row index among filtered rows (default: 0)",
+    )
     parser.add_argument(
         "--model_checkpoint",
         type=str,
@@ -113,7 +131,12 @@ def main() -> None:
         help="Optional HF model name; if omitted, taken from the dataset row",
     )
     parser.add_argument("--max_new_tokens", type=int, default=128, help="Number of tokens to generate")
-    parser.add_argument("--num_return_sequences", type=int, default=1, help="Number of generated continuations")
+    parser.add_argument(
+        "--num_return_sequences",
+        type=int,
+        default=1,
+        help="Number of generated continuations",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
         "--output_file",

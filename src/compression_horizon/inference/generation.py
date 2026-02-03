@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer, PreTrainedTokenizerFast
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
 @torch.no_grad()
@@ -12,8 +13,9 @@ def generate_from_compression(
     max_new_tokens: int,
     num_return_sequences: int = 1,
     add_noise=False,
+    random_position_ids: bool = False,
 ) -> list[str]:
-    """Generates a sequence using only compressed embeddings."""
+    """Generates a sequence starting from compressed embeddings."""
     # Cast to the same device
     device = compressed_embeddings.device
     if model.device != device:
@@ -49,7 +51,7 @@ def generate_from_compression(
         else:
             generated_embeddings = input_embeddings(generated_token_ids)  # [batch, sequence, hidden]
         united_token_embeddings = torch.cat(
-            [compressed_embeddings, generated_embeddings], dim=1
+            (compressed_embeddings, generated_embeddings), dim=1
         )  # [batch, mem + sequence, hidden]
         united_token_embeddings = united_token_embeddings.to(torch_dtype)
 
@@ -62,7 +64,20 @@ def generate_from_compression(
         )  # [batch, sequence]
         united_attention_mask = torch.cat((compression_attention_mask, attention_mask), dim=1)  # [batch, mem + sequence]
 
-        outputs = model(inputs_embeds=united_token_embeddings, attention_mask=united_attention_mask)
+        if random_position_ids:
+            position_ids = (
+                torch.randperm(united_token_embeddings.size(1), device=device).unsqueeze(dim=0).repeat(batch_size, 1)
+            )  # [batch, mem + sequence]
+            outputs = model(
+                inputs_embeds=united_token_embeddings,
+                attention_mask=united_attention_mask,
+                position_ids=position_ids,
+            )
+        else:
+            outputs = model(
+                inputs_embeds=united_token_embeddings,
+                attention_mask=united_attention_mask,
+            )
         logits = outputs.logits[:, -1, :]  # [batch, vocabulary]
         next_token_ids = torch.argmax(logits, dim=-1)  # [batch]
 
@@ -76,7 +91,7 @@ def generate_from_compression(
                     next_token_ids,
                 )
 
-        generated_token_ids = torch.cat([generated_token_ids, next_token_ids.unsqueeze(-1)], dim=-1)  # [batch, sequence]
+        generated_token_ids = torch.cat((generated_token_ids, next_token_ids.unsqueeze(-1)), dim=-1)  # [batch, sequence]
 
         # Stop early if all sequences just produced eos and had eos previously
         if eos_token_id is not None and torch.all(next_token_ids.eq(eos_token_id)):
@@ -84,3 +99,83 @@ def generate_from_compression(
 
     texts = tokenizer.batch_decode(generated_token_ids, skip_special_tokens=True)
     return texts
+
+
+@torch.no_grad()
+def calculate_logits(
+    model: PreTrainedModel,
+    compressed_embeddings: torch.Tensor,  # [1, mem, hidden]
+    sequence_embeddings: torch.Tensor,  # [1, sequence, hidden]
+    attention_mask: torch.Tensor,  # [1, sequence]
+) -> torch.Tensor:
+    """Calculate logits for a sequence."""
+    # Cast to the same device
+    device = compressed_embeddings.device
+    if model.device != device:
+        model = model.to(device)
+    model.eval()
+
+    united_embeddings = torch.cat(
+        (compressed_embeddings, sequence_embeddings),
+        dim=1,
+    )  # [1, mem + sequence, hidden]
+    united_attention_mask = torch.cat(
+        (
+            torch.ones(
+                compressed_embeddings.size(0),
+                compressed_embeddings.size(1),
+                dtype=torch.long,
+                device=device,
+            ),
+            attention_mask,
+        ),
+        dim=1,
+    )  # [1, mem + sequence]
+    outputs = model(
+        inputs_embeds=united_embeddings,
+        attention_mask=united_attention_mask,
+    )
+    logits = outputs.logits  # [batch, mem + sequence, vocabulary]
+    return logits
+
+
+@torch.no_grad()
+def calculate_outputs(
+    model: PreTrainedModel,
+    compressed_embeddings: torch.Tensor,
+    sequence_embeddings: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> CausalLMOutputWithPast:
+    """Calculate outputs for a sequence."""
+    # Cast to the same device
+    device = compressed_embeddings.device
+    if model.device != device:
+        model = model.to(device)
+
+    # Required to enable output_attentions
+    model.set_attn_implementation("eager")
+    model.eval()
+
+    united_embeddings = torch.cat(
+        (compressed_embeddings, sequence_embeddings),
+        dim=1,
+    )
+    united_attention_mask = torch.cat(
+        (
+            torch.ones(
+                compressed_embeddings.size(0),
+                compressed_embeddings.size(1),
+                dtype=torch.long,
+                device=device,
+            ),
+            attention_mask,
+        ),
+        dim=1,
+    )
+    outputs = model(
+        inputs_embeds=united_embeddings,
+        attention_mask=united_attention_mask,
+        output_attentions=True,
+        output_hidden_states=True,
+    )
+    return outputs
