@@ -20,7 +20,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_scheduler
 
 from compression_horizon.train.loss import compute_hybrid_cross_entropy_and_alignment_loss
-from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
+from compression_horizon.utils.launch import freeze_model_parameters, get_device, resolve_torch_dtype, set_launch_seed
 
 
 def count_text_tokens(tokenizer: AutoTokenizer, text: str, add_special_tokens: bool = True) -> int:
@@ -687,19 +687,7 @@ def main():
     set_launch_seed(args.random_seed)
 
     # Resolve dtype
-    def _resolve_torch_dtype(dtype_str: str):
-        s = (dtype_str or "").lower()
-        if s in {"auto"}:
-            return "auto"
-        if s in {"float32", "fp32"}:
-            return torch.float32
-        if s in {"bfloat16", "bf16"}:
-            return torch.bfloat16
-        if s in {"float16", "fp16"}:
-            return torch.float16
-        return torch.float32
-
-    torch_dtype = _resolve_torch_dtype(args.dtype)
+    torch_dtype = resolve_torch_dtype(args.dtype)
     device = get_device()
 
     # Load model and tokenizer

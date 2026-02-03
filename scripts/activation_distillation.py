@@ -4,7 +4,6 @@ import os
 import subprocess
 import sys
 
-import torch
 import transformers
 from datasets import Dataset, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
@@ -220,25 +219,13 @@ if __name__ == "__main__":
         f.write(cmd_hash8 + "\n")
 
     # Set random seed early for reproducibility
-    from compression_horizon.utils.launch import set_launch_seed
+    from compression_horizon.utils.launch import resolve_torch_dtype, set_launch_seed
 
     random_seed = getattr(training_args, "random_seed", 42)
     set_launch_seed(random_seed)
     print(f"Random seed set to: {random_seed}")
 
-    def _resolve_torch_dtype(dtype_str: str):
-        s = (dtype_str or "").lower()
-        if s in {"auto"}:
-            return "auto"
-        if s in {"float32", "fp32"}:
-            return torch.float32
-        if s in {"bfloat16", "bf16"}:
-            return torch.bfloat16
-        if s in {"float16", "fp16"}:
-            return torch.float16
-        return torch.float32
-
-    torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
+    torch_dtype = resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
     print("torch_dtype", torch_dtype)
     if training_args.train_compression_head or "experiments_compression_head/ch_head_" in training_args.model_checkpoint:
         from compression_horizon.models.llama_compression_head import LlamaForCausalLMCompressionHead
