@@ -182,10 +182,12 @@ def main() -> int:
     ]
     result = tabulate(rows, headers=headers, tablefmt=args.tablefmt)
     result = result.split("\n")
-    result.insert(2, "                   & \multicolumn{2}{c}{\\textbf{HellaSwag}} & \multicolumn{2}{c}{\\textbf{ARC-E}} \\\\")
+    result.insert(
+        2, "                   & \\multicolumn{2}{c}{\\textbf{HellaSwag}} & \\multicolumn{2}{c}{\\textbf{ARC-E}} \\\\"
+    )
     result = "\n".join(result)
     result = result.replace("\\textbackslash{}", "\\")
-    result = result.replace("\$", "$")
+    result = result.replace("\\$", "$")
     result = result.replace("\\{", "{")
     result = result.replace("\\}", "}")
 

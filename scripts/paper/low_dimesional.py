@@ -1388,7 +1388,7 @@ def print_statistics_table(
     result = tabulate(table_data, headers=headers, tablefmt=tablefmt, numalign="right", stralign="left")
 
     result = result.replace("\\textbackslash{}", "\\")
-    result = result.replace("\$", "$")
+    result = result.replace("\\$", "$")
     result = result.replace("\\{", "{")
     result = result.replace("\\}", "}")
     result = result.replace("P-", "Pythia")

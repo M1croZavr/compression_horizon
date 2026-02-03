@@ -283,10 +283,10 @@ def main() -> None:
         if args.type != "prefix_tuning":
             if prev_exp is None or prev_exp != experiment:
                 num_cols = len(columns)
-                result_table_rows.append([f"\multicolumn{{{num_cols}}}{{l}}{{\\textbf{{{experiment}}}}} \\\\ REMOVE"])
+                result_table_rows.append([f"\\multicolumn{{{num_cols}}}{{l}}{{\\textbf{{{experiment}}}}} \\\\ REMOVE"])
         else:
             if prev_exp is None or prev_exp != experiment:
-                result_table_rows.append(["\midrule REMOVE "])
+                result_table_rows.append(["\\midrule REMOVE "])
 
         if is_progressive:
             exp_type = "Progr."
@@ -301,9 +301,9 @@ def main() -> None:
         if args.type != "prefix_tuning":
             if is_progressive and i != len(ordered_summaries) - 1:
                 if "L3.1" in experiment:
-                    result_table_rows.append(["\midrule \midrule REMOVE "])
+                    result_table_rows.append(["\\midrule \\midrule REMOVE "])
                 else:
-                    result_table_rows.append(["\midrule REMOVE "])
+                    result_table_rows.append(["\\midrule REMOVE "])
         # else:
         #     if i > 0 and i % 4 == 0 and i != len(ordered_summaries) - 1:
         #         result_table_rows.append(["\midrule REMOVE "])
@@ -312,7 +312,7 @@ def main() -> None:
 
     result = tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt)
     result = result.replace("\\textbackslash{}", "\\")
-    result = result.replace("\$", "$")
+    result = result.replace("\\$", "$")
     result = result.replace("\\{", "{")
     result = result.replace("\\}", "}")
     result = result.replace("P-", "Pythia")
