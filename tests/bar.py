@@ -16,3 +16,6 @@ print(c)
 
 o, i, *_ = 1, 2, 3, 4, 5
 print(o, _, i)
+
+print(torch.ones(1, 4, dtype=torch.int64).dtype)
+print(torch.LongTensor([1, 2, 3]).dtype)

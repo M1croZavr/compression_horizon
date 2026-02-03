@@ -17,3 +17,17 @@ def set_launch_seed(seed: int):
 def freeze_model_parameters(model):
     for parameter in model.parameters():
         parameter.requires_grad_(False)
+
+
+def resolve_torch_dtype(dtype_str: str):
+    s = (dtype_str or "").lower()
+    if s in {"auto"}:
+        return "auto"
+    if s in {"float32", "fp32"}:
+        return torch.float32
+    if s in {"bfloat16", "bf16"}:
+        return torch.bfloat16
+    if s in {"float16", "fp16"}:
+        return torch.float16
+    # Fallback to float32 for unknown values
+    return torch.float32

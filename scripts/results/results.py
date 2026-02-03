@@ -11,6 +11,7 @@ Supported artifact layouts:
 - Non-progressive runs in: artifacts/experiments/<run_name>/compressed_prefixes
 - Progressive runs in:     artifacts/experiments_progressive/<run_name>/progressive_prefixes
 """
+
 from __future__ import annotations
 
 import argparse
@@ -274,7 +275,13 @@ def aggregate_progressive(run_dir: str, ds_rows: List[dict]) -> RunSummary:
 
     # Extract a few more properties if present in rows
     props_from_rows: Dict[str, Optional[object]] = {}
-    for key in ("num_compression_tokens", "model_checkpoint", "max_optimization_steps_per_sample", "loss_type", "dtype"):
+    for key in (
+        "num_compression_tokens",
+        "model_checkpoint",
+        "max_optimization_steps_per_sample",
+        "loss_type",
+        "dtype",
+    ):
         val = None
         for r in ds_rows:
             if key in r:
@@ -360,7 +367,9 @@ def to_mean_std_cell(val_mean: Optional[float], val_std: Optional[float], is_int
 
 
 def build_latex_table(
-    summaries: List[RunSummary], include_progressive: bool, selected_columns: Optional[List[str]] = None
+    summaries: List[RunSummary],
+    include_progressive: bool,
+    selected_columns: Optional[List[str]] = None,
 ) -> str:
     """
     Build a LaTeX tabular with key properties and metrics using tabulate.
@@ -386,7 +395,11 @@ def build_latex_table(
     ]
     # Metric columns (non-progressive)
     metric_cols = [
-        ("convergence_after_steps_mean", "ConvSteps (mean $\\pm$ std)", True),  # True => integer formatting
+        (
+            "convergence_after_steps_mean",
+            "ConvSteps (mean $\\pm$ std)",
+            True,
+        ),  # True => integer formatting
         ("final_convergence_mean", "FinalConv (mean $\\pm$ std)", False),
         ("final_loss_mean", "FinalLoss (mean $\\pm$ std)", False),
     ]
@@ -423,7 +436,13 @@ def build_latex_table(
         for field_name, _hdr, is_int in metric_cols:
             if field_name == "convergence_after_steps_mean":
                 if s.dataset_type == "compressed_prefixes":
-                    row.append(to_mean_std_cell(s.convergence_after_steps_mean, s.convergence_after_steps_std, is_int=is_int))
+                    row.append(
+                        to_mean_std_cell(
+                            s.convergence_after_steps_mean,
+                            s.convergence_after_steps_std,
+                            is_int=is_int,
+                        )
+                    )
                 else:
                     row.append("")
             elif field_name == "final_convergence_mean":
@@ -512,16 +531,54 @@ def main(argv: Optional[List[str]] = None) -> int:
         raise argparse.ArgumentTypeError(f"Invalid boolean value: {x}")
 
     parser.add_argument(
-        "--loss-type", type=str, default=None, help="Filter by loss type (e.g., l2, l1, cosine, cross_entropy)."
+        "--loss-type",
+        type=str,
+        default=None,
+        help="Filter by loss type (e.g., l2, l1, cosine, cross_entropy).",
     )
-    parser.add_argument("--hybrid-alpha", type=str, default=None, help="Filter by hybrid alpha value (string match).")
-    parser.add_argument("--init", type=str, default=None, help="Filter by embedding init method (e.g., random, mvnormal).")
+    parser.add_argument(
+        "--hybrid-alpha",
+        type=str,
+        default=None,
+        help="Filter by hybrid alpha value (string match).",
+    )
+    parser.add_argument(
+        "--init",
+        type=str,
+        default=None,
+        help="Filter by embedding init method (e.g., random, mvnormal).",
+    )
     parser.add_argument("--seq-len", type=int, default=None, help="Filter by max sequence length (int).")
-    parser.add_argument("--mem-tokens", type=int, default=None, help="Filter by number of mem tokens (int).")
-    parser.add_argument("--align-layers", type=int, default=None, help="Filter by number of alignment layers (int).")
-    parser.add_argument("--fix-position-ids", type=_parse_bool, default=None, help="Filter by fix_position_ids (true/false).")
-    parser.add_argument("--model", type=str, default=None, help="Filter by model checkpoint substring (case-insensitive).")
-    parser.add_argument("--max-steps", type=int, default=None, help="Filter by max optimization steps per sample (int).")
+    parser.add_argument(
+        "--mem-tokens",
+        type=int,
+        default=None,
+        help="Filter by number of mem tokens (int).",
+    )
+    parser.add_argument(
+        "--align-layers",
+        type=int,
+        default=None,
+        help="Filter by number of alignment layers (int).",
+    )
+    parser.add_argument(
+        "--fix-position-ids",
+        type=_parse_bool,
+        default=None,
+        help="Filter by fix_position_ids (true/false).",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Filter by model checkpoint substring (case-insensitive).",
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Filter by max optimization steps per sample (int).",
+    )
     args = parser.parse_args(argv)
 
     ds_paths = discover_run_datasets(args.dirs)
@@ -595,7 +652,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return True
 
     summaries_sorted = [s for s in summaries_sorted if matches_filters(s)]
-    latex = build_latex_table(summaries_sorted, include_progressive=args.include_progressive, selected_columns=args.columns)
+    latex = build_latex_table(
+        summaries_sorted,
+        include_progressive=args.include_progressive,
+        selected_columns=args.columns,
+    )
 
     if args.output:
         out_path = Path(args.output)

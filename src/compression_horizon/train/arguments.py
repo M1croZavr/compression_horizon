@@ -14,14 +14,30 @@ class MyTrainingArguments(TrainingArguments):
         default="HuggingFaceTB/SmolLM2-135M",
         metadata={"help": "Huggingface location for a model and a tokenizer."},
     )
+    limit_dataset_items: int = field(default=1, metadata={"help": "Number of dataset samples to compress."})
+    max_sequence_length: int = field(
+        default=128,
+        metadata={"help": "Max sequence length for compression training."},
+    )
+    number_of_mem_tokens: int = field(
+        default=1,
+        metadata={"help": "Number of trainable [mem] tokens for a single sample."},
+    )
     embedding_init_method: str = field(
         default="random",
         metadata={"help": 'Initialization method for compression embeddings: "random" or "mvnormal".'},
     )
-    number_of_mem_tokens: int = field(
-        default=1,
-        metadata={"help": "Number of trainable [mem] tokens for each sample."},
+    fix_position_ids: bool = field(
+        default=False,
+        metadata={"help": "Whether position_ids should be adjusted relative to compression embeddings."},
     )
+    max_optimization_steps_per_sample: int = field(
+        default=1_000,
+        metadata={"help": "Max optimization steps for training a single sample."},
+    )
+    random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)."})
+
+    # Alignment arguments
     loss_type: str = field(
         default="l2",
         metadata={"help": "Loss type for activation alignment: l2, l1, or cosine."},
@@ -29,7 +45,7 @@ class MyTrainingArguments(TrainingArguments):
     hybrid_alpha: float | None = field(
         default=None,
         metadata={
-            "help": "Multiplier in the loss function for l2, l1, or cosine, hybrid loss applied in training when specified."
+            "help": "Multiplier in the loss function for l2, l1, or cosine, hybrid loss is applied in training when specified."
         },
     )
     num_alignment_layers: int = field(default=0, metadata={"help": "Number of transformer layers to align (0 = all)."})
@@ -39,24 +55,8 @@ class MyTrainingArguments(TrainingArguments):
             "help": "Direction of taking transformer layers, True - from depth to shallow, False - from shallow to depth."
         },
     )
-    max_sequence_length: int = field(
-        default=128,
-        metadata={"help": "Max sequence length for compressing in training."},
-    )
-    max_optimization_steps_per_sample: int = field(
-        default=1_000,
-        metadata={"help": "Max optimization steps for training 1 sample."},
-    )
-    random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)."})
-    fix_position_ids: bool = field(
-        default=False,
-    )
-    limit_dataset_items: int | None = field(default=1)
 
     # Overrides with changed defaults
-    # optim: str = field(
-    #     default="sgd",
-    # )
     per_device_train_batch_size: int = field(
         default=1,
         metadata={"help": "Batch size per device accelerator core/CPU for training."},
@@ -131,6 +131,7 @@ class MyTrainingArguments(TrainingArguments):
         default=True,
         metadata={"help": "Whether to persist intermediate compression tokens for each stage."},
     )
+
     # Precision control
     dtype: str = field(
         default="float32",
