@@ -507,7 +507,7 @@ def print_attention_mass_table(
         )
 
         if midrule_indicies is not None and i in midrule_indicies:
-            table_data.append(["\midrule REMOVE"])
+            table_data.append(["\\midrule REMOVE"])
 
     headers = [
         "Model",
@@ -520,7 +520,7 @@ def print_attention_mass_table(
 
     # Clean up LaTeX formatting
     result = result.replace("\\textbackslash{}", "\\")
-    result = result.replace("\$", "$")
+    result = result.replace("\\$", "$")
     result = result.replace("\\{", "{")
     result = result.replace("\\}", "}")
     result = result.replace("_nobos", " \\bcancel{B}")

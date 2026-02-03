@@ -559,7 +559,7 @@ def to_mean_std_cell(
             std_str = f"{std_round}".rstrip("0").rstrip(".") if val_std is not None else "0"
 
     if use_latex:
-        return f"{mean_str} {{\small $\\pm$ {std_str}}}"
+        return f"{mean_str} {{" + "\\small $\\pm$ " + f"{std_str}}}"
 
     if float(std_str) == 0:
         return mean_str

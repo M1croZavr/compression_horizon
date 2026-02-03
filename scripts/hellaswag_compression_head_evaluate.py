@@ -18,7 +18,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from compression_horizon.models.llama_compression_head import LlamaForCausalLMCompressionHead
-from compression_horizon.utils.launch import get_device, set_launch_seed
+from compression_horizon.utils.launch import get_device, resolve_torch_dtype, set_launch_seed
 
 
 def estimate_token_perplexity(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> float:
@@ -274,19 +274,7 @@ def main():
     set_launch_seed(args.random_seed)
 
     # Resolve dtype
-    def _resolve_torch_dtype(dtype_str: str):
-        s = (dtype_str or "").lower()
-        if s in {"auto"}:
-            return "auto"
-        if s in {"float32", "fp32"}:
-            return torch.float32
-        if s in {"bfloat16", "bf16"}:
-            return torch.bfloat16
-        if s in {"float16", "fp16"}:
-            return torch.float16
-        return torch.float32
-
-    torch_dtype = _resolve_torch_dtype(args.dtype)
+    torch_dtype = resolve_torch_dtype(args.dtype)
     device = get_device()
 
     # Load model + compression head.

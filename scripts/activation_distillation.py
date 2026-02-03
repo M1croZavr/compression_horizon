@@ -4,14 +4,20 @@ import os
 import subprocess
 import sys
 
-import torch
 import transformers
 from datasets import Dataset, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
 
 from compression_horizon.train.arguments import MyTrainingArguments
-from compression_horizon.train.trainer import MyTrainer
+from compression_horizon.train.trainer import (
+    CompressionHeadTrainer,
+    FullCrammingTrainer,
+    LowDimTrainer,
+    PrefixTuningTrainer,
+    ProgressiveCrammingTrainer,
+)
 from compression_horizon.utils.exceptions import NvidiaSMIError
+from compression_horizon.utils.launch import resolve_torch_dtype, set_launch_seed
 
 
 def load_or_create_tokenized_dataset(
@@ -219,26 +225,11 @@ if __name__ == "__main__":
     with open(os.path.join(output_dir, "cmd_hash.txt"), "w", encoding="utf-8") as f:
         f.write(cmd_hash8 + "\n")
 
-    # Set random seed early for reproducibility
-    from compression_horizon.utils.launch import set_launch_seed
-
     random_seed = getattr(training_args, "random_seed", 42)
     set_launch_seed(random_seed)
     print(f"Random seed set to: {random_seed}")
 
-    def _resolve_torch_dtype(dtype_str: str):
-        s = (dtype_str or "").lower()
-        if s in {"auto"}:
-            return "auto"
-        if s in {"float32", "fp32"}:
-            return torch.float32
-        if s in {"bfloat16", "bf16"}:
-            return torch.bfloat16
-        if s in {"float16", "fp16"}:
-            return torch.float16
-        return torch.float32
-
-    torch_dtype = _resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
+    torch_dtype = resolve_torch_dtype(getattr(training_args, "dtype", "float32"))
     print("torch_dtype", torch_dtype)
     if training_args.train_compression_head or "experiments_compression_head/ch_head_" in training_args.model_checkpoint:
         from compression_horizon.models.llama_compression_head import LlamaForCausalLMCompressionHead
@@ -303,9 +294,20 @@ if __name__ == "__main__":
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    # Train
+    # Train: select trainer class from args and call train()
     transformers.logging.set_verbosity_info()
-    trainer = MyTrainer(
+    if getattr(training_args, "train_compression_head", False):
+        trainer_cls = CompressionHeadTrainer
+    elif training_args.progressive_train:
+        trainer_cls = ProgressiveCrammingTrainer
+    elif training_args.low_dim_train:
+        trainer_cls = LowDimTrainer
+    elif getattr(training_args, "train_prefix_tuning", False):
+        trainer_cls = PrefixTuningTrainer
+    else:
+        trainer_cls = FullCrammingTrainer
+
+    trainer = trainer_cls(
         model,
         processing_class=tokenizer,
         args=training_args,
@@ -313,17 +315,5 @@ if __name__ == "__main__":
         eval_dataset=eval_dataset,
         data_collator=data_collator,
     )
-
-    if getattr(training_args, "train_compression_head", False):
-        training_artifacts = trainer.train_compression_head()
-    elif training_args.progressive_train:
-        training_artifacts = trainer.progressive_train()
-    elif training_args.noop_train:
-        training_artifacts = trainer.train_noop()
-    elif training_args.low_dim_train:
-        training_artifacts = trainer.train_low_dim()
-    elif getattr(training_args, "train_prefix_tuning", False):
-        training_artifacts = trainer.train_prefix_tuning()
-    else:
-        training_artifacts = trainer.train()
+    training_artifacts = trainer.train()
     print(f"Saved compressed prefixes to: {training_artifacts}.")

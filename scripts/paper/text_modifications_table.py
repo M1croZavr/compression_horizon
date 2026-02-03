@@ -292,7 +292,7 @@ def main() -> None:
 
     result = tabulate(result_table_rows, headers=columns, tablefmt=args.tablefmt)
     result = result.replace("\\textbackslash{}", "\\")
-    result = result.replace("\$", "$")
+    result = result.replace("\\$", "$")
     result = result.replace("\\{", "{")
     result = result.replace("\\}", "}")
     result = result.replace("P-", "Pythia")
