@@ -227,6 +227,7 @@ class MyTrainer:
 
         accelerator = self.accelerator
         device = accelerator.device
+        print("device", device)
 
         # Avoid multi-process TensorBoard clobbering.
         if not accelerator.is_main_process and self.writer is not None:
@@ -1164,7 +1165,10 @@ class MyTrainer:
             with torch.no_grad():
                 token_embeddings = model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
 
-            target_hidden = self.compute_target_hidden(model, token_embeddings, attention_mask)
+            if self.args.loss_type != "cross_entropy":
+                target_hidden = self.compute_target_hidden(model, token_embeddings, attention_mask)
+            else:
+                target_hidden = None
 
             # Handle pretrained_pca initialization: optimize only coefficients
             if init_method == "pretrained_pca":
@@ -1260,6 +1264,9 @@ class MyTrainer:
                 total=self.args.max_optimization_steps_per_sample,
                 # disable=True,
             )
+
+            print("self.args.max_optimization_steps_per_sample", self.args.max_optimization_steps_per_sample)
+
             progress_bar.set_description("Training")
             for step_i in progress_bar:
                 # Reconstruct compression tokens from PCA coefficients if using pretrained_pca
