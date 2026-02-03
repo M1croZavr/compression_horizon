@@ -4,8 +4,6 @@ from transformers import set_seed
 
 def get_device():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Set the tensors to be allocated on a specified device
-    torch.set_default_device(device)
     return device
 
 

@@ -24,9 +24,10 @@ def _make_args(**overrides):
         max_sequence_length=8,
         loss_type="cross_entropy",
         num_alignment_layers=0,
-        learning_rate=1e-3,
+        learning_rate=1e-1,
         max_grad_norm=1.0,
         lr_scheduler_type="constant",
+        lr_scheduler_kwargs=None,
         per_device_train_batch_size=1,
         weight_decay=0.0,
         dataloader_drop_last=True,
@@ -42,7 +43,8 @@ def _make_args(**overrides):
 
 def test_compute_ce_loss():
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")
+    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", torch_dtype=torch.bfloat16)
+    model.to("cuda")
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
     args = _make_args(loss_type="cross_entropy", num_alignment_layers=0)  # 0 = all layers
@@ -56,26 +58,26 @@ def test_compute_ce_loss():
     num_comp = args.number_of_mem_tokens
 
     # Fake token ids and mask
-    input_ids = torch.randint(0, 16, (batch_size, L))
-    attention_mask = torch.ones(batch_size, L, dtype=torch.long)
+    input_ids = torch.randint(0, 16, (batch_size, L), device="cuda")
+    attention_mask = torch.ones(batch_size, L, dtype=torch.long, device="cuda")
 
     with torch.no_grad():
         model_token_embeddings = model.model.embed_tokens(input_ids)
 
-    compression_tokens = torch.randn(batch_size, num_comp, H)
-    model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
+    compression_tokens = torch.randn(batch_size, num_comp, H, device="cuda")
+    model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1).to("cuda").to(torch.bfloat16)
     attention_mask_with_comp = torch.cat(
-        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask],
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype, device="cuda"), attention_mask],
         dim=1,
     )
 
     loss, *_ = trainer.compute_loss(
         model,
-        input_ids,
-        model_token_embeddings,
-        attention_mask,
-        model_tokens_with_comp,
-        attention_mask_with_comp,
+        input_ids.to("cuda"),
+        model_token_embeddings.to("cuda"),
+        attention_mask.to("cuda"),
+        model_tokens_with_comp.to("cuda"),
+        attention_mask_with_comp.to("cuda"),
         num_comp,
     )
     # Each selected layer contributes an MSE of 1.0 (constant delta of 1),
@@ -85,7 +87,8 @@ def test_compute_ce_loss():
 
 def test_compute_l2_loss_num_alignment_layers():
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")
+    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", torch_dtype=torch.bfloat16)
+    model.to("cuda")
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
     args = _make_args(hybrid_alpha=1.0, loss_type="l2", num_alignment_layers=0)  # 0 = all layers
@@ -99,37 +102,37 @@ def test_compute_l2_loss_num_alignment_layers():
     num_comp = args.number_of_mem_tokens
 
     # Fake token ids and mask
-    input_ids = torch.randint(0, 16, (batch_size, L))
-    attention_mask = torch.ones(batch_size, L, dtype=torch.long)
+    input_ids = torch.randint(0, 16, (batch_size, L), device="cuda")
+    attention_mask = torch.ones(batch_size, L, dtype=torch.long, device="cuda")
 
     with torch.no_grad():
         model_token_embeddings = model.model.embed_tokens(input_ids)
 
-    compression_tokens = torch.randn(batch_size, num_comp, H)
-    model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
+    compression_tokens = torch.randn(batch_size, num_comp, H, device="cuda")
+    model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1).to("cuda").to(torch.bfloat16)
     attention_mask_with_comp = torch.cat(
-        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask],
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype, device="cuda"), attention_mask],
         dim=1,
     )
 
     loss_all_layers, *_ = trainer.compute_loss(
         model,
-        input_ids,
-        model_token_embeddings,
-        attention_mask,
-        model_tokens_with_comp,
-        attention_mask_with_comp,
+        input_ids.to("cuda"),
+        model_token_embeddings.to("cuda"),
+        attention_mask.to("cuda"),
+        model_tokens_with_comp.to("cuda"),
+        attention_mask_with_comp.to("cuda"),
         num_comp,
     )
 
     trainer.args.num_alignment_layers = 1
     loss_1_layer, *_ = trainer.compute_loss(
         model,
-        input_ids,
-        model_token_embeddings,
+        input_ids.to("cuda"),
+        model_token_embeddings.to("cuda"),
         attention_mask,
-        model_tokens_with_comp,
-        attention_mask_with_comp,
+        model_tokens_with_comp.to("cuda"),
+        attention_mask_with_comp.to("cuda"),
         num_comp,
     )
 
@@ -147,7 +150,7 @@ class TinyDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        input_ids = torch.randint(0, self.vocab_size, (self.seq_len,), dtype=torch.long)
+        input_ids = torch.randint(0, self.vocab_size, (self.seq_len,), dtype=torch.long, device="cuda")
         attention_mask = torch.ones(self.seq_len, dtype=torch.long)
         return {"input_ids": input_ids, "attention_mask": attention_mask}
 
@@ -174,10 +177,8 @@ def _collate_batch(samples):
 
 
 def test_train_freezes_model_params(monkeypatch):
-    # Force CPU to avoid device mismatches in CI environments
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-
-    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")
+    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", torch_dtype=torch.bfloat16)
+    model.to("cuda")
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
     args = _make_args(
@@ -207,7 +208,8 @@ def test_train_freezes_model_params(monkeypatch):
 
 def test_compute_loss_convergence_metric_shape_and_range():
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")
+    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", torch_dtype=torch.bfloat16)
+    model.to("cuda")
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
     args = _make_args(loss_type="cross_entropy", num_alignment_layers=0)
@@ -216,26 +218,26 @@ def test_compute_loss_convergence_metric_shape_and_range():
     batch_size, L, H = 3, 4, model.config.hidden_size
     num_comp = args.number_of_mem_tokens
 
-    input_ids = torch.randint(0, 16, (batch_size, L))
-    attention_mask = torch.ones(batch_size, L, dtype=torch.long)
+    input_ids = torch.randint(0, 16, (batch_size, L), device="cuda")
+    attention_mask = torch.ones(batch_size, L, dtype=torch.long, device="cuda")
 
     with torch.no_grad():
         model_token_embeddings = model.model.embed_tokens(input_ids)
 
-    compression_tokens = torch.randn(batch_size, num_comp, H)
-    model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1)
+    compression_tokens = torch.randn(batch_size, num_comp, H, device="cuda")
+    model_tokens_with_comp = torch.cat([compression_tokens, model_token_embeddings], dim=1).to("cuda").to(torch.bfloat16)
     attention_mask_with_comp = torch.cat(
-        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype), attention_mask],
+        [torch.ones(batch_size, num_comp, dtype=attention_mask.dtype, device="cuda"), attention_mask],
         dim=1,
     )
 
     loss, _, convergence, *_ = trainer.compute_loss(
         model,
-        input_ids,
-        model_token_embeddings,
-        attention_mask,
-        model_tokens_with_comp,
-        attention_mask_with_comp,
+        input_ids.to("cuda"),
+        model_token_embeddings.to("cuda"),
+        attention_mask.to("cuda"),
+        model_tokens_with_comp.to("cuda"),
+        attention_mask_with_comp.to("cuda"),
         num_comp,
     )
 

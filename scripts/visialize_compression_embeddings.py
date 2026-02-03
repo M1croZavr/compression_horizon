@@ -32,6 +32,7 @@ def load_single_row(
     sample_id: Optional[int] = None,
     text_contains: Optional[str] = None,
     stage_index: Optional[int] = None,
+    model_checkpoint: Optional[str] = None,
 ) -> Dict[str, Any]:
     ds = Dataset.load_from_disk(dataset_path)
     candidates = list(range(len(ds)))
@@ -42,10 +43,15 @@ def load_single_row(
         candidates = [i for i in candidates if text_sub in str(ds[i].get("text", "")).lower()]
     if stage_index is not None:
         candidates = [i for i in candidates if int(ds[i].get("stage_index", -1)) == int(stage_index)]
+
+    if model_checkpoint is not None:
+        candidates = [i for i in candidates if str(ds[i].get("model_checkpoint", "")) == str(model_checkpoint)]
     if not candidates:
-        raise ValueError(
-            f"No matching rows found in '{dataset_path}' for filters: sample_id={sample_id}, text_contains={text_contains}, stage_index={stage_index}"
+        print(
+            f"No matching rows found in '{dataset_path}' for filters: sample_id={sample_id}, text_contains={text_contains}, stage_index={stage_index}, model_checkpoint={model_checkpoint}"
         )
+        return None
+
     row = ds[candidates[0]]
     embedding = torch.tensor(row["embedding"], dtype=torch.float32)
     info = {
@@ -151,6 +157,29 @@ def plot_per_token_l2_vs_baseline(embeddings: List[torch.Tensor], labels: List[s
     plt.close()
 
 
+def plot_norms_histogram(embeddings: List[torch.Tensor], labels: List[str], outfile: str):
+    """Plot histogram of L2 norms for each compression token across all embeddings."""
+    all_norms = []
+    for emb, lab in zip(embeddings, labels):
+        # Compute L2 norm for each compression token: [num_tokens, hidden] -> [num_tokens]
+        norms = torch.norm(emb, p=2, dim=-1).detach().cpu().numpy()
+        all_norms.extend(norms)
+    all_norms = np.array(all_norms)
+    plt.figure(figsize=(8, 5))
+    plt.hist(all_norms, bins=50, alpha=0.7, edgecolor="black")
+    plt.xlabel("L2 norm", fontsize=12)
+    plt.ylabel("Frequency", fontsize=12)
+    plt.title("Histogram of compression embedding norms\n(per-token L2 norms across all embeddings)", fontsize=14)
+    plt.grid(True, alpha=0.3)
+    mean_norm = np.mean(all_norms)
+    plt.axvline(mean_norm, color="red", linestyle="--", linewidth=2, label=f"Mean: {mean_norm:.3f}")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150)
+    print("Embeddings norm histogram saved to", outfile)
+    plt.close()
+
+
 def save_metrics_csv(output_dir: str, labels: List[str], l2: np.ndarray, cos_dist: np.ndarray):
     path = os.path.join(output_dir, "pairwise_metrics.csv")
     with open(path, "w") as f:
@@ -186,6 +215,12 @@ def main():
     )
     parser.add_argument("--stage_index", type=int, default=None, help="Filter for progressive datasets")
     parser.add_argument(
+        "--model_checkpoint",
+        type=str,
+        default=None,
+        help="Filter: model checkpoint name to select",
+    )
+    parser.add_argument(
         "--baseline",
         type=int,
         default=0,
@@ -214,7 +249,10 @@ def main():
             sample_id=args.sample_id,
             text_contains=args.text_contains,
             stage_index=args.stage_index,
+            model_checkpoint=args.model_checkpoint,
         )
+        if rec is None:
+            continue
         rec["source_path"] = p
         records.append(rec)
 
@@ -259,6 +297,11 @@ def main():
         labels,
         baseline_index=baseline_index,
         outfile=os.path.join(out_dir, "per_token_l2_vs_baseline.png"),
+    )
+    plot_norms_histogram(
+        embeddings,
+        labels,
+        outfile=os.path.join(out_dir, "norms_histogram.png"),
     )
 
     # Save a small text info file
