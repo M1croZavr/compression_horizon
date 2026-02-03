@@ -9,7 +9,13 @@ from datasets import Dataset, load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, DataCollatorForLanguageModeling
 
 from compression_horizon.train.arguments import MyTrainingArguments
-from compression_horizon.train.trainer import MyTrainer
+from compression_horizon.train.trainer import (
+    CompressionHeadTrainer,
+    FullCrammingTrainer,
+    LowDimTrainer,
+    PrefixTuningTrainer,
+    ProgressiveCrammingTrainer,
+)
 from compression_horizon.utils.exceptions import NvidiaSMIError
 from compression_horizon.utils.launch import resolve_torch_dtype, set_launch_seed
 
@@ -288,9 +294,20 @@ if __name__ == "__main__":
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    # Train
+    # Train: select trainer class from args and call train()
     transformers.logging.set_verbosity_info()
-    trainer = MyTrainer(
+    if getattr(training_args, "train_compression_head", False):
+        trainer_cls = CompressionHeadTrainer
+    elif training_args.progressive_train:
+        trainer_cls = ProgressiveCrammingTrainer
+    elif training_args.low_dim_train:
+        trainer_cls = LowDimTrainer
+    elif getattr(training_args, "train_prefix_tuning", False):
+        trainer_cls = PrefixTuningTrainer
+    else:
+        trainer_cls = FullCrammingTrainer
+
+    trainer = trainer_cls(
         model,
         processing_class=tokenizer,
         args=training_args,
@@ -298,17 +315,5 @@ if __name__ == "__main__":
         eval_dataset=eval_dataset,
         data_collator=data_collator,
     )
-
-    if getattr(training_args, "train_compression_head", False):
-        training_artifacts = trainer.train_compression_head()
-    elif training_args.progressive_train:
-        training_artifacts = trainer.progressive_train()
-    elif training_args.noop_train:
-        training_artifacts = trainer.train_noop()
-    elif training_args.low_dim_train:
-        training_artifacts = trainer.train_low_dim()
-    elif getattr(training_args, "train_prefix_tuning", False):
-        training_artifacts = trainer.train_prefix_tuning()
-    else:
-        training_artifacts = trainer.train()
+    training_artifacts = trainer.train()
     print(f"Saved compressed prefixes to: {training_artifacts}.")

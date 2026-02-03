@@ -1,54 +1,27 @@
 import os
 import sys
-from dataclasses import replace
 
+import pytest
 import torch
-from torch.utils.data import Dataset
-
-from compression_horizon.train.arguments import MyTrainingArguments
-
-# Ensure we can import from src/
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
+from tests.trainer_helpers import TinyDataset, _collate_batch, _make_args
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from compression_horizon.train.trainer import MyTrainer  # noqa: E402
+from compression_horizon.train.base import BaseTrainer
+from compression_horizon.train.trainer import FullCrammingTrainer
+
+# Ensure we can import from src/
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 
-def _make_args(**overrides):
-    training_args = MyTrainingArguments()
-    defaults = dict(
-        model_checkpoint="dummy",
-        max_optimization_steps_per_sample=1,
-        ddp_find_unused_parameters=False,
-        load_best_model_at_end=False,
-        max_sequence_length=8,
-        loss_type="cross_entropy",
-        num_alignment_layers=0,
-        learning_rate=1e-1,
-        max_grad_norm=1.0,
-        lr_scheduler_type="constant",
-        lr_scheduler_kwargs=None,
-        per_device_train_batch_size=1,
-        weight_decay=0.0,
-        dataloader_drop_last=True,
-        dataloader_num_workers=0,
-        warmup_steps=0,
-        logging_dir=None,  # Disable SummaryWriter usage
-        number_of_mem_tokens=1,
-    )
-    training_args = replace(training_args, **defaults)
-    training_args = replace(training_args, **overrides)
-    return training_args
-
-
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_compute_ce_loss():
     torch.manual_seed(0)
     model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", torch_dtype=torch.bfloat16)
     model.to("cuda")
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
-    args = _make_args(loss_type="cross_entropy", num_alignment_layers=0)  # 0 = all layers
-    trainer = MyTrainer(model=model, processing_class=tokenizer, args=args)
+    args = _make_args(loss_type="cross_entropy", num_alignment_layers=0)
+    trainer = BaseTrainer(model=model, processing_class=tokenizer, args=args)
 
     batch_size, L, H = (
         2,
@@ -85,14 +58,15 @@ def test_compute_ce_loss():
     assert loss.item() < 50
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_compute_l2_loss_num_alignment_layers():
     torch.manual_seed(0)
     model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", torch_dtype=torch.bfloat16)
     model.to("cuda")
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
-    args = _make_args(hybrid_alpha=1.0, loss_type="l2", num_alignment_layers=0)  # 0 = all layers
-    trainer = MyTrainer(model=model, processing_class=tokenizer, args=args)
+    args = _make_args(hybrid_alpha=1.0, loss_type="l2", num_alignment_layers=0)
+    trainer = BaseTrainer(model=model, processing_class=tokenizer, args=args)
 
     batch_size, L, H = (
         2,
@@ -139,43 +113,7 @@ def test_compute_l2_loss_num_alignment_layers():
     assert loss_all_layers.item() > loss_1_layer.item()
 
 
-class TinyDataset(Dataset):
-    def __init__(self, num_samples: int, seq_len: int, vocab_size: int):
-        super().__init__()
-        self.num_samples = num_samples
-        self.seq_len = seq_len
-        self.vocab_size = vocab_size
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, idx):
-        input_ids = torch.randint(0, self.vocab_size, (self.seq_len,), dtype=torch.long, device="cuda")
-        attention_mask = torch.ones(self.seq_len, dtype=torch.long)
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
-
-
-class MultiAccessBatch:
-    def __init__(self, data):
-        self._data = data
-
-    def __getitem__(self, key):
-        return self._data[key]
-
-    def __getattr__(self, key):
-        try:
-            return self._data[key]
-        except KeyError as e:
-            raise AttributeError(str(e))
-
-
-def _collate_batch(samples):
-    # Stack into shape [B, 1, L] to mirror tokenizer return_tensors behavior
-    input_ids = torch.stack([s["input_ids"] for s in samples], dim=0).unsqueeze(1)
-    attention_mask = torch.stack([s["attention_mask"] for s in samples], dim=0).unsqueeze(1)
-    return MultiAccessBatch({"input_ids": input_ids, "attention_mask": attention_mask})
-
-
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_train_freezes_model_params(monkeypatch):
     model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", torch_dtype=torch.bfloat16)
     model.to("cuda")
@@ -189,7 +127,7 @@ def test_train_freezes_model_params(monkeypatch):
 
     dataset = TinyDataset(num_samples=2, seq_len=4, vocab_size=16)
 
-    trainer = MyTrainer(
+    trainer = FullCrammingTrainer(
         model=model,
         processing_class=tokenizer,
         args=args,
@@ -206,6 +144,7 @@ def test_train_freezes_model_params(monkeypatch):
     assert all(not p.requires_grad for p in model.parameters())
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_compute_loss_convergence_metric_shape_and_range():
     torch.manual_seed(0)
     model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", torch_dtype=torch.bfloat16)
@@ -213,7 +152,7 @@ def test_compute_loss_convergence_metric_shape_and_range():
     tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
 
     args = _make_args(loss_type="cross_entropy", num_alignment_layers=0)
-    trainer = MyTrainer(model=model, processing_class=tokenizer, args=args)
+    trainer = BaseTrainer(model=model, processing_class=tokenizer, args=args)
 
     batch_size, L, H = 3, 4, model.config.hidden_size
     num_comp = args.number_of_mem_tokens
