@@ -1,9 +1,8 @@
 import argparse
 import os
 import sys
-import time
 
-from mls.manager.job.utils import training_job_api_from_profile
+from mls.manager.job.utils import get_in_progress_jobs, training_job_api_from_profile
 
 """
 python scripts/jobs/run_jobs_hellaswag_evaluate.py \
@@ -25,48 +24,6 @@ python scripts/jobs/run_jobs_hellaswag_evaluate.py \
   --no_bos_token \
   --model Llama-3.1 SmolLM2-1.7B gemma-3-4b-pt EleutherAI/pythia-1.4b
 """
-
-
-def get_in_progress_jobs(client, region, statuses=None):
-    """
-    Example:
-        from sentence_attention.integration.job import get_in_progress_jobs
-        from mls.manager.job.utils import training_job_api_from_profile
-
-        client, extra_options = training_job_api_from_profile("default")
-        in_progress_jobs = get_in_progress_jobs(client, extra_options["region"])
-
-    """
-
-    all_in_progress_jobs = []
-
-    if statuses is None:
-        statuses = ["Pending", "Running"]
-
-    for non_final_status in statuses:
-        while True:
-            non_final_jobs = client.get_list_jobs(
-                region=region,
-                allocation_name="alloc-officecds-multimodal-2-sr004",
-                status=non_final_status,
-                limit=1000,
-                offset=0,
-            )
-            if "jobs" in non_final_jobs:
-                break
-            elif "error_code" in non_final_jobs and non_final_jobs["error_code"] == [
-                32,
-                20,
-            ]:  # no active session, access_token expired
-                print("Error:", non_final_jobs, "try again")
-                time.sleep(5)
-                client, _ = training_job_api_from_profile("default")
-            else:
-                raise ValueError("Unknown error in get_in_progress_jobs:", non_final_jobs)
-
-        all_in_progress_jobs.extend(non_final_jobs["jobs"])
-
-    return all_in_progress_jobs
 
 
 if __name__ == "__main__":
@@ -162,7 +119,7 @@ if __name__ == "__main__":
 
     # Get in-progress jobs once at the start
     region = extra_options["region"]
-    in_progress_jobs = get_in_progress_jobs(client, region)
+    in_progress_jobs = get_in_progress_jobs()
     in_progress_job_descs = {job.get("job_desc", "") for job in in_progress_jobs}
 
     checkpoints = [
