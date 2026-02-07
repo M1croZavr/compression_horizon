@@ -103,13 +103,10 @@ class MyTrainer:
             reduction="none",
             ignore_index=-100,
         ).view_as(labels)
-        # Increase positional loss weight
         pos_weights = torch.ones_like(per_token_loss)
         pos_weights[:, 0] = 3.0  # BOS
         pos_weights[:, 1] = 3.0  # First sequence token
-        # padding не участвует
         pos_weights[labels == -100] = 0.0
-        # weighted mean
         loss = (per_token_loss * pos_weights).sum() / pos_weights.sum()
 
         # Activation alignment loss
@@ -417,6 +414,11 @@ class MyTrainer:
                     united_attention_mask,
                     num_compression_tokens,
                 )
+                # !!! WARNING !!!
+                with torch.no_grad():
+                    if (convergence_per_sample >= 0.99).all():
+                        print(f"Early stopping: compression converged in {step_i} steps")
+                        break
                 # Calculate gradients and update compression embeddings
                 loss.backward()
 

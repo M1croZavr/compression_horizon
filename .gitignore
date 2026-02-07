@@ -12,7 +12,6 @@ __pycache__
 artifacts/
 datasets/
 hub/
-notebooks/Compression_reconstruction_accuracy.ipynb
 xet/
 
 # Environment
