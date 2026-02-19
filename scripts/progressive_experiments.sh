@@ -1,7 +1,7 @@
 
 # MODEL_NAME=EleutherAI/pythia-160m
 # MODEL_NAME=EleutherAI/pythia-410m
-# MODEL_NAME=EleutherAI/pythia-1.4b
+MODEL_NAME=EleutherAI/pythia-1.4b
 
 # MODEL_NAME=unsloth/Llama-3.2-1B
 # MODEL_NAME=unsloth/Llama-3.2-3B
@@ -13,7 +13,10 @@
 
 # MODEL_NAME=unsloth/gemma-3-270m
 # MODEL_NAME=unsloth/gemma-3-1b-pt
-MODEL_NAME=unsloth/gemma-3-4b-pt
+# MODEL_NAME=unsloth/gemma-3-4b-pt
+
+PROGRESSIVE_LR=0.01
+# PROGRESSIVE_LR=0.5 # for pythia
 
 # LR check
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01
@@ -23,11 +26,11 @@ python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 5.0
 
 # Low Dim LR=0.001
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --low_dim_projection --low_dim_size 32
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --low_dim_projection --low_dim_size 64
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --low_dim_projection --low_dim_size 128
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --low_dim_projection --low_dim_size 256
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --low_dim_projection --low_dim_size 512
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --low_dim_projection --low_dim_size 32
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --low_dim_projection --low_dim_size 64
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --low_dim_projection --low_dim_size 128
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --low_dim_projection --low_dim_size 256
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --low_dim_projection --low_dim_size 512
 
 # Low Dim = 512 LR check
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.1 --low_dim_projection --low_dim_size 512
@@ -36,16 +39,16 @@ python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 5.0 --low_dim_projection --low_dim_size 512
 
 # Hybrid alpha
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 4
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 16
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 20
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 4
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 16
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 20
 
 # Hybrid alpha + LowProj
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 32
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 64
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 128
-python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate 0.01 --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 256
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 32
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 64
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 128
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 10 --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 256
 
 
 # No BOS token
