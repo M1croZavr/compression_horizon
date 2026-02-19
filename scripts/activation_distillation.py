@@ -89,6 +89,8 @@ def load_or_create_tokenized_dataset(
         del kwargs["split"]
         kwargs["data_files"] = [f"sample/10BT/{i:03}_00000.parquet" for i in range(14)]
         # kwargs['streaming'] = True
+    elif dataset_name == "LarryLovestein/pg19_1k":
+        kwargs["split"] = "train"
 
     raw_dataset = load_dataset(dataset_name, **kwargs)
 
