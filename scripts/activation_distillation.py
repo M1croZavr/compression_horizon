@@ -200,14 +200,27 @@ if __name__ == "__main__":
     args_dict.pop("logging_dir", None)
     args_json = json.dumps(args_dict, sort_keys=True, ensure_ascii=False, default=str)
 
-    # If output_dir not provided, compose it using the prefix + args_hash
-    output_dir = os.path.join(default_base, f"{prefix}")
+    # Detect if user explicitly passed --output_dir on the command line
+    argv = sys.argv[1:]
+    user_provided_output_dir = False
+    for i, token in enumerate(argv):
+        if token == "--output_dir" and i + 1 < len(argv):
+            user_provided_output_dir = True
+            break
+        if token.startswith("--output_dir="):
+            user_provided_output_dir = True
+            break
+
+    if user_provided_output_dir and getattr(training_args, "output_dir", None):
+        output_dir = training_args.output_dir
+    else:
+        output_dir = os.path.join(default_base, f"{prefix}")
+
+    print("output_dir", output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    # Attach to args so trainer can save artifacts there (respecting any user-provided output_dir)
     training_args.output_dir = output_dir
     training_args.logging_dir = output_dir
     # Also persist raw CLI (excluding --output_dir) and its hash for auditability
-    argv = sys.argv[1:]
     filtered_argv: list[str] = []
     skip_next = False
     for token in argv:
