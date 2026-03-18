@@ -1349,6 +1349,7 @@ def print_statistics_table(
 
         table_name = name
         table_name = table_name.replace("sl_4096_", "")
+        table_name = table_name.replace("_ds_pg19_1k_limit_50", "")
         table_name = table_name.replace("_nobos", " \\bcancel{B}")
         table_name = table_name.replace("_lowproj", "")
         table_name = table_name.replace("Meta-", "")
