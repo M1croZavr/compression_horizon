@@ -240,6 +240,11 @@ def build_args() -> argparse.Namespace:
         help="Run jobs even if a matching experiment output directory already exists.",
     )
     parser.add_argument(
+        "--no-force",
+        action="store_true",
+        help="Skip jobs if output directory exists (opposite of --force).",
+    )
+    parser.add_argument(
         "--model",
         nargs="+",
         default=None,
@@ -251,7 +256,21 @@ def build_args() -> argparse.Namespace:
         default=None,
         help="Filter experiments by variant name (e.g. simple, lowdim, hybrid, hybrid_lowdim, nobos).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Auto-detect rerun scenario: if ALL experiments exist and no --no-force, default to --force
+    if not args.force and not args.no_force:
+        # Check if most experiments already exist
+        existing_count = sum(1 for cfg in experiment_configs if os.path.isdir(cfg["output_dir"]))
+        if existing_count > 0 and existing_count == len(experiment_configs):
+            mode_str = " (dry-run)" if args.dry else ""
+            print(
+                f"\033[33m[AUTO-FORCE] All {existing_count} experiments already exist. Enabling --force mode to rerun them{mode_str}.\033[0m"
+            )
+            print("\033[33m[AUTO-FORCE] Use --no-force to disable this behavior.\033[0m")
+            args.force = True
+
+    return args
 
 
 def filter_configs(
