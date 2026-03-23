@@ -28,8 +28,8 @@ BASE_IMAGE = "cr.ai.cloud.ru/aicloud-base-images/py3.12-torch2.7.0:0.0.41"
 DATASET_NAME = "LarryLovestein/pg19_1k"
 LIMIT_DATASET_ITEMS = 100
 MAX_SEQ_LEN = 4096
-MAX_OPTIMIZATION_STEPS_PER_SAMPLE = 100  # Reduced for quick validation
-MAX_OPTIMIZATION_STEPS_PER_TOKEN = 10  # Reduced for quick validation
+MAX_OPTIMIZATION_STEPS_PER_SAMPLE = 10_000  # Reduced for quick validation
+MAX_OPTIMIZATION_STEPS_PER_TOKEN = 1_000  # Reduced for quick validation
 EMBEDDING_INIT_METHOD = "random0.02"
 
 # Training configuration
