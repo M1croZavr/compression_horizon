@@ -45,7 +45,7 @@ def main():
         "--midrule_indicies", *[str(i) for i in midrule_indices],
         "--show_labels",
         "--only_stat_table",
-        "--tablefmt", "latex",
+        "--tablefmt", "github",
     ]
 
     print(f"Running: {' '.join(cmd[:5])} ... ({len(checkpoints)} checkpoints)")

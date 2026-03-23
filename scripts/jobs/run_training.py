@@ -27,11 +27,18 @@ INSTANCE_TYPE = "a100.1gpu"
 BASE_IMAGE = "cr.ai.cloud.ru/aicloud-base-images/py3.12-torch2.7.0:0.0.41"
 
 DATASET_NAME = "LarryLovestein/pg19_1k"
-LIMIT_DATASET_ITEMS = 50
+LIMIT_DATASET_ITEMS = 100
 MAX_SEQ_LEN = 4096
 MAX_OPTIMIZATION_STEPS_PER_SAMPLE = 10_000
 MAX_OPTIMIZATION_STEPS_PER_TOKEN = 1_000
 EMBEDDING_INIT_METHOD = "random0.02"
+
+# Training configuration
+PER_DEVICE_TRAIN_BATCH_SIZE = 1
+NUM_GPUS = 1  # from a100.1gpu instance
+GRADIENT_ACCUMULATION_STEPS = 1
+TOTAL_BATCH_SIZE = PER_DEVICE_TRAIN_BATCH_SIZE * NUM_GPUS * GRADIENT_ACCUMULATION_STEPS
+MAX_STEPS = LIMIT_DATASET_ITEMS // TOTAL_BATCH_SIZE  # 100 samples / 1 batch_size = 100 steps
 
 # ── Per-model settings ──────────────────────────────────────────────────────────
 
@@ -147,7 +154,9 @@ def build_experiment_configs() -> list[dict]:
                 f"--max_sequence_length {MAX_SEQ_LEN}",
                 "--warmup_steps 100",
                 f"--model_checkpoint {checkpoint}",
-                "--per_device_train_batch_size 1",
+                f"--per_device_train_batch_size {PER_DEVICE_TRAIN_BATCH_SIZE}",
+                f"--gradient_accumulation_steps {GRADIENT_ACCUMULATION_STEPS}",
+                f"--max_steps {MAX_STEPS}",
                 f"--max_optimization_steps_per_sample {MAX_OPTIMIZATION_STEPS_PER_SAMPLE}",
                 f"--max_optimization_steps_per_token {MAX_OPTIMIZATION_STEPS_PER_TOKEN}",
                 f"--learning_rate {lr}",
