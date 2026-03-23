@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import numpy as np
 from datasets import load_from_disk
+from compression_horizon.utils import to_mean_std_cell
 from scripts.results.results import (
     aggregate_non_progressive,
     aggregate_progressive,
     load_dataset_rows,
-    to_mean_std_cell,
 )
 from sklearn.decomposition import PCA
 from tabulate import tabulate

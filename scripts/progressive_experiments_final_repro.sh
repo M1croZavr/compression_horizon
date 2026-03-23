@@ -1,18 +1,4 @@
 
-# MODEL_NAME=EleutherAI/pythia-160m
-# MODEL_NAME=EleutherAI/pythia-410m
-
-# MODEL_NAME=unsloth/Llama-3.2-1B
-# MODEL_NAME=unsloth/Llama-3.2-3B
-
-# MODEL_NAME=HuggingFaceTB/SmolLM2-135M
-# MODEL_NAME=HuggingFaceTB/SmolLM2-360M
-# MODEL_NAME=HuggingFaceTB/SmolLM2-1.7B
-
-# MODEL_NAME=unsloth/gemma-3-270m
-# MODEL_NAME=unsloth/gemma-3-1b-pt
-# MODEL_NAME=unsloth/gemma-3-4b-pt
-
 MODEL_NAME=unsloth/Meta-Llama-3.1-8B
 PROGRESSIVE_LR=0.1
 
@@ -23,6 +9,9 @@ python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 4
 # Hybrid alpha + LowProj
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 256
+
+# No BOS token
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --no_bos_token
 
 # ==========================
 
@@ -38,6 +27,8 @@ python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_
 # Hybrid alpha + LowProj
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 256
 
+# No BOS token
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --no_bos_token
 
 # ==========================
 
@@ -52,6 +43,9 @@ python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_
 # Hybrid alpha + LowProj
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 256
 
+# No BOS token
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --no_bos_token
+
 # ==========================
 
 MODEL_NAME=unsloth/gemma-3-4b-pt
@@ -64,3 +58,7 @@ python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8
 # Hybrid alpha + LowProj
 python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --hybrid_alpha 1.0 --loss_type cosine --num_alignment_layers 8 --low_dim_projection --low_dim_size 32
+
+# No BOS token
+python scripts/jobs/run_jobs_progressive.py --model $MODEL_NAME --limit_dataset_items 50 --dataset_name LarryLovestein/pg19_1k --learning_rate "$PROGRESSIVE_LR" --no_bos_token
+

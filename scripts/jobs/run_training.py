@@ -41,29 +41,37 @@ MODEL_CONFIGS = [
         "learning_rate": 0.1,
         "low_dim_size": 256,
         "hybrid_num_alignment_layers": 4,
+        "hybrid_lowdim_num_alignment_layers": 8,
     },
     {
         "checkpoint": "EleutherAI/pythia-1.4b",
         "learning_rate": 0.5,
         "low_dim_size": 256,
         "hybrid_num_alignment_layers": 8,
+        "hybrid_lowdim_num_alignment_layers": 8,
     },
     {
         "checkpoint": "HuggingFaceTB/SmolLM2-1.7B",
         "learning_rate": 0.1,
         "low_dim_size": 256,
         "hybrid_num_alignment_layers": 8,
+        "hybrid_lowdim_num_alignment_layers": 8,
     },
     {
         "checkpoint": "unsloth/gemma-3-4b-pt",
         "learning_rate": 0.1,
         "low_dim_size": 32,
         "hybrid_num_alignment_layers": 8,
+        "hybrid_lowdim_num_alignment_layers": 8,
     },
 ]
 
 
-def _make_variants(low_dim_size: int, hybrid_num_alignment_layers: int) -> list[dict]:
+def _make_variants(
+    low_dim_size: int,
+    hybrid_num_alignment_layers: int,
+    hybrid_lowdim_num_alignment_layers: int,
+) -> list[dict]:
     """5 experiment variants per model."""
     return [
         {
@@ -96,7 +104,7 @@ def _make_variants(low_dim_size: int, hybrid_num_alignment_layers: int) -> list[
         {
             "name": "hybrid_lowdim",
             "loss_type": "cosine",
-            "num_alignment_layers": hybrid_num_alignment_layers,
+            "num_alignment_layers": hybrid_lowdim_num_alignment_layers,
             "hybrid_alpha": 1.0,
             "low_dim_projection": True,
             "low_dim_size": low_dim_size,
@@ -124,7 +132,11 @@ def build_experiment_configs() -> list[dict]:
         checkpoint = mcfg["checkpoint"]
         lr = mcfg["learning_rate"]
         model_short = checkpoint.split("/")[-1]
-        variants = _make_variants(mcfg["low_dim_size"], mcfg["hybrid_num_alignment_layers"])
+        variants = _make_variants(
+            mcfg["low_dim_size"],
+            mcfg["hybrid_num_alignment_layers"],
+            mcfg["hybrid_lowdim_num_alignment_layers"],
+        )
 
         for variant in variants:
             # Build command arguments (mirrors run_jobs_progressive.py logic)

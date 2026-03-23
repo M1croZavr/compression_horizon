@@ -4,12 +4,12 @@ import json
 import os
 from types import SimpleNamespace
 
+from compression_horizon.utils import to_mean_std_cell
 from scripts.results.results import (
     aggregate_non_progressive,
     aggregate_prefix_tuning,
     aggregate_progressive,
     load_dataset_rows,
-    to_mean_std_cell,
 )
 from tabulate import tabulate
 from tqdm.auto import tqdm

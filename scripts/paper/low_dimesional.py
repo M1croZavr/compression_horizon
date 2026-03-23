@@ -10,9 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
-from scripts.results.results import (
-    to_mean_std_cell,
-)
+from compression_horizon.utils import to_mean_std_cell
 from sklearn.decomposition import PCA
 from tabulate import tabulate
 from tqdm.auto import tqdm
