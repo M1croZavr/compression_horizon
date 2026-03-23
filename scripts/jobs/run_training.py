@@ -308,7 +308,7 @@ if __name__ == "__main__":
         for cfg in configs:
             # Check if experiment is complete in FINAL directory
             artifact_exists = os.path.isdir(cfg["output_dir_final"])
-            if artifact_exists:
+            if artifact_exists and not args.force:
                 print(f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir_final']}")
                 skipped += 1
                 continue
