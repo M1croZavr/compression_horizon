@@ -17,7 +17,6 @@ import json
 import os
 import sys
 
-
 # ── Constants ───────────────────────────────────────────────────────────────────
 
 PYTHON_PATH = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -29,8 +28,8 @@ BASE_IMAGE = "cr.ai.cloud.ru/aicloud-base-images/py3.12-torch2.7.0:0.0.41"
 DATASET_NAME = "LarryLovestein/pg19_1k"
 LIMIT_DATASET_ITEMS = 100
 MAX_SEQ_LEN = 4096
-MAX_OPTIMIZATION_STEPS_PER_SAMPLE = 10_000
-MAX_OPTIMIZATION_STEPS_PER_TOKEN = 1_000
+MAX_OPTIMIZATION_STEPS_PER_SAMPLE = 100  # Reduced for quick validation
+MAX_OPTIMIZATION_STEPS_PER_TOKEN = 10  # Reduced for quick validation
 EMBEDDING_INIT_METHOD = "random0.02"
 
 # Training configuration
@@ -195,10 +194,7 @@ def build_experiment_configs() -> list[dict]:
             output_dir = f"artifacts/experiments_progressive/{exp_suffix}"
             cmd_args.append(f"--output_dir {output_dir}")
 
-            base_cmd = (
-                f"cd {workdir} && {PYTHON_PATH} scripts/activation_distillation.py"
-                f" {' '.join(cmd_args)}"
-            )
+            base_cmd = f"cd {workdir} && {PYTHON_PATH} scripts/activation_distillation.py" f" {' '.join(cmd_args)}"
 
             config = {
                 "experiment_name": exp_suffix,
@@ -232,9 +228,7 @@ experiment_configs: list[dict] = build_experiment_configs()
 
 
 def build_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Launch compression_horizon progressive training jobs."
-    )
+    parser = argparse.ArgumentParser(description="Launch compression_horizon progressive training jobs.")
     parser.add_argument(
         "--dry",
         action="store_true",
@@ -268,16 +262,10 @@ def filter_configs(
     filtered = configs
     if model_filters:
         model_filters_lower = [m.lower() for m in model_filters]
-        filtered = [
-            c for c in filtered
-            if any(f in c["model_name"].lower() for f in model_filters_lower)
-        ]
+        filtered = [c for c in filtered if any(f in c["model_name"].lower() for f in model_filters_lower)]
     if variant_filters:
         variant_filters_lower = [v.lower() for v in variant_filters]
-        filtered = [
-            c for c in filtered
-            if c.get("variant", "").lower() in variant_filters_lower
-        ]
+        filtered = [c for c in filtered if c.get("variant", "").lower() in variant_filters_lower]
     return filtered
 
 
@@ -294,9 +282,7 @@ if __name__ == "__main__":
         printed = 0
         for cfg in configs:
             if os.path.isdir(cfg["output_dir"]) and not args.force:
-                print(
-                    f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir']}"
-                )
+                print(f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir']}")
                 skipped += 1
                 continue
             print(f"\033[32m[DRY] {cfg['experiment_name']}\033[0m")
@@ -325,15 +311,10 @@ if __name__ == "__main__":
     launched_jobs: list[dict] = []
     for cfg in configs:
         if os.path.isdir(cfg["output_dir"]) and not args.force:
-            print(
-                f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir']}"
-            )
+            print(f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir']}")
             continue
 
-        job_desc = (
-            f"CH: progressive {cfg['experiment_name']}"
-            f" #{AUTHOR_NAME} #multimodal #notify_completed @mrsndmn"
-        )
+        job_desc = f"CH: progressive {cfg['experiment_name']}" f" #{AUTHOR_NAME} #multimodal #notify_completed @mrsndmn"
 
         if job_desc in in_progress_job_descs:
             print(f"\033[33mSkipping: job already in queue:\033[0m {job_desc}")
@@ -360,11 +341,13 @@ if __name__ == "__main__":
         jobs_launched += 1
         job_name = result.get("job_name") if isinstance(result, dict) else None
         if job_name:
-            launched_jobs.append({
-                "job_name": job_name,
-                "job_desc": job_desc,
-                "output_dir": cfg["output_dir"],
-            })
+            launched_jobs.append(
+                {
+                    "job_name": job_name,
+                    "job_desc": job_desc,
+                    "output_dir": cfg["output_dir"],
+                }
+            )
         print(f"  Result: {result}")
 
     print(f"Total configs: {len(configs)}")
