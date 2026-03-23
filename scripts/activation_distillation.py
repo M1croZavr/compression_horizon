@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -168,13 +169,18 @@ if __name__ == "__main__":
     #   ch_{essential_params}_{hash8}, where hash8 is derived from training args.
     if getattr(training_args, "train_compression_head", False):
         default_base = "artifacts/experiments_compression_head"
+        default_base_in_progress = "artifacts/experiments_in_progress"
     elif training_args.progressive_train:
         default_base = "artifacts/experiments_progressive"
+        default_base_in_progress = "artifacts/experiments_in_progress"
     elif getattr(training_args, "train_prefix_tuning", False):
         default_base = "artifacts/experiments_prefix_tuning"
+        default_base_in_progress = "artifacts/experiments_in_progress"
     else:
         default_base = "artifacts/experiments"
+        default_base_in_progress = "artifacts/experiments_in_progress"
     os.makedirs(default_base, exist_ok=True)
+    os.makedirs(default_base_in_progress, exist_ok=True)
     # Build short, human-readable prefix
     loss_type = training_args.loss_type
     hybrid_alpha = training_args.hybrid_alpha
@@ -213,8 +219,16 @@ if __name__ == "__main__":
 
     if user_provided_output_dir and getattr(training_args, "output_dir", None):
         output_dir = training_args.output_dir
+        # Detect if this is in the in_progress directory
+        is_in_progress = "experiments_in_progress" in output_dir
+        if is_in_progress:
+            # Compute the final directory by replacing experiments_in_progress with the appropriate final base
+            output_dir_final = output_dir.replace("experiments_in_progress", default_base.split("/")[-1])
+        else:
+            output_dir_final = None
     else:
         output_dir = os.path.join(default_base, f"{prefix}")
+        output_dir_final = None
 
     print("output_dir", output_dir)
     os.makedirs(output_dir, exist_ok=True)
@@ -332,3 +346,26 @@ if __name__ == "__main__":
     )
     training_artifacts = trainer.train()
     print(f"Saved compressed prefixes to: {training_artifacts}.")
+
+    # Move from experiments_in_progress to final directory after successful training
+    if output_dir_final:
+        print(f"\n{'='*80}")
+        print("Training completed successfully!")
+        print("Moving results from in-progress to final location:")
+        print(f"  From: {output_dir}")
+        print(f"  To:   {output_dir_final}")
+        print(f"{'='*80}\n")
+
+        # Ensure parent directory of final location exists
+        os.makedirs(os.path.dirname(output_dir_final), exist_ok=True)
+
+        # If final directory already exists, remove it first
+        if os.path.exists(output_dir_final):
+            print(f"Removing existing final directory: {output_dir_final}")
+            shutil.rmtree(output_dir_final)
+
+        # Move the directory
+        shutil.move(output_dir, output_dir_final)
+        print(f"Successfully moved experiment results to: {output_dir_final}")
+    else:
+        print(f"Training completed. Results saved at: {output_dir}")

@@ -191,8 +191,12 @@ def build_experiment_configs() -> list[dict]:
             if variant["num_alignment_layers"] != 1:
                 exp_suffix = f"{exp_suffix}_align_{variant['num_alignment_layers']}"
 
-            output_dir = f"artifacts/experiments_progressive/{exp_suffix}"
-            cmd_args.append(f"--output_dir {output_dir}")
+            # Output directory during training (in_progress)
+            output_dir_in_progress = f"artifacts/experiments_in_progress/{exp_suffix}"
+            # Final output directory after successful completion
+            output_dir_final = f"artifacts/experiments_progressive/{exp_suffix}"
+
+            cmd_args.append(f"--output_dir {output_dir_in_progress}")
 
             base_cmd = f"cd {workdir} && {PYTHON_PATH} scripts/activation_distillation.py" f" {' '.join(cmd_args)}"
 
@@ -200,7 +204,8 @@ def build_experiment_configs() -> list[dict]:
                 "experiment_name": exp_suffix,
                 "variant": variant["name"],
                 "model_name": checkpoint,
-                "output_dir": output_dir,
+                "output_dir": output_dir_in_progress,
+                "output_dir_final": output_dir_final,
                 "loss_type": variant["loss_type"],
                 "hybrid_alpha": variant["hybrid_alpha"],
                 "embedding_init_method": EMBEDDING_INIT_METHOD,
@@ -259,9 +264,10 @@ def build_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     # Auto-detect rerun scenario: if ALL experiments exist and no --no-force, default to --force
+    # Check for completed experiments in the FINAL directory (artifacts/experiments_progressive)
     if not args.force and not args.no_force:
-        # Check if most experiments already exist
-        existing_count = sum(1 for cfg in experiment_configs if os.path.isdir(cfg["output_dir"]))
+        # Check if most experiments already exist in FINAL location
+        existing_count = sum(1 for cfg in experiment_configs if os.path.isdir(cfg["output_dir_final"]))
         if existing_count > 0 and existing_count == len(experiment_configs):
             mode_str = " (dry-run)" if args.dry else ""
             print(
@@ -300,8 +306,10 @@ if __name__ == "__main__":
         skipped = 0
         printed = 0
         for cfg in configs:
-            if os.path.isdir(cfg["output_dir"]) and not args.force:
-                print(f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir']}")
+            # Check if experiment is complete in FINAL directory
+            artifact_exists = os.path.isdir(cfg["output_dir_final"])
+            if artifact_exists:
+                print(f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir_final']}")
                 skipped += 1
                 continue
             print(f"\033[32m[DRY] {cfg['experiment_name']}\033[0m")
@@ -310,7 +318,8 @@ if __name__ == "__main__":
             print(f"       Loss:       {cfg['loss_type']} (alpha={cfg['hybrid_alpha']})")
             print(f"       Seq len:    {cfg['max_sequence_length']}")
             print(f"       LR:         {cfg['learning_rate']}")
-            print(f"       Output:     {cfg['output_dir']}")
+            print(f"       Output (in progress): {cfg['output_dir']}")
+            print(f"       Output (final):       {cfg['output_dir_final']}")
             print(f"       Command:    {cfg['command']}")
             print()
             printed += 1
@@ -329,8 +338,9 @@ if __name__ == "__main__":
     jobs_launched = 0
     launched_jobs: list[dict] = []
     for cfg in configs:
-        if os.path.isdir(cfg["output_dir"]) and not args.force:
-            print(f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir']}")
+        # Check if experiment is complete in FINAL directory
+        if os.path.isdir(cfg["output_dir_final"]) and not args.force:
+            print(f"\033[33mSkipping: experiment already exists at:\033[0m {cfg['output_dir_final']}")
             continue
 
         job_desc = f"CH: progressive {cfg['experiment_name']}" f" #{AUTHOR_NAME} #multimodal #notify_completed @mrsndmn"
@@ -365,6 +375,7 @@ if __name__ == "__main__":
                     "job_name": job_name,
                     "job_desc": job_desc,
                     "output_dir": cfg["output_dir"],
+                    "output_dir_final": cfg["output_dir_final"],
                 }
             )
         print(f"  Result: {result}")
