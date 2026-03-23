@@ -2,22 +2,22 @@ import torch
 from transformers import set_seed
 
 
-def get_device():
+def get_device() -> torch.device:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return device
 
 
-def set_launch_seed(seed: int):
+def set_launch_seed(seed: int | None) -> None:
     if seed is not None:
         set_seed(seed)
 
 
-def freeze_model_parameters(model):
+def freeze_model_parameters(model: torch.nn.Module) -> None:
     for parameter in model.parameters():
         parameter.requires_grad_(False)
 
 
-def resolve_torch_dtype(dtype_str: str):
+def resolve_torch_dtype(dtype_str: str) -> torch.dtype:
     s = (dtype_str or "").lower()
     if s in {"auto"}:
         return "auto"
