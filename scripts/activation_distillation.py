@@ -3,14 +3,6 @@ import json
 import os
 import subprocess
 import sys
-from unittest.mock import MagicMock
-
-# Fix torchvision compatibility issue with torch 2.9+
-# Mock torchvision to prevent operator registration errors
-# This must be done before transformers is imported
-sys.modules['torchvision'] = MagicMock()
-sys.modules['torchvision.transforms'] = MagicMock()
-sys.modules['torchvision._meta_registrations'] = MagicMock()
 
 import transformers
 from datasets import Dataset, load_dataset
