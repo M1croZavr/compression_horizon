@@ -19,39 +19,10 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_scheduler
 
+from compression_horizon.metric import estimate_token_perplexity
 from compression_horizon.train.loss import compute_hybrid_cross_entropy_and_alignment_loss
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, resolve_torch_dtype, set_launch_seed
-
-
-def count_text_tokens(tokenizer: AutoTokenizer, text: str, add_special_tokens: bool = True) -> int:
-    """Count tokens in text using the provided tokenizer."""
-    encoded = tokenizer(
-        text,
-        truncation=True,
-        padding=False,
-        return_tensors=None,
-        add_special_tokens=add_special_tokens,
-    )
-    return len(encoded["input_ids"])
-
-
-def count_text_characters(text: str) -> int:
-    """Count characters in text."""
-    return len(text)
-
-
-def estimate_token_perplexity(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> float:
-    """Compute perplexity from logits, labels, and attention mask."""
-    # logits: [B, T, V], labels: [B, T], mask: [B, T]
-    log_probs = torch.log_softmax(logits[:, :-1, :], dim=-1)
-    tgt = labels[:, 1:]
-    m = mask[:, 1:].bool()
-    nll = -log_probs.gather(dim=-1, index=tgt.unsqueeze(-1)).squeeze(-1)
-    nll = nll[m]
-    if nll.numel() == 0:
-        return float("nan")
-    ppl = torch.exp(nll.mean()).item()
-    return float(ppl)
+from compression_horizon.utils.tokens import count_text_characters, count_text_tokens
 
 
 def compress_prefixes_batch(
@@ -67,7 +38,7 @@ def compress_prefixes_batch(
     inverted_alignment: bool = False,
     device: Optional[torch.device] = None,
     add_special_tokens: bool = True,
-) -> list[torch.Tensor]:
+) -> list[dict[str, torch.Tensor | float]]:
     """Compress multiple text prefixes into compression tokens (batched).
 
     Args:
@@ -97,7 +68,8 @@ def compress_prefixes_batch(
     use_alignment = hybrid_alpha is not None and loss_type != "cross_entropy"
 
     # Tokenize all texts with padding
-    encoded = tokenizer(texts, truncation=True, padding=True, return_tensors="pt", add_special_tokens=add_special_tokens)
+    # max_length=training_args.max_sequence_length
+    encoded = tokenizer(texts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens)
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
@@ -112,12 +84,12 @@ def compress_prefixes_batch(
     compression_dtype = embedding_dtype
 
     # Initialize compression tokens for all samples
-    compression_tokens = torch.nn.Parameter(
+    compression_token_embeddings = torch.nn.Parameter(
         torch.randn([batch_size, num_compression_tokens, hidden_size], dtype=compression_dtype, device=device) * 0.02
-    )
+    )  # [batch_size, num_compression_tokens, hidden]
 
     # Optimizer
-    optimizer = AdamW([compression_tokens], lr=learning_rate)
+    optimizer = AdamW([compression_token_embeddings], lr=learning_rate)
     lr_scheduler = get_scheduler(
         "cosine",
         optimizer=optimizer,
@@ -128,62 +100,77 @@ def compress_prefixes_batch(
     model.train()
 
     # Training loop
-    for step in range(max_steps):
+    for _ in range(max_steps):
         optimizer.zero_grad()
 
         # Concatenate compression tokens with input embeddings
         # Expand compression tokens to match sequence lengths
-        united_embeddings_list = []
+        united_token_embeddings_list = []
         united_attention_mask_list = []
         labels_list = []
-
         for i in range(batch_size):
-            seq_len = attention_mask[i].sum().item()
+            seq_len = int(attention_mask[i].sum().item())
             # Get embeddings for this sample (only non-padded tokens)
-            sample_token_embeds = token_embeddings[i : i + 1, :seq_len]  # [1, seq_len, hidden]
-            sample_attention = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
-            sample_compression = compression_tokens[i : i + 1]  # [1, num_compression_tokens, hidden]
-
+            sample_token_embeddings = token_embeddings[i : i + 1, :seq_len]  # [1, seq_len, hidden]
+            sample_attention_mask = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
+            sample_compression_token_embeddings = compression_token_embeddings[i : i + 1]  # [1, num_compression_tokens, hidden]
             # Concatenate
-            united_emb = torch.cat([sample_compression, sample_token_embeds], dim=1)  # [1, mem+seq, hidden]
-            comp_attn = torch.ones((1, num_compression_tokens), dtype=sample_attention.dtype, device=device)
-            united_attn = torch.cat([comp_attn, sample_attention], dim=1)  # [1, mem+seq]
-
-            united_embeddings_list.append(united_emb)
-            united_attention_mask_list.append(united_attn)
-
+            united_token_embeddings = torch.cat(
+                [sample_compression_token_embeddings, sample_token_embeddings], dim=1
+            )  # [1, mem+seq, hidden]
+            united_attention_mask = torch.cat(
+                [
+                    torch.ones((1, num_compression_tokens), dtype=sample_attention_mask.dtype, device=device),
+                    sample_attention_mask,
+                ],
+                dim=1,
+            )  # [1, mem+seq]
+            united_token_embeddings_list.append(united_token_embeddings)
+            united_attention_mask_list.append(united_attention_mask)
             # Labels for this sample
             sample_input_ids = input_ids[i : i + 1, :seq_len]  # [1, seq_len]
             sample_labels = sample_input_ids.clone()
-            sample_labels[sample_attention == 0] = -100
+            sample_labels[sample_attention_mask == 0] = -100
             labels_list.append(sample_labels)
 
-        # Pad to same length for batching
-        max_len = max(emb.shape[1] for emb in united_embeddings_list)
+        # Pad to maximum length and gather batches
+        max_len = max(item.shape[1] for item in united_token_embeddings_list)
         batch_embeddings = []
         batch_attention = []
         batch_labels = []
-
         for i in range(batch_size):
-            emb = united_embeddings_list[i]  # [1, L, hidden]
-            attn = united_attention_mask_list[i]  # [1, L]
-            labels = labels_list[i]  # [1, L]
-
-            current_len = emb.shape[1]
+            united_token_embeddings = united_token_embeddings_list[i]  # [1, mem+seq, hidden]
+            united_attention_mask = united_attention_mask_list[i]  # [1, mem+seq]
+            labels = labels_list[i]  # [1, seq_len]
+            current_len = united_token_embeddings.shape[1]
             if current_len < max_len:
                 pad_len = max_len - current_len
-                emb = torch.cat([emb, torch.zeros(1, pad_len, hidden_size, dtype=emb.dtype, device=device)], dim=1)
-                attn = torch.cat([attn, torch.zeros(1, pad_len, dtype=attn.dtype, device=device)], dim=1)
-                labels = torch.cat([labels, torch.full((1, pad_len), -100, dtype=labels.dtype, device=device)], dim=1)
-
-            batch_embeddings.append(emb)
-            batch_attention.append(attn)
+                united_token_embeddings = torch.cat(
+                    [
+                        united_token_embeddings,
+                        torch.zeros(1, pad_len, hidden_size, dtype=united_token_embeddings.dtype, device=device),
+                    ],
+                    dim=1,
+                )  # [1, max_len, hidden]
+                united_attention_mask = torch.cat(
+                    [
+                        united_attention_mask,
+                        torch.zeros(1, pad_len, dtype=united_attention_mask.dtype, device=device),
+                    ],
+                    dim=1,
+                )  # [1, max_len]
+                labels = torch.cat(
+                    [labels, torch.full((1, pad_len), -100, dtype=labels.dtype, device=device)],
+                    dim=1,
+                )  # [1, max_len - mem]
+            batch_embeddings.append(united_token_embeddings)
+            batch_attention.append(united_attention_mask)
             batch_labels.append(labels)
-
         batch_embeddings = torch.cat(batch_embeddings, dim=0)  # [batch_size, max_len, hidden]
         batch_attention = torch.cat(batch_attention, dim=0)  # [batch_size, max_len]
-        batch_labels = torch.cat(batch_labels, dim=0)  # [batch_size, max_len]
+        batch_labels = torch.cat(batch_labels, dim=0)  # [batch_size, max_len - mem]
 
+        # Forward pass without compression tokens and gradient capturing
         target_outputs = None
         if use_alignment:
             with torch.no_grad():
@@ -193,7 +180,7 @@ def compress_prefixes_batch(
                     output_hidden_states=True,
                 )
 
-        # Forward pass with compression tokens
+        # Forward pass with compression tokens and gradient capturing
         compression_outputs = model(
             inputs_embeds=batch_embeddings,
             attention_mask=batch_attention,
@@ -203,7 +190,7 @@ def compress_prefixes_batch(
         # Compute loss per sample
         total_loss = 0.0
         for i in range(batch_size):
-            seq_len = attention_mask[i].sum().item()
+            seq_len = int(attention_mask[i].sum().item())
             sample_logits = compression_outputs.logits[i : i + 1, : num_compression_tokens + seq_len]
             sample_input_ids = input_ids[i : i + 1, :seq_len]
             sample_attention_mask = attention_mask[i : i + 1, :seq_len]
@@ -237,7 +224,6 @@ def compress_prefixes_batch(
                     hybrid_alpha=hybrid_alpha,
                 )
             total_loss = total_loss + sample_loss
-
         loss = total_loss / batch_size
         loss.backward()
         optimizer.step()
@@ -245,137 +231,58 @@ def compress_prefixes_batch(
 
     model.eval()
     # Return compression tokens (remove batch dimension for each)
-    return [compression_tokens[i].detach() for i in range(batch_size)]
+    convergences = calculate_convergence(model, batch_embeddings, batch_attention, batch_labels, num_compression_tokens)
+    print("Batch convergences:", convergences)
+    return [
+        {
+            "compression_embedding": compression_token_embeddings[i].detach(),
+            "convergence": convergences[i],
+        }
+        for i in range(batch_size)
+    ]
 
 
-def compress_prefix(
+@torch.no_grad()
+def calculate_convergence(
     model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    text: str,
-    num_compression_tokens: int = 1,
-    max_steps: int = 1000,
-    learning_rate: float = 1e-2,
-    loss_type: str = "cross_entropy",
-    hybrid_alpha: Optional[float] = None,
-    num_alignment_layers: int = 0,
-    inverted_alignment: bool = False,
-    device: Optional[torch.device] = None,
-    add_special_tokens: bool = True,
-) -> torch.Tensor:
-    """Compress a text prefix into compression tokens.
+    batch_embeddings: torch.Tensor,
+    batch_attention: torch.Tensor,
+    batch_labels: torch.Tensor,
+    num_compression_tokens: int,
+) -> list[float]:
+    """Calculate token-level accuracy between predicted and target tokens.
 
     Args:
-        model: The language model (frozen)
-        tokenizer: Tokenizer
-        text: Text prefix to compress
-        num_compression_tokens: Number of compression tokens
-        max_steps: Maximum optimization steps
-        learning_rate: Learning rate for optimization
-        device: Device to use
+        batch_embeddings: [batch_size, max_len, hidden] - input embeddings with compression tokens
+        batch_attention: [batch_size, max_len] - attention mask
+        batch_labels: [batch_size, max_seq_len] - target token IDs (without compression positions)
+        num_compression_tokens: number of compression tokens prepended
 
     Returns:
-        Compression token embeddings [num_compression_tokens, hidden_size]
+        List of convergence scores (0.0 to 1.0) for each sample
     """
-    if device is None:
-        device = get_device()
+    outputs = model(inputs_embeds=batch_embeddings, attention_mask=batch_attention)
+    batch_size = batch_embeddings.shape[0]
+    convergences = []
+    for i in range(batch_size):
+        # seq_len includes compression tokens
+        seq_len = int(batch_attention[i].sum().item())
+        orig_seq_len = seq_len - num_compression_tokens
 
-    model = model.to(device)
-    model.eval()
-    freeze_model_parameters(model)
+        if orig_seq_len <= 0:
+            convergences.append(0.0)
+            continue
 
-    # Tokenize the text
-    encoded = tokenizer(text, truncation=True, padding=False, return_tensors="pt", add_special_tokens=add_special_tokens)
-    input_ids = encoded["input_ids"].to(device)  # [1, seq_len]
-    attention_mask = encoded["attention_mask"].to(device)  # [1, seq_len]
+        # logits[num_compression_tokens - 1] predicts first original token
+        # logits[num_compression_tokens - 1 + j] predicts original token j
+        # We want predictions for tokens 0 to orig_seq_len-1
+        sample_logits = outputs.logits[i, num_compression_tokens - 1 : seq_len - 1]  # [orig_seq_len, vocab]
+        sample_predicted_tokens = sample_logits.argmax(dim=-1)  # [orig_seq_len]
+        sample_labels = batch_labels[i, :orig_seq_len]  # [orig_seq_len]
 
-    batch_size = input_ids.shape[0]
-    hidden_size = model.config.hidden_size
-
-    # Get token embeddings to determine dtype
-    with torch.no_grad():
-        token_embeddings = model.model.embed_tokens(input_ids)  # [1, seq_len, hidden]
-
-    loss_type = (loss_type or "cross_entropy").lower()
-    use_alignment = hybrid_alpha is not None and loss_type != "cross_entropy"
-
-    # Get dtype from model embeddings (use bfloat16 as default for computation)
-    embedding_dtype = token_embeddings.dtype
-    # Use the same dtype as model embeddings for compression tokens
-    compression_dtype = embedding_dtype
-
-    # Initialize compression tokens with the correct dtype
-    compression_tokens = torch.nn.Parameter(
-        torch.randn([batch_size, num_compression_tokens, hidden_size], dtype=compression_dtype, device=device) * 0.02
-    )
-
-    # Optimizer
-    optimizer = AdamW([compression_tokens], lr=learning_rate)
-    lr_scheduler = get_scheduler(
-        "cosine",
-        optimizer=optimizer,
-        num_warmup_steps=0,
-        num_training_steps=max_steps,
-    )
-
-    model.train()
-
-    # Training loop
-    for step in range(max_steps):
-        optimizer.zero_grad()
-
-        # Concatenate compression tokens with input embeddings
-        # Both should already have the same dtype (compression_dtype == embedding_dtype)
-        united_embeddings = torch.cat([compression_tokens, token_embeddings], dim=1)  # [1, mem+seq, hidden]
-
-        # Create attention mask
-        compression_attention = torch.ones((batch_size, num_compression_tokens), dtype=attention_mask.dtype, device=device)
-        united_attention_mask = torch.cat([compression_attention, attention_mask], dim=1)  # [1, mem+seq]
-
-        # Forward pass with compression tokens
-        compression_outputs = model(
-            inputs_embeds=united_embeddings,
-            attention_mask=united_attention_mask,
-            output_hidden_states=use_alignment,
-        )
-
-        if use_alignment:
-            with torch.no_grad():
-                target_outputs = model(
-                    inputs_embeds=token_embeddings,
-                    attention_mask=attention_mask,
-                    output_hidden_states=True,
-                )
-            loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
-                logits=compression_outputs.logits,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                num_prefix_tokens=num_compression_tokens,
-                target_hidden_states=target_outputs.hidden_states,
-                compression_hidden_states=compression_outputs.hidden_states,
-                num_alignment_layers=num_alignment_layers,
-                inverted_alignment=inverted_alignment,
-                loss_type=loss_type,
-                hybrid_alpha=hybrid_alpha,
-            )
-        else:
-            loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
-                logits=compression_outputs.logits,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                num_prefix_tokens=num_compression_tokens,
-                num_alignment_layers=num_alignment_layers,
-                inverted_alignment=inverted_alignment,
-                loss_type=loss_type,
-                hybrid_alpha=hybrid_alpha,
-            )
-
-        loss.backward()
-        optimizer.step()
-        lr_scheduler.step()
-
-    model.eval()
-    # Return compression tokens (remove batch dimension)
-    return compression_tokens.detach().squeeze(0)  # [num_compression_tokens, hidden_size]
+        convergence = (sample_predicted_tokens == sample_labels).float().mean().item()
+        convergences.append(convergence)
+    return convergences
 
 
 @torch.no_grad()
@@ -409,10 +316,12 @@ def compute_ppl_baseline_batch(
         return []
 
     # Combine contexts and endings
-    full_texts = [ctx + end for ctx, end in zip(contexts, endings)]
+    full_texts = [f"{ctx} {end}" for ctx, end in zip(contexts, endings)]
 
     # Tokenize with padding
-    encoded = tokenizer(full_texts, truncation=True, padding=True, return_tensors="pt", add_special_tokens=add_special_tokens)
+    encoded = tokenizer(
+        full_texts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens
+    )
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
@@ -421,48 +330,23 @@ def compute_ppl_baseline_batch(
 
     # Compute PPL for each sample
     ppls = []
-    for i in range(len(contexts)):
-        seq_len = attention_mask[i].sum().item()
-        sample_logits = outputs.logits[i : i + 1, :seq_len]
-        sample_input_ids = input_ids[i : i + 1, :seq_len]
-        sample_attention = attention_mask[i : i + 1, :seq_len]
+    for i in range(len(full_texts)):
+        seq_len = int(attention_mask[i].sum().item())
+        sample_logits = outputs.logits[i : i + 1, :seq_len]  # [1, seq_len, vocab]
+        sample_input_ids = input_ids[i : i + 1, :seq_len]  # [1, seq_len]
+        sample_attention = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
         ppl = estimate_token_perplexity(sample_logits, sample_input_ids, sample_attention)
         if math.isnan(ppl):
             ppl = float("inf")
         ppls.append(ppl)
-
     return ppls
-
-
-@torch.no_grad()
-def compute_ppl_baseline(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    context: str,
-    ending: str,
-    device: Optional[torch.device] = None,
-) -> float:
-    """Compute perplexity of context + ending without compression tokens (baseline).
-
-    Args:
-        model: The language model
-        tokenizer: Tokenizer
-        context: Context text
-        ending: Ending text
-        device: Device to use
-
-    Returns:
-        Perplexity score
-    """
-    results = compute_ppl_baseline_batch(model, tokenizer, [context], [ending], device)
-    return results[0] if results else float("inf")
 
 
 @torch.no_grad()
 def compute_ppl_with_compression_batch(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
-    compression_tokens_list: list[torch.Tensor],
+    compression_token_embeddings: list[torch.Tensor],
     contexts: list[str],
     endings: list[str],
     device: Optional[torch.device] = None,
@@ -491,10 +375,12 @@ def compute_ppl_with_compression_batch(
         return []
 
     # Combine contexts and endings
-    full_texts = [ctx + end for ctx, end in zip(contexts, endings)]
+    full_texts = [f"{ctx} {end}" for ctx, end in zip(contexts, endings)]
 
     # Tokenize with padding
-    encoded = tokenizer(full_texts, truncation=True, padding=True, return_tensors="pt", add_special_tokens=add_special_tokens)
+    encoded = tokenizer(
+        full_texts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens
+    )
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
@@ -502,90 +388,72 @@ def compute_ppl_with_compression_batch(
     token_embeddings = model.model.embed_tokens(input_ids)  # [batch_size, seq_len, hidden]
 
     # Prepare batched inputs with compression tokens
-    batch_embeddings_list = []
-    batch_attention_list = []
-    num_compression_tokens = compression_tokens_list[0].shape[0]
-
-    for i in range(len(contexts)):
-        seq_len = attention_mask[i].sum().item()
-        sample_token_embeds = token_embeddings[i : i + 1, :seq_len]  # [1, seq_len, hidden]
-        sample_attention = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
-        sample_compression = (
-            compression_tokens_list[i].unsqueeze(0).to(token_embeddings.dtype)
+    united_token_embeddings_list = []
+    united_attention_mask_list = []
+    num_compression_tokens = compression_token_embeddings[0].shape[0]
+    for i in range(len(full_texts)):
+        seq_len = int(attention_mask[i].sum().item())
+        sample_token_embeddings = token_embeddings[i : i + 1, :seq_len]  # [1, seq_len, hidden]
+        sample_attention_mask = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
+        sample_compression_token_embeddings = (
+            compression_token_embeddings[i].unsqueeze(0).to(token_embeddings.dtype)
         )  # [1, num_compression_tokens, hidden]
-
         # Concatenate
-        united_emb = torch.cat([sample_compression, sample_token_embeds], dim=1)  # [1, mem+seq, hidden]
-        comp_attn = torch.ones((1, num_compression_tokens), dtype=sample_attention.dtype, device=device)
-        united_attn = torch.cat([comp_attn, sample_attention], dim=1)  # [1, mem+seq]
+        united_token_embeddings = torch.cat(
+            [sample_compression_token_embeddings, sample_token_embeddings], dim=1
+        )  # [1, mem+seq, hidden]
+        united_attention_mask = torch.cat(
+            [torch.ones((1, num_compression_tokens), dtype=sample_attention_mask.dtype, device=device), sample_attention_mask],
+            dim=1,
+        )  # [1, mem+seq]
+        united_token_embeddings_list.append(united_token_embeddings)
+        united_attention_mask_list.append(united_attention_mask)
 
-        batch_embeddings_list.append(united_emb)
-        batch_attention_list.append(united_attn)
-
-    # Pad to same length for batching
-    max_len = max(emb.shape[1] for emb in batch_embeddings_list)
+    # Pad to maximum length and gather batches
+    max_len = max(item.shape[1] for item in united_token_embeddings_list)
     batch_embeddings = []
     batch_attention = []
-
-    for i in range(len(contexts)):
-        emb = batch_embeddings_list[i]  # [1, L, hidden]
-        attn = batch_attention_list[i]  # [1, L]
-
-        current_len = emb.shape[1]
+    for i in range(len(full_texts)):
+        united_token_embeddings = united_token_embeddings_list[i]  # [1, mem+seq, hidden]
+        united_attention_mask = united_attention_mask_list[i]  # [1, mem+seq]
+        current_len = united_token_embeddings.shape[1]
         if current_len < max_len:
             pad_len = max_len - current_len
-            hidden_size = emb.shape[2]
-            emb = torch.cat([emb, torch.zeros(1, pad_len, hidden_size, dtype=emb.dtype, device=device)], dim=1)
-            attn = torch.cat([attn, torch.zeros(1, pad_len, dtype=attn.dtype, device=device)], dim=1)
-
-        batch_embeddings.append(emb)
-        batch_attention.append(attn)
-
+            hidden_size = united_token_embeddings.shape[2]
+            united_token_embeddings = torch.cat(
+                [
+                    united_token_embeddings,
+                    torch.zeros(1, pad_len, hidden_size, dtype=united_token_embeddings.dtype, device=device),
+                ],
+                dim=1,
+            )  # [1, max_len, hidden]
+            united_attention_mask = torch.cat(
+                [
+                    united_attention_mask,
+                    torch.zeros(1, pad_len, dtype=united_attention_mask.dtype, device=device),
+                ],
+                dim=1,
+            )  # [1, max_len]
+        batch_embeddings.append(united_token_embeddings)
+        batch_attention.append(united_attention_mask)
     batch_embeddings = torch.cat(batch_embeddings, dim=0)  # [batch_size, max_len, hidden]
     batch_attention = torch.cat(batch_attention, dim=0)  # [batch_size, max_len]
 
     # Forward pass
     outputs = model(inputs_embeds=batch_embeddings, attention_mask=batch_attention)
-
-    # Compute PPL for each sample
+    # Compute PPL for each sample (same as baseline: logits[j] predicts labels[j+1])
+    # logits[num_compression_tokens + j] predicts input_ids[j + 1]
     ppls = []
-    for i in range(len(contexts)):
-        seq_len = attention_mask[i].sum().item()
-        sample_logits = outputs.logits[i : i + 1, num_compression_tokens - 1 : num_compression_tokens - 1 + seq_len]
-        sample_input_ids = input_ids[i : i + 1, :seq_len]
-        sample_attention = attention_mask[i : i + 1, :seq_len]
+    for i in range(len(full_texts)):
+        seq_len = int(attention_mask[i].sum().item())
+        sample_logits = outputs.logits[i : i + 1, num_compression_tokens : num_compression_tokens + seq_len]
+        sample_input_ids = input_ids[i : i + 1, :seq_len]  # [1, seq_len]
+        sample_attention = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
         ppl = estimate_token_perplexity(sample_logits, sample_input_ids, sample_attention)
         if math.isnan(ppl):
             ppl = float("inf")
         ppls.append(ppl)
-
     return ppls
-
-
-@torch.no_grad()
-def compute_ppl_with_compression(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    compression_tokens: torch.Tensor,
-    context: str,
-    ending: str,
-    device: Optional[torch.device] = None,
-) -> float:
-    """Compute perplexity of context + ending using compression tokens.
-
-    Args:
-        model: The language model
-        tokenizer: Tokenizer
-        compression_tokens: Compression token embeddings [num_compression_tokens, hidden_size]
-        context: Context text
-        ending: Ending text
-        device: Device to use
-
-    Returns:
-        Perplexity score
-    """
-    results = compute_ppl_with_compression_batch(model, tokenizer, [compression_tokens], [context], [ending], device)
-    return results[0] if results else float("inf")
 
 
 def main():
@@ -621,16 +489,10 @@ def main():
         help="Learning rate for compression optimization",
     )
     parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="artifacts/hellaswag_evaluation",
-        help="Output directory for results",
-    )
-    parser.add_argument(
-        "--random_seed",
+        "--batch_size",
         type=int,
-        default=42,
-        help="Random seed",
+        default=4,
+        help="Batch size for compression and evaluation",
     )
     parser.add_argument(
         "--dtype",
@@ -640,23 +502,11 @@ def main():
         help="Torch dtype for model",
     )
     parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=4,
-        help="Batch size for compression and evaluation",
-    )
-    parser.add_argument(
         "--loss_type",
         type=str,
         default="cross_entropy",
         choices=["cross_entropy", "l2", "l1", "cosine"],
         help="Loss type for optimization. Use cross_entropy for CE-only; set hybrid_alpha to add activation alignment.",
-    )
-    parser.add_argument(
-        "--hybrid_alpha",
-        type=float,
-        default=None,
-        help="If set and loss_type != cross_entropy, adds hybrid_alpha * alignment_loss to CE loss.",
     )
     parser.add_argument(
         "--num_alignment_layers",
@@ -665,8 +515,15 @@ def main():
         help="Number of layers to align (0 = all layers). Used only when hybrid_alpha is set and loss_type != cross_entropy.",
     )
     parser.add_argument(
+        "--hybrid_alpha",
+        type=float,
+        default=None,
+        help="If set and loss_type != cross_entropy, adds hybrid_alpha * alignment_loss to CE loss.",
+    )
+    parser.add_argument(
         "--inverted_alignment",
         action="store_true",
+        default=False,
         help="If set, aligns the last num_alignment_layers instead of the first.",
     )
     parser.add_argument(
@@ -675,47 +532,76 @@ def main():
         default=False,
         help="Disable BOS token insertion during tokenization.",
     )
-
+    parser.add_argument(
+        "--only_full_convergence",
+        action="store_true",
+        default=False,
+        help="Only count examples with perfect convergence (accuracy=1.0) in compressed metrics.",
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=42,
+        help="Random seed",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="artifacts/hellaswag_evaluation",
+        help="Output directory for results",
+    )
     args = parser.parse_args()
 
     # Set random seed
     set_launch_seed(args.random_seed)
-
     # Resolve dtype
     torch_dtype = resolve_torch_dtype(args.dtype)
     device = get_device()
-
     # Load model and tokenizer
     print(f"Loading model from {args.model_checkpoint}...")
-    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, torch_dtype=torch_dtype)
+    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, dtype=torch_dtype)
+    print("Loaded model dtype:", next(model.parameters()).dtype)
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
+    tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     add_bos_supported = hasattr(tokenizer, "add_bos_token")
     if args.no_bos_token and add_bos_supported:
         tokenizer.add_bos_token = False
+    # Add special tokens if no_bos_token is False or no_bos_token is True and add_bos_token is supported
     add_special_tokens = not (args.no_bos_token and not add_bos_supported)
 
     # Load HellaSwag dataset
     print("Loading HellaSwag dataset...")
+    # ind - dataset ID
+    # activity_label - specifies the subject areas for sentence completion evaluation
+    # ctx - full context
+    # endings - a list of 4 endings
+    # label - correct label 0, 1, 2 or 3
+    # split_type - indomain if the activity label is seen during training, else zeroshot
     dataset = load_dataset("Rowan/hellaswag", split="validation")
     if args.limit_samples:
         dataset = dataset.select(range(args.limit_samples))
-    print(f"Evaluating on {len(dataset)} samples")
+    print(f"Evaluating HellaSwag benchmark on {len(dataset)} samples")
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Evaluation results
     results = []
-    correct_predictions_compressed = 0
+    # Baseline counters (always count all samples)
+    total_predictions_baseline = 0
     correct_predictions_baseline = 0
-    total_predictions = 0
-    total_tokens = 0
-    total_characters = 0
+    total_tokens_baseline = 0
+    total_characters_baseline = 0
     correct_tokens_baseline = 0
-    correct_tokens_compressed = 0
     correct_characters_baseline = 0
+    # Compressed counters (may exclude non-converged samples when only_full_convergence=True)
+    total_predictions_compressed = 0
+    correct_predictions_compressed = 0
+    total_tokens_compressed = 0
+    total_characters_compressed = 0
+    correct_tokens_compressed = 0
     correct_characters_compressed = 0
 
     # Process in batches
@@ -736,10 +622,9 @@ def main():
         # Compute baseline PPL for all endings (batched)
         batch_baseline_ppls = []
         for sample_idx in range(actual_batch_size):
-            sample_ppls = []
             contexts_for_batch = [batch_contexts[sample_idx]] * len(batch_endings_list[sample_idx])
             try:
-                ppls = compute_ppl_baseline_batch(
+                sample_ppls = compute_ppl_baseline_batch(
                     model=model,
                     tokenizer=tokenizer,
                     contexts=contexts_for_batch,
@@ -747,16 +632,16 @@ def main():
                     device=device,
                     add_special_tokens=add_special_tokens,
                 )
-                sample_ppls = ppls
             except Exception as e:
                 print(f"Error computing baseline PPL for sample {start_idx + sample_idx}: {e}")
                 sample_ppls = [float("inf")] * len(batch_endings_list[sample_idx])
             batch_baseline_ppls.append(sample_ppls)
 
         # Compress contexts (batched)
-        batch_compression_tokens = None
+        batch_compression_results = None
         try:
-            batch_compression_tokens = compress_prefixes_batch(
+            # List[dict] with keys: compression_embedding, convergence
+            batch_compression_results = compress_prefixes_batch(
                 model=model,
                 tokenizer=tokenizer,
                 texts=batch_contexts,
@@ -772,35 +657,39 @@ def main():
             )
         except Exception as e:
             print(f"Error compressing batch {batch_idx}: {e}")
-            batch_compression_tokens = [None] * actual_batch_size
+            batch_compression_results = [{"compression_embedding": None, "convergence": 0.0}] * actual_batch_size
 
         # Compute compressed PPL for all endings (batched)
         batch_compressed_ppls = []
         for sample_idx in range(actual_batch_size):
-            if batch_compression_tokens[sample_idx] is None:
-                batch_compressed_ppls.append([float("inf")] * len(batch_endings_list[sample_idx]))
+            compression_result = batch_compression_results[sample_idx]
+            compression_embedding = compression_result["compression_embedding"]
+            convergence = compression_result["convergence"]
+
+            # Check if compression failed
+            if compression_embedding is None:
+                batch_compressed_ppls.append(
+                    {"ppls": [float("inf")] * len(batch_endings_list[sample_idx]), "convergence": convergence}
+                )
                 continue
 
-            sample_ppls = []
+            # Compute PPL with compression tokens
+            contexts_for_batch = [batch_contexts[sample_idx]] * len(batch_endings_list[sample_idx])
             try:
-                # Prepare contexts and endings for this sample
-                contexts_for_batch = [batch_contexts[sample_idx]] * len(batch_endings_list[sample_idx])
-                compression_tokens_for_batch = [batch_compression_tokens[sample_idx]] * len(batch_endings_list[sample_idx])
-
+                batch_sample_compression_token_embeddings = [compression_embedding] * len(batch_endings_list[sample_idx])
                 ppls = compute_ppl_with_compression_batch(
                     model=model,
                     tokenizer=tokenizer,
-                    compression_tokens_list=compression_tokens_for_batch,
+                    compression_token_embeddings=batch_sample_compression_token_embeddings,
                     contexts=contexts_for_batch,
                     endings=batch_endings_list[sample_idx],
                     device=device,
                     add_special_tokens=add_special_tokens,
                 )
-                sample_ppls = ppls
             except Exception as e:
                 print(f"Error computing compressed PPL for sample {start_idx + sample_idx}: {e}")
-                sample_ppls = [float("inf")] * len(batch_endings_list[sample_idx])
-            batch_compressed_ppls.append(sample_ppls)
+                ppls = [float("inf")] * len(batch_endings_list[sample_idx])
+            batch_compressed_ppls.append({"ppls": ppls, "convergence": convergence})
 
         # Process results for this batch
         for sample_idx in range(actual_batch_size):
@@ -809,39 +698,59 @@ def main():
             endings = batch_endings_list[sample_idx]
             label = batch_labels[sample_idx]
 
+            # Baseline evaluation
             baseline_ppls = batch_baseline_ppls[sample_idx]
             baseline_predicted_label = int(torch.tensor(baseline_ppls).argmin().item())
             baseline_is_correct = baseline_predicted_label == label
+
+            # Compressed evaluation
+            compressed_result = batch_compressed_ppls[sample_idx]
+            compressed_ppls = compressed_result["ppls"]
+            convergence = compressed_result["convergence"]
+            is_fully_converged = convergence >= 1.0
+
+            # Determine if this sample should be counted in compressed metrics
+            should_count_compressed = not args.only_full_convergence or is_fully_converged
+
+            compressed_predicted_label = int(torch.tensor(compressed_ppls).argmin().item())
+            compressed_is_correct = compressed_predicted_label == label
+
+            # Update baseline counters (always count all samples)
+            total_predictions_baseline += 1
             if baseline_is_correct:
                 correct_predictions_baseline += 1
 
-            compressed_ppls = batch_compressed_ppls[sample_idx]
-            compressed_predicted_label = None
-            compressed_is_correct = None
-            if compressed_ppls and len(compressed_ppls) > 0:
-                compressed_predicted_label = int(torch.tensor(compressed_ppls).argmin().item())
-                compressed_is_correct = compressed_predicted_label == label
+            # Update compressed counters (respects only_full_convergence flag)
+            if should_count_compressed:
+                total_predictions_compressed += 1
                 if compressed_is_correct:
                     correct_predictions_compressed += 1
 
-            total_predictions += 1
+            # Compute token/char counts for correct ending
             token_count = None
             char_count = None
             if 0 <= label < len(endings):
                 correct_ending = endings[label]
-                full_text = context + correct_ending
+                full_text = f"{context} {correct_ending}"
                 token_count = count_text_tokens(tokenizer, full_text, add_special_tokens=add_special_tokens)
                 char_count = count_text_characters(full_text)
-                total_tokens += token_count
-                total_characters += char_count
+
+                # Baseline token/char counts
+                total_tokens_baseline += token_count
+                total_characters_baseline += char_count
                 if baseline_is_correct:
                     correct_tokens_baseline += token_count
                     correct_characters_baseline += char_count
-                if compressed_is_correct:
-                    correct_tokens_compressed += token_count
-                    correct_characters_compressed += char_count
 
-            # Store result
+                # Compressed token/char counts (respects only_full_convergence flag)
+                if should_count_compressed:
+                    total_tokens_compressed += token_count
+                    total_characters_compressed += char_count
+                    if compressed_is_correct:
+                        correct_tokens_compressed += token_count
+                        correct_characters_compressed += char_count
+
+            # Store result (always save, regardless of convergence)
             result = {
                 "sample_id": idx,
                 "context": context,
@@ -860,30 +769,41 @@ def main():
                     "predicted_label": compressed_predicted_label,
                     "is_correct": compressed_is_correct,
                     "ppls": compressed_ppls,
+                    "convergence": convergence,
+                    "is_fully_converged": is_fully_converged,
+                    "counted_in_metrics": should_count_compressed,
                 },
             }
             results.append(result)
 
         # Print progress
         if (batch_idx + 1) % max(1, num_batches // 10) == 0 or (batch_idx + 1) == num_batches:
-            baseline_accuracy = correct_predictions_baseline / total_predictions if total_predictions > 0 else 0.0
-            compressed_accuracy = correct_predictions_compressed / total_predictions if total_predictions > 0 else 0.0
+            baseline_accuracy = (
+                correct_predictions_baseline / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
+            )
+            compressed_accuracy = (
+                correct_predictions_compressed / total_predictions_compressed if total_predictions_compressed > 0 else 0.0
+            )
             print(
-                f"Progress: {total_predictions}/{len(dataset)}, Baseline Accuracy: {baseline_accuracy:.4f}, "
-                f"Compressed Accuracy: {compressed_accuracy:.4f}"
+                f"Progress: {total_predictions_baseline}/{len(dataset)}, Baseline Accuracy: {baseline_accuracy:.4f}, "
+                f"Compressed Accuracy: {compressed_accuracy:.4f} ({total_predictions_compressed} samples)"
             )
 
     # Compute final accuracies
-    baseline_accuracy = correct_predictions_baseline / total_predictions if total_predictions > 0 else 0.0
-    compressed_accuracy = correct_predictions_compressed / total_predictions if total_predictions > 0 else 0.0
-    baseline_token_accuracy = correct_tokens_baseline / total_tokens if total_tokens > 0 else 0.0
-    compressed_token_accuracy = correct_tokens_compressed / total_tokens if total_tokens > 0 else 0.0
-    baseline_char_accuracy = correct_characters_baseline / total_characters if total_characters > 0 else 0.0
-    compressed_char_accuracy = correct_characters_compressed / total_characters if total_characters > 0 else 0.0
+    baseline_accuracy = correct_predictions_baseline / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
+    compressed_accuracy = (
+        correct_predictions_compressed / total_predictions_compressed if total_predictions_compressed > 0 else 0.0
+    )
+    baseline_token_accuracy = correct_tokens_baseline / total_tokens_baseline if total_tokens_baseline > 0 else 0.0
+    compressed_token_accuracy = correct_tokens_compressed / total_tokens_compressed if total_tokens_compressed > 0 else 0.0
+    baseline_char_accuracy = correct_characters_baseline / total_characters_baseline if total_characters_baseline > 0 else 0.0
+    compressed_char_accuracy = (
+        correct_characters_compressed / total_characters_compressed if total_characters_compressed > 0 else 0.0
+    )
 
     # Save results
     results_file = os.path.join(args.output_dir, "results.json")
-    with open(results_file, "w", encoding="utf-8") as f:
+    with open(results_file, "w", encoding="utf-8") as file:
         json.dump(
             {
                 "args": vars(args),
@@ -892,22 +812,24 @@ def main():
                     "token_normalized_accuracy": baseline_token_accuracy,
                     "char_normalized_accuracy": baseline_char_accuracy,
                     "correct_predictions": correct_predictions_baseline,
-                    "total_predictions": total_predictions,
-                    "total_tokens": total_tokens,
-                    "total_characters": total_characters,
+                    "total_predictions": total_predictions_baseline,
+                    "total_tokens": total_tokens_baseline,
+                    "total_characters": total_characters_baseline,
                 },
                 "compressed": {
                     "accuracy": compressed_accuracy,
                     "token_normalized_accuracy": compressed_token_accuracy,
                     "char_normalized_accuracy": compressed_char_accuracy,
                     "correct_predictions": correct_predictions_compressed,
-                    "total_predictions": total_predictions,
-                    "total_tokens": total_tokens,
-                    "total_characters": total_characters,
+                    "total_predictions": total_predictions_compressed,
+                    "total_predictions_all": total_predictions_baseline,
+                    "total_tokens": total_tokens_compressed,
+                    "total_characters": total_characters_compressed,
+                    "only_full_convergence": args.only_full_convergence,
                 },
                 "results": results,
             },
-            f,
+            file,
             indent=2,
             ensure_ascii=False,
         )
@@ -916,14 +838,16 @@ def main():
     print("\n" + "=" * 50)
     print("Evaluation Summary")
     print("=" * 50)
-    print(f"Total samples: {total_predictions}")
+    print(f"Total samples: {total_predictions_baseline}")
+    print(f"Only full convergence: {args.only_full_convergence}")
     print("\nBaseline (without compression):")
-    print(f"  Correct predictions: {correct_predictions_baseline}")
+    print(f"  Correct predictions: {correct_predictions_baseline}/{total_predictions_baseline}")
     print(f"  Accuracy: {baseline_accuracy:.4f}")
     print(f"  Token-normalized Accuracy: {baseline_token_accuracy:.4f}")
     print(f"  Character-normalized Accuracy: {baseline_char_accuracy:.4f}")
     print("\nCompressed (with compression tokens):")
-    print(f"  Correct predictions: {correct_predictions_compressed}")
+    print(f"  Samples counted: {total_predictions_compressed}/{total_predictions_baseline}")
+    print(f"  Correct predictions: {correct_predictions_compressed}/{total_predictions_compressed}")
     print(f"  Accuracy: {compressed_accuracy:.4f}")
     print(f"  Token-normalized Accuracy: {compressed_token_accuracy:.4f}")
     print(f"  Character-normalized Accuracy: {compressed_char_accuracy:.4f}")
