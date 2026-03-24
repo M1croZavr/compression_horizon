@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -89,6 +90,8 @@ def load_or_create_tokenized_dataset(
         del kwargs["split"]
         kwargs["data_files"] = [f"sample/10BT/{i:03}_00000.parquet" for i in range(14)]
         # kwargs['streaming'] = True
+    elif dataset_name == "LarryLovestein/pg19_1k":
+        kwargs["split"] = "train"
 
     raw_dataset = load_dataset(dataset_name, **kwargs)
 
@@ -166,13 +169,18 @@ if __name__ == "__main__":
     #   ch_{essential_params}_{hash8}, where hash8 is derived from training args.
     if getattr(training_args, "train_compression_head", False):
         default_base = "artifacts/experiments_compression_head"
+        default_base_in_progress = "artifacts/experiments_in_progress"
     elif training_args.progressive_train:
         default_base = "artifacts/experiments_progressive"
+        default_base_in_progress = "artifacts/experiments_in_progress"
     elif getattr(training_args, "train_prefix_tuning", False):
         default_base = "artifacts/experiments_prefix_tuning"
+        default_base_in_progress = "artifacts/experiments_in_progress"
     else:
         default_base = "artifacts/experiments"
+        default_base_in_progress = "artifacts/experiments_in_progress"
     os.makedirs(default_base, exist_ok=True)
+    os.makedirs(default_base_in_progress, exist_ok=True)
     # Build short, human-readable prefix
     loss_type = training_args.loss_type
     hybrid_alpha = training_args.hybrid_alpha
@@ -198,14 +206,35 @@ if __name__ == "__main__":
     args_dict.pop("logging_dir", None)
     args_json = json.dumps(args_dict, sort_keys=True, ensure_ascii=False, default=str)
 
-    # If output_dir not provided, compose it using the prefix + args_hash
-    output_dir = os.path.join(default_base, f"{prefix}")
+    # Detect if user explicitly passed --output_dir on the command line
+    argv = sys.argv[1:]
+    user_provided_output_dir = False
+    for i, token in enumerate(argv):
+        if token == "--output_dir" and i + 1 < len(argv):
+            user_provided_output_dir = True
+            break
+        if token.startswith("--output_dir="):
+            user_provided_output_dir = True
+            break
+
+    if user_provided_output_dir and getattr(training_args, "output_dir", None):
+        output_dir = training_args.output_dir
+        # Detect if this is in the in_progress directory
+        is_in_progress = "experiments_in_progress" in output_dir
+        if is_in_progress:
+            # Compute the final directory by replacing experiments_in_progress with the appropriate final base
+            output_dir_final = output_dir.replace("experiments_in_progress", default_base.split("/")[-1])
+        else:
+            output_dir_final = None
+    else:
+        output_dir = os.path.join(default_base, f"{prefix}")
+        output_dir_final = None
+
+    print("output_dir", output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    # Attach to args so trainer can save artifacts there (respecting any user-provided output_dir)
     training_args.output_dir = output_dir
     training_args.logging_dir = output_dir
     # Also persist raw CLI (excluding --output_dir) and its hash for auditability
-    argv = sys.argv[1:]
     filtered_argv: list[str] = []
     skip_next = False
     for token in argv:
@@ -317,3 +346,26 @@ if __name__ == "__main__":
     )
     training_artifacts = trainer.train()
     print(f"Saved compressed prefixes to: {training_artifacts}.")
+
+    # Move from experiments_in_progress to final directory after successful training
+    if output_dir_final:
+        print(f"\n{'='*80}")
+        print("Training completed successfully!")
+        print("Moving results from in-progress to final location:")
+        print(f"  From: {output_dir}")
+        print(f"  To:   {output_dir_final}")
+        print(f"{'='*80}\n")
+
+        # Ensure parent directory of final location exists
+        os.makedirs(os.path.dirname(output_dir_final), exist_ok=True)
+
+        # If final directory already exists, remove it first
+        if os.path.exists(output_dir_final):
+            print(f"Removing existing final directory: {output_dir_final}")
+            shutil.rmtree(output_dir_final)
+
+        # Move the directory
+        shutil.move(output_dir, output_dir_final)
+        print(f"Successfully moved experiment results to: {output_dir_final}")
+    else:
+        print(f"Training completed. Results saved at: {output_dir}")

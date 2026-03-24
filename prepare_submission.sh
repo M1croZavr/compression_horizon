@@ -12,6 +12,7 @@ git checkout .
 # Crutch single file with hardcoded path to workdir
 # sed -i "s|/workspace-SR004.nfs2/d.tarasov/compr|.|g" src/sentence_attention/artifacts/experiments.py
 sed -i "s|mrsndmn/pg19|hf_anon_icml_2026/pg19|g" ./scripts/activation_distillation.py ./scripts/data/generate_pg19_paraphrases.py ./scripts/experiments.sh ./scripts/paper/visualize_trajectories.sh ./src/compression_horizon/train/arguments.py
+sed -i "s|LarryLovestein/pg19_1k|hf_anon_icml_2026/pg19_1k|g" ./scripts/activation_distillation.py ./scripts/data/generate_pg19_paraphrases.py ./scripts/experiments.sh ./scripts/paper/visualize_trajectories.sh ./src/compression_horizon/train/arguments.py
 
 # Удаляем все файлы, которые могут задеанонить (джобы, гит, скрипты c полными путями)
 # Скрипты джобов для воспроизводимости не нужны и из них нельзя просто выкинуть полные пути (хотя можно, но костыльно это будет и неудобно)
@@ -24,15 +25,15 @@ read -n 1 -s
 
 find -name .ipynb_checkpoints -type d -exec rm -rf {} +
 
-if ! grep --binary-files=without-match -PRi 'sber|allakhverdov|Nikita|korzh|iudin|karimov|elvir|tarasov|mrsndmn|lashukov|\brsi\b|[а-яА-ЯёЁ]' . |  grep -v 'TeXBLEU/tokenizer.json\|TeXBLEU/new_embeddings.pth\|.csv' |  grep -q .; then
+if ! grep --binary-files=without-match -PRi 'sber|allakhverdov|Nikita|korzh|iudin|karimov|elvir|tarasov|mrsndmn|LarryLovestein|lashukov|\brsi\b|[а-яА-ЯёЁ]' . |  grep -v 'TeXBLEU/tokenizer.json\|TeXBLEU/new_embeddings.pth\|.csv' |  grep -q .; then
     echo "✅ No matching deanon substrings found."
 else
-    grep --binary-files=without-match -PRi 'sber|allakhverdov|Nikita|korzh|iudin|karimov|elvir|tarasov|mrsndmn|lashukov|\brsi\b|[а-яА-ЯёЁ]' . |  grep -v 'TeXBLEU/tokenizer.json\|TeXBLEU/new_embeddings.pth\|.csv' | head
+    grep --binary-files=without-match -PRi 'sber|allakhverdov|Nikita|korzh|iudin|karimov|elvir|tarasov|mrsndmn|LarryLovestein|lashukov|\brsi\b|[а-яА-ЯёЁ]' . |  grep -v 'TeXBLEU/tokenizer.json\|TeXBLEU/new_embeddings.pth\|.csv' | head
     echo "❌ Matching deanon substrings found!"
     exit 1
 fi
 
-if ! find . -type f -regex '.*/\(sber\|allakhverdov\|Nikita\|korzh\|iudin\|karimov\|elvir\|mrsndmn\|lashukov\|tarasov\|rsi\).*' | grep -q .; then
+if ! find . -type f -regex '.*/\(sber\|allakhverdov\|Nikita\|korzh\|iudin\|karimov\|elvir\|mrsndmn\|LarryLovestein\|lashukov\|tarasov\|rsi\).*' | grep -q .; then
     echo "✅ No matching deanon files found."
 else
     echo "❌ Matching deanon files found!"

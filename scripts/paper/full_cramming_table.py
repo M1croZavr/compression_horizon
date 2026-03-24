@@ -9,10 +9,11 @@ from scripts.results.results import (
     aggregate_prefix_tuning,
     aggregate_progressive,
     load_dataset_rows,
-    to_mean_std_cell,
 )
 from tabulate import tabulate
 from tqdm.auto import tqdm
+
+from compression_horizon.utils import to_mean_std_cell
 
 
 def parse_args() -> argparse.Namespace:

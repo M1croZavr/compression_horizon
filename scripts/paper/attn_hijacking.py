@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from scripts.results.results import to_mean_std_cell
 from scripts.visualize_attention_hijacking import (
     collate_stages_by_sample,
     compute_attention_mass_for_original_sequence,
@@ -18,6 +17,8 @@ from scripts.visualize_attention_hijacking import (
 from tabulate import tabulate
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, Gemma3Config
+
+from compression_horizon.utils import to_mean_std_cell
 
 
 def save_attention_mass_cache(
