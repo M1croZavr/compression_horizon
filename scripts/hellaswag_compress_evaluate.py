@@ -19,10 +19,10 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_scheduler
 
+from compression_horizon.metric import estimate_token_perplexity
 from compression_horizon.train.loss import compute_hybrid_cross_entropy_and_alignment_loss
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, resolve_torch_dtype, set_launch_seed
-from compression_horizon.utils.tokens import count_text_tokens, count_text_characters
-from compression_horizon.metric import estimate_token_perplexity
+from compression_horizon.utils.tokens import count_text_characters, count_text_tokens
 
 
 def compress_prefixes_batch(
@@ -115,7 +115,9 @@ def compress_prefixes_batch(
             sample_attention_mask = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
             sample_compression_token_embeddings = compression_token_embeddings[i : i + 1]  # [1, num_compression_tokens, hidden]
             # Concatenate
-            united_token_embeddings = torch.cat([sample_compression_token_embeddings, sample_token_embeddings], dim=1)  # [1, mem+seq, hidden]
+            united_token_embeddings = torch.cat(
+                [sample_compression_token_embeddings, sample_token_embeddings], dim=1
+            )  # [1, mem+seq, hidden]
             united_attention_mask = torch.cat(
                 [
                     torch.ones((1, num_compression_tokens), dtype=sample_attention_mask.dtype, device=device),
@@ -146,7 +148,7 @@ def compress_prefixes_batch(
                 united_token_embeddings = torch.cat(
                     [
                         united_token_embeddings,
-                        torch.zeros(1, pad_len, hidden_size, dtype=united_token_embeddings.dtype, device=device)
+                        torch.zeros(1, pad_len, hidden_size, dtype=united_token_embeddings.dtype, device=device),
                     ],
                     dim=1,
                 )  # [1, max_len, hidden]
@@ -317,7 +319,9 @@ def compute_ppl_baseline_batch(
     full_texts = [f"{ctx} {end}" for ctx, end in zip(contexts, endings)]
 
     # Tokenize with padding
-    encoded = tokenizer(full_texts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens)
+    encoded = tokenizer(
+        full_texts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens
+    )
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
@@ -374,7 +378,9 @@ def compute_ppl_with_compression_batch(
     full_texts = [f"{ctx} {end}" for ctx, end in zip(contexts, endings)]
 
     # Tokenize with padding
-    encoded = tokenizer(full_texts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens)
+    encoded = tokenizer(
+        full_texts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens
+    )
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
@@ -393,9 +399,12 @@ def compute_ppl_with_compression_batch(
             compression_token_embeddings[i].unsqueeze(0).to(token_embeddings.dtype)
         )  # [1, num_compression_tokens, hidden]
         # Concatenate
-        united_token_embeddings = torch.cat([sample_compression_token_embeddings, sample_token_embeddings], dim=1)  # [1, mem+seq, hidden]
+        united_token_embeddings = torch.cat(
+            [sample_compression_token_embeddings, sample_token_embeddings], dim=1
+        )  # [1, mem+seq, hidden]
         united_attention_mask = torch.cat(
-            [torch.ones((1, num_compression_tokens), dtype=sample_attention_mask.dtype, device=device), sample_attention_mask], dim=1
+            [torch.ones((1, num_compression_tokens), dtype=sample_attention_mask.dtype, device=device), sample_attention_mask],
+            dim=1,
         )  # [1, mem+seq]
         united_token_embeddings_list.append(united_token_embeddings)
         united_attention_mask_list.append(united_attention_mask)
@@ -414,7 +423,7 @@ def compute_ppl_with_compression_batch(
             united_token_embeddings = torch.cat(
                 [
                     united_token_embeddings,
-                    torch.zeros(1, pad_len, hidden_size, dtype=united_token_embeddings.dtype, device=device)
+                    torch.zeros(1, pad_len, hidden_size, dtype=united_token_embeddings.dtype, device=device),
                 ],
                 dim=1,
             )  # [1, max_len, hidden]
@@ -659,7 +668,9 @@ def main():
 
             # Check if compression failed
             if compression_embedding is None:
-                batch_compressed_ppls.append({"ppls": [float("inf")] * len(batch_endings_list[sample_idx]), "convergence": convergence})
+                batch_compressed_ppls.append(
+                    {"ppls": [float("inf")] * len(batch_endings_list[sample_idx]), "convergence": convergence}
+                )
                 continue
 
             # Compute PPL with compression tokens
@@ -767,8 +778,12 @@ def main():
 
         # Print progress
         if (batch_idx + 1) % max(1, num_batches // 10) == 0 or (batch_idx + 1) == num_batches:
-            baseline_accuracy = correct_predictions_baseline / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
-            compressed_accuracy = correct_predictions_compressed / total_predictions_compressed if total_predictions_compressed > 0 else 0.0
+            baseline_accuracy = (
+                correct_predictions_baseline / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
+            )
+            compressed_accuracy = (
+                correct_predictions_compressed / total_predictions_compressed if total_predictions_compressed > 0 else 0.0
+            )
             print(
                 f"Progress: {total_predictions_baseline}/{len(dataset)}, Baseline Accuracy: {baseline_accuracy:.4f}, "
                 f"Compressed Accuracy: {compressed_accuracy:.4f} ({total_predictions_compressed} samples)"
@@ -776,11 +791,15 @@ def main():
 
     # Compute final accuracies
     baseline_accuracy = correct_predictions_baseline / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
-    compressed_accuracy = correct_predictions_compressed / total_predictions_compressed if total_predictions_compressed > 0 else 0.0
+    compressed_accuracy = (
+        correct_predictions_compressed / total_predictions_compressed if total_predictions_compressed > 0 else 0.0
+    )
     baseline_token_accuracy = correct_tokens_baseline / total_tokens_baseline if total_tokens_baseline > 0 else 0.0
     compressed_token_accuracy = correct_tokens_compressed / total_tokens_compressed if total_tokens_compressed > 0 else 0.0
     baseline_char_accuracy = correct_characters_baseline / total_characters_baseline if total_characters_baseline > 0 else 0.0
-    compressed_char_accuracy = correct_characters_compressed / total_characters_compressed if total_characters_compressed > 0 else 0.0
+    compressed_char_accuracy = (
+        correct_characters_compressed / total_characters_compressed if total_characters_compressed > 0 else 0.0
+    )
 
     # Save results
     results_file = os.path.join(args.output_dir, "results.json")
