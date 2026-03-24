@@ -109,7 +109,7 @@ def compress_prefixes_batch(
         united_attention_mask_list = []
         labels_list = []
         for i in range(batch_size):
-            seq_len = attention_mask[i].sum().item()
+            seq_len = int(attention_mask[i].sum().item())
             # Get embeddings for this sample (only non-padded tokens)
             sample_token_embeddings = token_embeddings[i : i + 1, :seq_len]  # [1, seq_len, hidden]
             sample_attention_mask = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
@@ -188,7 +188,7 @@ def compress_prefixes_batch(
         # Compute loss per sample
         total_loss = 0.0
         for i in range(batch_size):
-            seq_len = attention_mask[i].sum().item()
+            seq_len = int(attention_mask[i].sum().item())
             sample_logits = compression_outputs.logits[i : i + 1, : num_compression_tokens + seq_len]
             sample_input_ids = input_ids[i : i + 1, :seq_len]
             sample_attention_mask = attention_mask[i : i + 1, :seq_len]
@@ -242,21 +242,43 @@ def compress_prefixes_batch(
 
 @torch.no_grad()
 def calculate_convergence(
-    model: AutoModelForCausalLM, batch_embeddings: torch.Tensor, batch_attention: torch.Tensor, batch_labels: torch.Tensor, num_compression_tokens: int
+    model: AutoModelForCausalLM,
+    batch_embeddings: torch.Tensor,
+    batch_attention: torch.Tensor,
+    batch_labels: torch.Tensor,
+    num_compression_tokens: int,
 ) -> list[float]:
-    outputs = model(
-        inputs_embeds=batch_embeddings,
-        attention_mask=batch_attention,
-    )
+    """Calculate token-level accuracy between predicted and target tokens.
+
+    Args:
+        batch_embeddings: [batch_size, max_len, hidden] - input embeddings with compression tokens
+        batch_attention: [batch_size, max_len] - attention mask
+        batch_labels: [batch_size, max_seq_len] - target token IDs (without compression positions)
+        num_compression_tokens: number of compression tokens prepended
+
+    Returns:
+        List of convergence scores (0.0 to 1.0) for each sample
+    """
+    outputs = model(inputs_embeds=batch_embeddings, attention_mask=batch_attention)
     batch_size = batch_embeddings.shape[0]
     convergences = []
     for i in range(batch_size):
-        seq_len = batch_attention[i].sum().item()  # Considering compression tokens
-        sample_logits = outputs.logits[i : i + 1, : seq_len]  # [1, mem+sequence, vocabulary]
-        sample_predicted_tokens = sample_logits[:, num_compression_tokens - 1 : -1].argmax(dim=-1).squeeze(dim=0)  # [sequence]
-        sample_labels = batch_labels[i, : seq_len - num_compression_tokens].clone()  # [sequence]
-        # print(sample_predicted_tokens, sample_labels)
-        convergence = torch.mean((sample_predicted_tokens == sample_labels).to(torch.float)).item()
+        # seq_len includes compression tokens
+        seq_len = int(batch_attention[i].sum().item())
+        orig_seq_len = seq_len - num_compression_tokens
+
+        if orig_seq_len <= 0:
+            convergences.append(0.0)
+            continue
+
+        # logits[num_compression_tokens - 1] predicts first original token
+        # logits[num_compression_tokens - 1 + j] predicts original token j
+        # We want predictions for tokens 0 to orig_seq_len-1
+        sample_logits = outputs.logits[i, num_compression_tokens - 1 : seq_len - 1]  # [orig_seq_len, vocab]
+        sample_predicted_tokens = sample_logits.argmax(dim=-1)  # [orig_seq_len]
+        sample_labels = batch_labels[i, :orig_seq_len]  # [orig_seq_len]
+
+        convergence = (sample_predicted_tokens == sample_labels).float().mean().item()
         convergences.append(convergence)
     return convergences
 
@@ -305,8 +327,8 @@ def compute_ppl_baseline_batch(
     # Compute PPL for each sample
     ppls = []
     for i in range(len(full_texts)):
-        seq_len = attention_mask[i].sum().item()
-        sample_logits = outputs.logits[i : i + 1, :seq_len]  # [1, seq_len, vocabulary]
+        seq_len = int(attention_mask[i].sum().item())
+        sample_logits = outputs.logits[i : i + 1, :seq_len]  # [1, seq_len, vocab]
         sample_input_ids = input_ids[i : i + 1, :seq_len]  # [1, seq_len]
         sample_attention = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
         ppl = estimate_token_perplexity(sample_logits, sample_input_ids, sample_attention)
@@ -364,7 +386,7 @@ def compute_ppl_with_compression_batch(
     united_attention_mask_list = []
     num_compression_tokens = compression_token_embeddings[0].shape[0]
     for i in range(len(full_texts)):
-        seq_len = attention_mask[i].sum().item()
+        seq_len = int(attention_mask[i].sum().item())
         sample_token_embeddings = token_embeddings[i : i + 1, :seq_len]  # [1, seq_len, hidden]
         sample_attention_mask = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
         sample_compression_token_embeddings = (
@@ -410,11 +432,12 @@ def compute_ppl_with_compression_batch(
 
     # Forward pass
     outputs = model(inputs_embeds=batch_embeddings, attention_mask=batch_attention)
-    # Compute PPL for each sample
+    # Compute PPL for each sample (same as baseline: logits[j] predicts labels[j+1])
+    # logits[num_compression_tokens + j] predicts input_ids[j + 1]
     ppls = []
     for i in range(len(full_texts)):
-        seq_len = attention_mask[i].sum().item()
-        sample_logits = outputs.logits[i : i + 1, num_compression_tokens - 1 : num_compression_tokens - 1 + seq_len]
+        seq_len = int(attention_mask[i].sum().item())
+        sample_logits = outputs.logits[i : i + 1, num_compression_tokens : num_compression_tokens + seq_len]
         sample_input_ids = input_ids[i : i + 1, :seq_len]  # [1, seq_len]
         sample_attention = attention_mask[i : i + 1, :seq_len]  # [1, seq_len]
         ppl = estimate_token_perplexity(sample_logits, sample_input_ids, sample_attention)
@@ -501,10 +524,10 @@ def main():
         help="Disable BOS token insertion during tokenization.",
     )
     parser.add_argument(
-        "—-only_full_convergence",
+        "--only_full_convergence",
         action="store_true",
         default=False,
-        help="Only those examples for which full compression was achieved should be included in the results.",
+        help="Only count examples with perfect convergence (accuracy=1.0) in compressed metrics.",
     )
     parser.add_argument(
         "--random_seed",
@@ -557,14 +580,19 @@ def main():
 
     # Evaluation results
     results = []
-    correct_predictions_compressed = 0
+    # Baseline counters (always count all samples)
+    total_predictions_baseline = 0
     correct_predictions_baseline = 0
-    total_predictions = 0
-    total_tokens = 0
-    total_characters = 0
+    total_tokens_baseline = 0
+    total_characters_baseline = 0
     correct_tokens_baseline = 0
-    correct_tokens_compressed = 0
     correct_characters_baseline = 0
+    # Compressed counters (may exclude non-converged samples when only_full_convergence=True)
+    total_predictions_compressed = 0
+    correct_predictions_compressed = 0
+    total_tokens_compressed = 0
+    total_characters_compressed = 0
+    correct_tokens_compressed = 0
     correct_characters_compressed = 0
 
     # Process in batches
@@ -585,11 +613,9 @@ def main():
         # Compute baseline PPL for all endings (batched)
         batch_baseline_ppls = []
         for sample_idx in range(actual_batch_size):
-            sample_ppls = []
             contexts_for_batch = [batch_contexts[sample_idx]] * len(batch_endings_list[sample_idx])
             try:
-                # List of baseline (common model) sample perplexities for each pair context -> ending
-                ppls = compute_ppl_baseline_batch(
+                sample_ppls = compute_ppl_baseline_batch(
                     model=model,
                     tokenizer=tokenizer,
                     contexts=contexts_for_batch,
@@ -597,17 +623,16 @@ def main():
                     device=device,
                     add_special_tokens=add_special_tokens,
                 )
-                sample_ppls = ppls
             except Exception as e:
                 print(f"Error computing baseline PPL for sample {start_idx + sample_idx}: {e}")
                 sample_ppls = [float("inf")] * len(batch_endings_list[sample_idx])
             batch_baseline_ppls.append(sample_ppls)
 
         # Compress contexts (batched)
-        batch_compression_token_embeddings = None
+        batch_compression_results = None
         try:
-            # List[num_compression_tokens, hidden]
-            batch_compression_token_embeddings = compress_prefixes_batch(
+            # List[dict] with keys: compression_embedding, convergence
+            batch_compression_results = compress_prefixes_batch(
                 model=model,
                 tokenizer=tokenizer,
                 texts=batch_contexts,
@@ -621,28 +646,26 @@ def main():
                 device=device,
                 add_special_tokens=add_special_tokens,
             )
-            batch_compression_token_embeddings = [
-                item["compression_embedding"] if item["convergence"] >= 1 else "ignore" for item in batch_compression_token_embeddings
-            ]
         except Exception as e:
             print(f"Error compressing batch {batch_idx}: {e}")
-            batch_compression_token_embeddings = [None] * actual_batch_size
+            batch_compression_results = [{"compression_embedding": None, "convergence": 0.0}] * actual_batch_size
 
         # Compute compressed PPL for all endings (batched)
         batch_compressed_ppls = []
         for sample_idx in range(actual_batch_size):
-            if batch_compression_token_embeddings[sample_idx] is None:
-                batch_compressed_ppls.append([float("inf")] * len(batch_endings_list[sample_idx]))
+            compression_result = batch_compression_results[sample_idx]
+            compression_embedding = compression_result["compression_embedding"]
+            convergence = compression_result["convergence"]
+
+            # Check if compression failed
+            if compression_embedding is None:
+                batch_compressed_ppls.append({"ppls": [float("inf")] * len(batch_endings_list[sample_idx]), "convergence": convergence})
                 continue
-            elif batch_compression_token_embeddings[sample_idx] == "ignore":
-                batch_compressed_ppls.append("ignore")
-                continue
-            sample_ppls = []
+
+            # Compute PPL with compression tokens
             contexts_for_batch = [batch_contexts[sample_idx]] * len(batch_endings_list[sample_idx])
             try:
-                # Prepare contexts and endings for this sample
-                batch_sample_compression_token_embeddings = [batch_compression_token_embeddings[sample_idx]] * len(batch_endings_list[sample_idx])
-                # List of compression (compression prefix tuned) sample perplexities for each pair context -> ending
+                batch_sample_compression_token_embeddings = [compression_embedding] * len(batch_endings_list[sample_idx])
                 ppls = compute_ppl_with_compression_batch(
                     model=model,
                     tokenizer=tokenizer,
@@ -652,11 +675,10 @@ def main():
                     device=device,
                     add_special_tokens=add_special_tokens,
                 )
-                sample_ppls = ppls
             except Exception as e:
                 print(f"Error computing compressed PPL for sample {start_idx + sample_idx}: {e}")
-                sample_ppls = [float("inf")] * len(batch_endings_list[sample_idx])
-            batch_compressed_ppls.append(sample_ppls)
+                ppls = [float("inf")] * len(batch_endings_list[sample_idx])
+            batch_compressed_ppls.append({"ppls": ppls, "convergence": convergence})
 
         # Process results for this batch
         for sample_idx in range(actual_batch_size):
@@ -665,23 +687,35 @@ def main():
             endings = batch_endings_list[sample_idx]
             label = batch_labels[sample_idx]
 
+            # Baseline evaluation
             baseline_ppls = batch_baseline_ppls[sample_idx]
             baseline_predicted_label = int(torch.tensor(baseline_ppls).argmin().item())
             baseline_is_correct = baseline_predicted_label == label
+
+            # Compressed evaluation
+            compressed_result = batch_compressed_ppls[sample_idx]
+            compressed_ppls = compressed_result["ppls"]
+            convergence = compressed_result["convergence"]
+            is_fully_converged = convergence >= 1.0
+
+            # Determine if this sample should be counted in compressed metrics
+            should_count_compressed = not args.only_full_convergence or is_fully_converged
+
+            compressed_predicted_label = int(torch.tensor(compressed_ppls).argmin().item())
+            compressed_is_correct = compressed_predicted_label == label
+
+            # Update baseline counters (always count all samples)
+            total_predictions_baseline += 1
             if baseline_is_correct:
                 correct_predictions_baseline += 1
 
-            compressed_ppls = batch_compressed_ppls[sample_idx]
-            if compressed_ppls == "ignore":
-                compressed_is_correct = False
-                compressed_predicted_label = "ignored_due_convergence"
-            else:
-                compressed_predicted_label = int(torch.tensor(compressed_ppls).argmin().item())
-                compressed_is_correct = compressed_predicted_label == label
+            # Update compressed counters (respects only_full_convergence flag)
+            if should_count_compressed:
+                total_predictions_compressed += 1
                 if compressed_is_correct:
                     correct_predictions_compressed += 1
 
-            total_predictions += 1
+            # Compute token/char counts for correct ending
             token_count = None
             char_count = None
             if 0 <= label < len(endings):
@@ -689,16 +723,23 @@ def main():
                 full_text = f"{context} {correct_ending}"
                 token_count = count_text_tokens(tokenizer, full_text, add_special_tokens=add_special_tokens)
                 char_count = count_text_characters(full_text)
-                total_tokens += token_count
-                total_characters += char_count
+
+                # Baseline token/char counts
+                total_tokens_baseline += token_count
+                total_characters_baseline += char_count
                 if baseline_is_correct:
                     correct_tokens_baseline += token_count
                     correct_characters_baseline += char_count
-                if compressed_is_correct:
-                    correct_tokens_compressed += token_count
-                    correct_characters_compressed += char_count
 
-            # Store result
+                # Compressed token/char counts (respects only_full_convergence flag)
+                if should_count_compressed:
+                    total_tokens_compressed += token_count
+                    total_characters_compressed += char_count
+                    if compressed_is_correct:
+                        correct_tokens_compressed += token_count
+                        correct_characters_compressed += char_count
+
+            # Store result (always save, regardless of convergence)
             result = {
                 "sample_id": idx,
                 "context": context,
@@ -717,26 +758,29 @@ def main():
                     "predicted_label": compressed_predicted_label,
                     "is_correct": compressed_is_correct,
                     "ppls": compressed_ppls,
+                    "convergence": convergence,
+                    "is_fully_converged": is_fully_converged,
+                    "counted_in_metrics": should_count_compressed,
                 },
             }
             results.append(result)
 
         # Print progress
         if (batch_idx + 1) % max(1, num_batches // 10) == 0 or (batch_idx + 1) == num_batches:
-            baseline_accuracy = correct_predictions_baseline / total_predictions if total_predictions > 0 else 0.0
-            compressed_accuracy = correct_predictions_compressed / total_predictions if total_predictions > 0 else 0.0
+            baseline_accuracy = correct_predictions_baseline / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
+            compressed_accuracy = correct_predictions_compressed / total_predictions_compressed if total_predictions_compressed > 0 else 0.0
             print(
-                f"Progress: {total_predictions}/{len(dataset)}, Baseline Accuracy: {baseline_accuracy:.4f}, "
-                f"Compressed Accuracy: {compressed_accuracy:.4f}"
+                f"Progress: {total_predictions_baseline}/{len(dataset)}, Baseline Accuracy: {baseline_accuracy:.4f}, "
+                f"Compressed Accuracy: {compressed_accuracy:.4f} ({total_predictions_compressed} samples)"
             )
 
     # Compute final accuracies
-    baseline_accuracy = correct_predictions_baseline / total_predictions if total_predictions > 0 else 0.0
-    compressed_accuracy = correct_predictions_compressed / total_predictions if total_predictions > 0 else 0.0
-    baseline_token_accuracy = correct_tokens_baseline / total_tokens if total_tokens > 0 else 0.0
-    compressed_token_accuracy = correct_tokens_compressed / total_tokens if total_tokens > 0 else 0.0
-    baseline_char_accuracy = correct_characters_baseline / total_characters if total_characters > 0 else 0.0
-    compressed_char_accuracy = correct_characters_compressed / total_characters if total_characters > 0 else 0.0
+    baseline_accuracy = correct_predictions_baseline / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
+    compressed_accuracy = correct_predictions_compressed / total_predictions_compressed if total_predictions_compressed > 0 else 0.0
+    baseline_token_accuracy = correct_tokens_baseline / total_tokens_baseline if total_tokens_baseline > 0 else 0.0
+    compressed_token_accuracy = correct_tokens_compressed / total_tokens_compressed if total_tokens_compressed > 0 else 0.0
+    baseline_char_accuracy = correct_characters_baseline / total_characters_baseline if total_characters_baseline > 0 else 0.0
+    compressed_char_accuracy = correct_characters_compressed / total_characters_compressed if total_characters_compressed > 0 else 0.0
 
     # Save results
     results_file = os.path.join(args.output_dir, "results.json")
@@ -749,18 +793,20 @@ def main():
                     "token_normalized_accuracy": baseline_token_accuracy,
                     "char_normalized_accuracy": baseline_char_accuracy,
                     "correct_predictions": correct_predictions_baseline,
-                    "total_predictions": total_predictions,
-                    "total_tokens": total_tokens,
-                    "total_characters": total_characters,
+                    "total_predictions": total_predictions_baseline,
+                    "total_tokens": total_tokens_baseline,
+                    "total_characters": total_characters_baseline,
                 },
                 "compressed": {
                     "accuracy": compressed_accuracy,
                     "token_normalized_accuracy": compressed_token_accuracy,
                     "char_normalized_accuracy": compressed_char_accuracy,
                     "correct_predictions": correct_predictions_compressed,
-                    "total_predictions": total_predictions,
-                    "total_tokens": total_tokens,
-                    "total_characters": total_characters,
+                    "total_predictions": total_predictions_compressed,
+                    "total_predictions_all": total_predictions_baseline,
+                    "total_tokens": total_tokens_compressed,
+                    "total_characters": total_characters_compressed,
+                    "only_full_convergence": args.only_full_convergence,
                 },
                 "results": results,
             },
@@ -773,14 +819,16 @@ def main():
     print("\n" + "=" * 50)
     print("Evaluation Summary")
     print("=" * 50)
-    print(f"Total samples: {total_predictions}")
+    print(f"Total samples: {total_predictions_baseline}")
+    print(f"Only full convergence: {args.only_full_convergence}")
     print("\nBaseline (without compression):")
-    print(f"  Correct predictions: {correct_predictions_baseline}")
+    print(f"  Correct predictions: {correct_predictions_baseline}/{total_predictions_baseline}")
     print(f"  Accuracy: {baseline_accuracy:.4f}")
     print(f"  Token-normalized Accuracy: {baseline_token_accuracy:.4f}")
     print(f"  Character-normalized Accuracy: {baseline_char_accuracy:.4f}")
     print("\nCompressed (with compression tokens):")
-    print(f"  Correct predictions: {correct_predictions_compressed}")
+    print(f"  Samples counted: {total_predictions_compressed}/{total_predictions_baseline}")
+    print(f"  Correct predictions: {correct_predictions_compressed}/{total_predictions_compressed}")
     print(f"  Accuracy: {compressed_accuracy:.4f}")
     print(f"  Token-normalized Accuracy: {compressed_token_accuracy:.4f}")
     print(f"  Character-normalized Accuracy: {compressed_char_accuracy:.4f}")
