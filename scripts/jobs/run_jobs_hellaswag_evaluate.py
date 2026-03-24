@@ -3,6 +3,7 @@ import os
 import sys
 
 from mls.manager.job.utils import get_in_progress_jobs, training_job_api_from_profile
+from scripts.jobs.run_training import MODEL_CONFIGS
 
 """
 python scripts/jobs/run_jobs_hellaswag_evaluate.py \
@@ -66,7 +67,7 @@ if __name__ == "__main__":
         "--learning_rate",
         type=float,
         default=None,
-        help="Learning rate for compression optimization. If not specified, defaults to 0.01 and is not included in output dir.",
+        help="Learning rate for compression optimization. If not specified, uses per-model defaults from run_training.MODEL_CONFIGS.",
     )
     parser.add_argument(
         "--batch_size",
@@ -122,18 +123,8 @@ if __name__ == "__main__":
     in_progress_jobs = get_in_progress_jobs()
     in_progress_job_descs = {job.get("job_desc", "") for job in in_progress_jobs}
 
-    checkpoints = [
-        "HuggingFaceTB/SmolLM2-1.7B",
-        "unsloth/Llama-3.2-3B",
-        "Qwen/Qwen3-4B",
-        "unsloth/Meta-Llama-3.1-8B",
-        "Qwen/Qwen3-8B",
-        "allenai/OLMo-1B-hf",
-        "allenai/Olmo-3-1025-7B",
-        "unsloth/gemma-3-4b-pt",
-        "unsloth/gemma-3-1b-pt",
-        "EleutherAI/pythia-1.4b",
-    ]
+    checkpoints = [m["checkpoint"] for m in MODEL_CONFIGS]
+    lr_by_checkpoint = {m["checkpoint"]: m["learning_rate"] for m in MODEL_CONFIGS}
 
     # Filter checkpoints by --model flag if provided
     if args.model:
@@ -157,7 +148,8 @@ if __name__ == "__main__":
         limit_samples = args.limit_samples if args.limit_samples is not None else 100
         num_compression_tokens = args.num_compression_tokens if args.num_compression_tokens is not None else 1
         max_optimization_steps = args.max_optimization_steps if args.max_optimization_steps is not None else 1000
-        learning_rate = args.learning_rate if args.learning_rate is not None else 0.01
+        default_lr = lr_by_checkpoint[model_checkpoint]
+        learning_rate = args.learning_rate if args.learning_rate is not None else default_lr
         batch_size = args.batch_size if args.batch_size is not None else 4
         dtype = args.dtype if args.dtype is not None else "bf16"
         loss_type = args.loss_type if args.loss_type is not None else "cross_entropy"
@@ -198,9 +190,9 @@ if __name__ == "__main__":
         if args.max_optimization_steps is not None and args.max_optimization_steps != 1000:
             exp_suffix = f"{exp_suffix}_steps_{args.max_optimization_steps}"
 
-        # Add learning_rate to output dir if specified (non-default)
-        if args.learning_rate is not None and args.learning_rate != 0.01:
-            exp_suffix = f"{exp_suffix}_lr_{args.learning_rate}"
+        # Match run_training: include lr in output dir when != 0.01
+        if learning_rate != 0.01:
+            exp_suffix = f"{exp_suffix}_lr_{learning_rate}"
 
         # Add batch_size to output dir if specified (non-default)
         if args.batch_size is not None and args.batch_size != 4:
