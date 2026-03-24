@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import numpy as np
 from datasets import load_from_disk
-from compression_horizon.utils import to_mean_std_cell
 from scripts.results.results import (
     aggregate_non_progressive,
     aggregate_progressive,
@@ -15,6 +14,8 @@ from scripts.results.results import (
 from sklearn.decomposition import PCA
 from tabulate import tabulate
 from tqdm.auto import tqdm
+
+from compression_horizon.utils import to_mean_std_cell
 
 
 def parse_args() -> argparse.Namespace:

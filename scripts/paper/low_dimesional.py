@@ -10,11 +10,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
-from compression_horizon.utils import to_mean_std_cell
 from sklearn.decomposition import PCA
 from tabulate import tabulate
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from compression_horizon.utils import to_mean_std_cell
 
 # This experiments finished before information gain was computed during experiment trainng. information gain computed with scripts/visualize_multiple_trajectories.py
 PRECOMPUTED_INFO_GAIN = {

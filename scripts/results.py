@@ -14,7 +14,6 @@ import sys
 sys.path.insert(0, ".")
 from scripts.jobs.run_training import experiment_configs
 
-
 VARIANTS_PER_MODEL = 4  # simple, lowdim, hybrid, hybrid_lowdim (nobos excluded)
 
 
@@ -40,12 +39,16 @@ def main():
         "scripts/paper/low_dimesional.py",
         "--checkpoints",
         *checkpoints,
-        "--n_components", "4",
-        "--sample_id", "0",
-        "--midrule_indicies", *[str(i) for i in midrule_indices],
+        "--n_components",
+        "4",
+        "--sample_id",
+        "0",
+        "--midrule_indicies",
+        *[str(i) for i in midrule_indices],
         "--show_labels",
         "--only_stat_table",
-        "--tablefmt", "github",
+        "--tablefmt",
+        "github",
     ]
 
     print(f"Running: {' '.join(cmd[:5])} ... ({len(checkpoints)} checkpoints)")

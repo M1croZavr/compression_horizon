@@ -4,7 +4,6 @@ import json
 import os
 from types import SimpleNamespace
 
-from compression_horizon.utils import to_mean_std_cell
 from scripts.results.results import (
     aggregate_non_progressive,
     aggregate_prefix_tuning,
@@ -13,6 +12,8 @@ from scripts.results.results import (
 )
 from tabulate import tabulate
 from tqdm.auto import tqdm
+
+from compression_horizon.utils import to_mean_std_cell
 
 
 def parse_args() -> argparse.Namespace:

@@ -8,7 +8,6 @@ that satisfies the research loop interface.
 """
 import argparse
 import json
-import sys
 
 
 def build_args() -> argparse.Namespace:
