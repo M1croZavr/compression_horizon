@@ -8,6 +8,7 @@ __pycache__
 .ruff_cache
 .pytest_cache
 .ipynb_checkpoints
+datasets/
 
 # Data and artifacts
 artifacts/
@@ -19,6 +20,7 @@ artifacts/
 # Debug
 /tests/bar.py
 
+# Other
 trainer_output/
 supplemetnary/
 supplemetnary.zip
