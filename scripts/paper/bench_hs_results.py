@@ -520,7 +520,8 @@ def plot_cumulative_knockout(
 ) -> None:
     """Cumulative knockout curve: x=number of layers knocked out (0..L), y=accuracy.
 
-    The curve should interpolate from Cram (0 layers KO) to Base (all layers KO).
+    Plots both forward (layers 0..li) and reverse (layers li..L-1) cumulative
+    knockout on the same chart when both are available.
 
     Args:
         data: Loaded intervention results JSON.
@@ -528,19 +529,22 @@ def plot_cumulative_knockout(
         model_label: Optional label for the model.
     """
     summary = data["intervention_summary"]
-    if "cumulative_knockout" not in summary:
+    has_forward = "cumulative_knockout" in summary
+    has_reverse = "reverse_cumulative_knockout" in summary
+
+    if not has_forward and not has_reverse:
         print("No cumulative_knockout data found, skipping plot.", file=sys.stderr)
         return
 
-    cumulative = summary["cumulative_knockout"]
-    num_layers = data.get("num_model_layers", len(cumulative))
+    num_layers = data.get("num_model_layers")
+    if num_layers is None:
+        if has_forward:
+            num_layers = len(summary["cumulative_knockout"])
+        else:
+            num_layers = len(summary["reverse_cumulative_knockout"])
 
     base_acc = data.get("baseline", {}).get("accuracy")
     cram_acc = data.get("compressed", {}).get("accuracy")
-
-    # x = number of layers knocked out: 0 (= Cram), 1, 2, ..., L
-    x_vals = [0] + [li + 1 for li in range(num_layers)]
-    y_vals = [cram_acc if cram_acc is not None else 0.0] + [cumulative[str(li)]["accuracy"] for li in range(num_layers)]
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -548,7 +552,25 @@ def plot_cumulative_knockout(
     if model_label:
         title += f" ({model_label})"
 
-    ax.plot(x_vals, y_vals, "o-", color="#2563eb", linewidth=1.5, markersize=4, label="Cumulative KO accuracy")
+    # Forward cumulative: knock out layers 0..li
+    if has_forward:
+        cumulative = summary["cumulative_knockout"]
+        # x = number of layers knocked out: 0 (= Cram), 1, 2, ..., L
+        x_fwd = [0] + [li + 1 for li in range(num_layers)]
+        y_fwd = [cram_acc if cram_acc is not None else 0.0] + [cumulative[str(li)]["accuracy"] for li in range(num_layers)]
+        ax.plot(x_fwd, y_fwd, "o-", color="#2563eb", linewidth=1.5, markersize=4, label="Forward KO (layers 0..k)")
+
+    # Reverse cumulative: knock out layers li..L-1
+    if has_reverse:
+        reverse_cumulative = summary["reverse_cumulative_knockout"]
+        # x = number of layers knocked out from the end: 0 (= Cram), 1, 2, ..., L
+        # li=L-1 knocks out 1 layer (last), li=L-2 knocks out 2, ..., li=0 knocks out L
+        x_rev = [0] + [num_layers - li for li in range(num_layers - 1, -1, -1)]
+        y_rev = [cram_acc if cram_acc is not None else 0.0] + [
+            reverse_cumulative[str(li)]["accuracy"] for li in range(num_layers - 1, -1, -1)
+        ]
+        ax.plot(x_rev, y_rev, "s-", color="#9333ea", linewidth=1.5, markersize=4, label="Reverse KO (layers k..L-1)")
+
     if base_acc is not None:
         ax.axhline(y=base_acc, color="#16a34a", linestyle="--", linewidth=1, label=f"Base = {base_acc:.3f}")
     if cram_acc is not None:
