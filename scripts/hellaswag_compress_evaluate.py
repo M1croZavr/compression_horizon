@@ -27,12 +27,16 @@ from compression_horizon.utils.tokens import count_text_characters, count_text_t
 
 def get_decoder_layers(model: AutoModelForCausalLM) -> torch.nn.ModuleList:
     """Return the list of decoder layers for supported model architectures."""
+    # Gemma3 (ConditionalGeneration): model.model.language_model.layers
+    if hasattr(model, "model") and hasattr(model.model, "language_model") and hasattr(model.model.language_model, "layers"):
+        return model.model.language_model.layers
+    # Llama, SmolLM2, Gemma2: model.model.layers
     if hasattr(model, "model") and hasattr(model.model, "layers"):
-        return model.model.layers  # Llama, SmolLM2, Gemma
-    elif hasattr(model, "gpt_neox") and hasattr(model.gpt_neox, "layers"):
-        return model.gpt_neox.layers  # Pythia / GPT-NeoX
-    else:
-        raise ValueError(f"Unknown model architecture: {type(model)}. Cannot locate decoder layers.")
+        return model.model.layers
+    # Pythia / GPT-NeoX: model.gpt_neox.layers
+    if hasattr(model, "gpt_neox") and hasattr(model.gpt_neox, "layers"):
+        return model.gpt_neox.layers
+    raise ValueError(f"Unknown model architecture: {type(model)}. Cannot locate decoder layers.")
 
 
 @torch.no_grad()
