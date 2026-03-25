@@ -8,6 +8,7 @@ This script:
 """
 
 import argparse
+import inspect
 import json
 import math
 import os
@@ -229,6 +230,9 @@ def compress_prefixes_batch(
 
     hidden_size = token_embeddings.shape[-1]
 
+    # Some models (Gemma3) require token_type_ids during training
+    _needs_token_type_ids = "token_type_ids" in inspect.signature(model.forward).parameters
+
     # Get dtype from model embeddings
     embedding_dtype = token_embeddings.dtype
     compression_dtype = embedding_dtype
@@ -322,12 +326,20 @@ def compress_prefixes_batch(
 
         # Forward pass without compression tokens and gradient capturing
         target_outputs = None
+        # Build optional kwargs for models that need token_type_ids (e.g. Gemma3)
+        target_fwd_kwargs = {}
+        compression_fwd_kwargs = {}
+        if _needs_token_type_ids:
+            target_fwd_kwargs["token_type_ids"] = torch.zeros(attention_mask.shape, dtype=torch.long, device=device)
+            compression_fwd_kwargs["token_type_ids"] = torch.zeros(batch_attention.shape, dtype=torch.long, device=device)
+
         if use_alignment:
             with torch.no_grad():
                 target_outputs = model(
                     inputs_embeds=token_embeddings,
                     attention_mask=attention_mask,
                     output_hidden_states=True,
+                    **target_fwd_kwargs,
                 )
 
         # Forward pass with compression tokens and gradient capturing
@@ -335,6 +347,7 @@ def compress_prefixes_batch(
             inputs_embeds=batch_embeddings,
             attention_mask=batch_attention,
             output_hidden_states=use_alignment,
+            **compression_fwd_kwargs,
         )
 
         # Compute loss per sample
