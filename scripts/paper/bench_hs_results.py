@@ -18,6 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 from tabulate import tabulate
 from tqdm.auto import tqdm
 
@@ -348,6 +353,277 @@ def build_latex_table(summaries: List[HSRunSummary], selected_columns: Optional[
     return tabulate(table_rows, headers=headers, tablefmt="latex_raw")
 
 
+# ----------------------- Intervention Knockout Plots ----------------------- #
+
+
+def load_intervention_results(results_path: str) -> Dict:
+    """Load a results.json that contains intervention_summary."""
+    with open(results_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if "intervention_summary" not in data:
+        raise ValueError(f"No intervention_summary in {results_path}")
+    return data
+
+
+def load_attention_mass(attention_mass_path: str) -> List[float]:
+    """Load per-layer attention mass from a cache JSON file.
+
+    Supports two formats:
+    - List of floats (one per layer): direct per-layer attention mass %
+    - Dict with 'avg_attention_mass_per_layer_compression' key: list of floats
+    """
+    with open(attention_mass_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, list):
+        return [float(v) for v in data]
+    if isinstance(data, dict) and "avg_attention_mass_per_layer_compression" in data:
+        return [float(v) for v in data["avg_attention_mass_per_layer_compression"]]
+    raise ValueError(f"Unrecognized attention mass format in {attention_mass_path}")
+
+
+def plot_per_layer_knockout(
+    data: Dict,
+    output_path: str,
+    attention_mass: Optional[List[float]] = None,
+    model_label: Optional[str] = None,
+) -> None:
+    """Per-layer knockout plot: x=layer, y1=accuracy with KO at that layer, y2=attention mass.
+
+    Args:
+        data: Loaded intervention results JSON.
+        output_path: Path to save the plot.
+        attention_mass: Optional per-layer attention mass (% values).
+        model_label: Optional label for the model.
+    """
+    summary = data["intervention_summary"]
+    if "per_layer_knockout" not in summary:
+        print("No per_layer_knockout data found, skipping plot.", file=sys.stderr)
+        return
+
+    per_layer = summary["per_layer_knockout"]
+    num_layers = data.get("num_model_layers", len(per_layer))
+    layers = list(range(num_layers))
+    accuracies = [per_layer[str(li)]["accuracy"] for li in layers]
+
+    base_acc = data.get("baseline", {}).get("accuracy")
+    cram_acc = data.get("compressed", {}).get("accuracy")
+
+    fig, ax1 = plt.subplots(figsize=(12, 5))
+
+    title = "Per-Layer Attention Knockout"
+    if model_label:
+        title += f" ({model_label})"
+
+    color_acc = "#2563eb"
+    ax1.plot(layers, accuracies, "o-", color=color_acc, linewidth=1.5, markersize=4, label="KO accuracy")
+    if base_acc is not None:
+        ax1.axhline(y=base_acc, color="#16a34a", linestyle="--", linewidth=1, label=f"Base = {base_acc:.3f}")
+    if cram_acc is not None:
+        ax1.axhline(y=cram_acc, color="#dc2626", linestyle="--", linewidth=1, label=f"Cram = {cram_acc:.3f}")
+    ax1.set_xlabel("Layer index")
+    ax1.set_ylabel("Accuracy (KO at layer)", color=color_acc)
+    ax1.tick_params(axis="y", labelcolor=color_acc)
+    ax1.set_xlim(-0.5, num_layers - 0.5)
+
+    if attention_mass is not None and len(attention_mass) == num_layers:
+        color_attn = "#f97316"
+        ax2 = ax1.twinx()
+        ax2.bar(layers, attention_mass, alpha=0.3, color=color_attn, label="Attention mass %")
+        ax2.set_ylabel("Attention mass on compression token (%)", color=color_attn)
+        ax2.tick_params(axis="y", labelcolor=color_attn)
+        # Combine legends
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=8)
+    else:
+        ax1.legend(loc="upper right", fontsize=8)
+
+    ax1.set_title(title)
+    ax1.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved per-layer knockout plot to {output_path}")
+
+
+def plot_scatter_attention_vs_recovery(
+    data: Dict,
+    output_path: str,
+    attention_mass: List[float],
+    model_label: Optional[str] = None,
+) -> None:
+    """Scatter plot: x=attention mass at layer l, y=accuracy delta from Cram baseline.
+
+    Args:
+        data: Loaded intervention results JSON.
+        output_path: Path to save the plot.
+        attention_mass: Per-layer attention mass (% values). Required.
+        model_label: Optional label for the model.
+    """
+    summary = data["intervention_summary"]
+    if "per_layer_knockout" not in summary:
+        print("No per_layer_knockout data found, skipping scatter plot.", file=sys.stderr)
+        return
+
+    per_layer = summary["per_layer_knockout"]
+    num_layers = data.get("num_model_layers", len(per_layer))
+    cram_acc = data.get("compressed", {}).get("accuracy", 0.0)
+
+    if len(attention_mass) != num_layers:
+        print(
+            f"Attention mass length ({len(attention_mass)}) != num_layers ({num_layers}), skipping.",
+            file=sys.stderr,
+        )
+        return
+
+    x_mass = np.array(attention_mass)
+    y_delta = np.array([per_layer[str(li)]["accuracy"] - cram_acc for li in range(num_layers)])
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    title = "Attention Mass vs. Accuracy Recovery"
+    if model_label:
+        title += f" ({model_label})"
+
+    ax.scatter(x_mass, y_delta, c=np.arange(num_layers), cmap="viridis", s=80, edgecolors="k", linewidths=0.5)
+
+    # Add layer labels to a few notable points
+    for li in range(num_layers):
+        ax.annotate(str(li), (x_mass[li], y_delta[li]), fontsize=16, ha="center", va="bottom", alpha=0.7)
+
+    # Fit and plot trend line
+    if np.std(x_mass) > 1e-8 and np.std(y_delta) > 1e-8:
+        z = np.polyfit(x_mass, y_delta, 1)
+        p = np.poly1d(z)
+        x_line = np.linspace(x_mass.min(), x_mass.max(), 100)
+        ax.plot(x_line, p(x_line), "--", color="red", linewidth=1, alpha=0.7, label=f"Linear fit (slope={z[0]:.4f})")
+        corr = np.corrcoef(x_mass, y_delta)[0, 1]
+        ax.set_title(f"{title}\nPearson r = {corr:.3f}")
+        ax.legend(fontsize=8)
+    else:
+        ax.set_title(title)
+
+    ax.axhline(y=0, color="gray", linestyle=":", linewidth=0.8)
+    ax.set_xlabel("Attention mass on compression token (%)")
+    ax.set_ylabel("Accuracy delta from Cram baseline")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved scatter plot to {output_path}")
+
+
+def plot_cumulative_knockout(
+    data: Dict,
+    output_path: str,
+    model_label: Optional[str] = None,
+) -> None:
+    """Cumulative knockout curve: x=number of layers knocked out (0..L), y=accuracy.
+
+    Plots both forward (layers 0..li) and reverse (layers li..L-1) cumulative
+    knockout on the same chart when both are available.
+
+    Args:
+        data: Loaded intervention results JSON.
+        output_path: Path to save the plot.
+        model_label: Optional label for the model.
+    """
+    summary = data["intervention_summary"]
+    has_forward = "cumulative_knockout" in summary
+    has_reverse = "reverse_cumulative_knockout" in summary
+
+    if not has_forward and not has_reverse:
+        print("No cumulative_knockout data found, skipping plot.", file=sys.stderr)
+        return
+
+    num_layers = data.get("num_model_layers")
+    if num_layers is None:
+        if has_forward:
+            num_layers = len(summary["cumulative_knockout"])
+        else:
+            num_layers = len(summary["reverse_cumulative_knockout"])
+
+    base_acc = data.get("baseline", {}).get("accuracy")
+    cram_acc = data.get("compressed", {}).get("accuracy")
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    title = "Cumulative Knockout Recovery Curve"
+    if model_label:
+        title += f" ({model_label})"
+
+    # Forward cumulative: knock out layers 0..li
+    if has_forward:
+        cumulative = summary["cumulative_knockout"]
+        # x = number of layers knocked out: 0 (= Cram), 1, 2, ..., L
+        x_fwd = [0] + [li + 1 for li in range(num_layers)]
+        y_fwd = [cram_acc if cram_acc is not None else 0.0] + [cumulative[str(li)]["accuracy"] for li in range(num_layers)]
+        ax.plot(x_fwd, y_fwd, "o-", color="#2563eb", linewidth=1.5, markersize=4, label="Forward KO (layers 0..k)")
+
+    # Reverse cumulative: knock out layers li..L-1
+    if has_reverse:
+        reverse_cumulative = summary["reverse_cumulative_knockout"]
+        # x = number of layers knocked out from the end: 0 (= Cram), 1, 2, ..., L
+        # li=L-1 knocks out 1 layer (last), li=L-2 knocks out 2, ..., li=0 knocks out L
+        x_rev = [0] + [num_layers - li for li in range(num_layers - 1, -1, -1)]
+        y_rev = [cram_acc if cram_acc is not None else 0.0] + [
+            reverse_cumulative[str(li)]["accuracy"] for li in range(num_layers - 1, -1, -1)
+        ]
+        ax.plot(x_rev, y_rev, "s-", color="#9333ea", linewidth=1.5, markersize=4, label="Reverse KO (layers k..L-1)")
+
+    if base_acc is not None:
+        ax.axhline(y=base_acc, color="#16a34a", linestyle="--", linewidth=1, label=f"Base = {base_acc:.3f}")
+    if cram_acc is not None:
+        ax.axhline(y=cram_acc, color="#dc2626", linestyle="--", linewidth=1, label=f"Cram = {cram_acc:.3f}")
+
+    ax.set_xlabel("Number of layers knocked out (0 = Cram, L = Base)")
+    ax.set_ylabel("Accuracy")
+    ax.set_xlim(-0.5, num_layers + 0.5)
+    ax.set_title(title)
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved cumulative knockout plot to {output_path}")
+
+
+def run_intervention_plots(
+    results_path: str,
+    attention_mass_path: Optional[str] = None,
+    model_label: Optional[str] = None,
+) -> None:
+    """Generate all intervention knockout plots and save to the same dir as results_path."""
+    data = load_intervention_results(results_path)
+    out = Path(results_path).parent
+    out.mkdir(parents=True, exist_ok=True)
+
+    if model_label is None:
+        model_label = data.get("args", {}).get("model_checkpoint", "")
+
+    # Get attention mass: prefer external file, fall back to results.json embedded data
+    attention_mass = None
+    if attention_mass_path:
+        attention_mass = load_attention_mass(attention_mass_path)
+    elif "avg_attention_mass_per_layer" in data.get("intervention_summary", {}):
+        attention_mass = data["intervention_summary"]["avg_attention_mass_per_layer"]
+
+    summary = data.get("intervention_summary", {})
+
+    if "per_layer_knockout" in summary:
+        plot_per_layer_knockout(
+            data, str(out / "per_layer_knockout.png"), attention_mass=attention_mass, model_label=model_label
+        )
+
+    if "per_layer_knockout" in summary and attention_mass is not None:
+        plot_scatter_attention_vs_recovery(
+            data, str(out / "scatter_attention_vs_recovery.png"), attention_mass, model_label=model_label
+        )
+
+    if "cumulative_knockout" in summary:
+        plot_cumulative_knockout(data, str(out / "cumulative_knockout.png"), model_label=model_label)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="hs_results.py",
@@ -419,7 +695,38 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Filter by inverted_alignment. Accepts: true/false, 1/0, yes/no, t/f, y/n (case-insensitive).",
     )
     parser.add_argument("--seed", type=int, default=None, help="Filter by random seed (int).")
+
+    # Intervention knockout plotting
+    parser.add_argument(
+        "--plot-intervention",
+        type=str,
+        default=None,
+        metavar="RESULTS_JSON",
+        help="Path to a results.json with intervention_summary. Generates knockout plots and exits.",
+    )
+    parser.add_argument(
+        "--attention-mass-file",
+        type=str,
+        default=None,
+        metavar="JSON",
+        help="Optional attention mass cache JSON for overlay on per-layer plot and scatter plot.",
+    )
+    parser.add_argument(
+        "--model-label",
+        type=str,
+        default=None,
+        help="Model label for plot titles. If omitted, uses model_checkpoint from results args.",
+    )
     args = parser.parse_args(argv)
+
+    # If --plot-intervention is given, generate plots and exit
+    if args.plot_intervention:
+        run_intervention_plots(
+            results_path=args.plot_intervention,
+            attention_mass_path=args.attention_mass_file,
+            model_label=args.model_label,
+        )
+        return 0
 
     results_files = discover_run_results(args.dirs)
     if not results_files:
@@ -438,6 +745,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         if summary is None:
             continue
         summaries.append(summary)
+
+        # Auto-generate intervention plots if results contain intervention data
+        try:
+            with open(results_file, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if "intervention_summary" in raw:
+                run_intervention_plots(
+                    results_path=results_file,
+                    attention_mass_path=args.attention_mass_file,
+                    model_label=args.model_label,
+                )
+        except Exception as e:
+            print(f"Failed to generate intervention plots for {results_file}: {e}", file=sys.stderr)
 
     # Sort for readability
     def sort_key(s: HSRunSummary):

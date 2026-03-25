@@ -8,6 +8,7 @@ This script:
 """
 
 import argparse
+import inspect
 import json
 import math
 import os
@@ -19,6 +20,13 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_scheduler
 
+from compression_horizon.intervention import (
+    build_intervention_result,
+    build_intervention_summary,
+    evaluate_sample_interventions,
+    get_decoder_layers,
+    print_intervention_summary,
+)
 from compression_horizon.metric import estimate_token_perplexity
 from compression_horizon.train.loss import compute_hybrid_cross_entropy_and_alignment_loss
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, resolve_torch_dtype, set_launch_seed
@@ -73,11 +81,14 @@ def compress_prefixes_batch(
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
-    hidden_size = model.config.hidden_size
-
-    # Get token embeddings to determine dtype
+    # Get token embeddings to determine dtype and hidden_size
     with torch.no_grad():
-        token_embeddings = model.model.embed_tokens(input_ids)  # [batch_size, seq_len, hidden]
+        token_embeddings = model.get_input_embeddings()(input_ids)  # [batch_size, seq_len, hidden]
+
+    hidden_size = token_embeddings.shape[-1]
+
+    # Some models (Gemma3) require token_type_ids during training
+    _needs_token_type_ids = "token_type_ids" in inspect.signature(model.forward).parameters
 
     # Get dtype from model embeddings
     embedding_dtype = token_embeddings.dtype
@@ -172,12 +183,20 @@ def compress_prefixes_batch(
 
         # Forward pass without compression tokens and gradient capturing
         target_outputs = None
+        # Build optional kwargs for models that need token_type_ids (e.g. Gemma3)
+        target_fwd_kwargs = {}
+        compression_fwd_kwargs = {}
+        if _needs_token_type_ids:
+            target_fwd_kwargs["token_type_ids"] = torch.zeros(attention_mask.shape, dtype=torch.long, device=device)
+            compression_fwd_kwargs["token_type_ids"] = torch.zeros(batch_attention.shape, dtype=torch.long, device=device)
+
         if use_alignment:
             with torch.no_grad():
                 target_outputs = model(
                     inputs_embeds=token_embeddings,
                     attention_mask=attention_mask,
                     output_hidden_states=True,
+                    **target_fwd_kwargs,
                 )
 
         # Forward pass with compression tokens and gradient capturing
@@ -185,6 +204,7 @@ def compress_prefixes_batch(
             inputs_embeds=batch_embeddings,
             attention_mask=batch_attention,
             output_hidden_states=use_alignment,
+            **compression_fwd_kwargs,
         )
 
         # Compute loss per sample
@@ -385,7 +405,7 @@ def compute_ppl_with_compression_batch(
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
     # Get token embeddings for all texts
-    token_embeddings = model.model.embed_tokens(input_ids)  # [batch_size, seq_len, hidden]
+    token_embeddings = model.get_input_embeddings()(input_ids)  # [batch_size, seq_len, hidden]
 
     # Prepare batched inputs with compression tokens
     united_token_embeddings_list = []
@@ -550,6 +570,32 @@ def main():
         default="artifacts/hellaswag_evaluation",
         help="Output directory for results",
     )
+    parser.add_argument(
+        "--no-intervention",
+        "--no_intervention",
+        dest="intervention",
+        action="store_false",
+        default=True,
+        help="Disable attention knockout intervention mode (enabled by default).",
+    )
+    parser.add_argument(
+        "--skip_per_layer",
+        action="store_true",
+        default=False,
+        help="Skip per-layer knockout sweep (only used with --intervention).",
+    )
+    parser.add_argument(
+        "--skip_cumulative",
+        action="store_true",
+        default=False,
+        help="Skip cumulative knockout sweep (only used with --intervention).",
+    )
+    parser.add_argument(
+        "--skip_reverse_cumulative",
+        action="store_true",
+        default=False,
+        help="Skip reverse cumulative knockout sweep (only used with --intervention).",
+    )
     args = parser.parse_args()
 
     # Set random seed
@@ -559,10 +605,18 @@ def main():
     device = get_device()
     # Load model and tokenizer
     print(f"Loading model from {args.model_checkpoint}...")
-    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, dtype=torch_dtype)
+    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, torch_dtype=torch_dtype)
     print("Loaded model dtype:", next(model.parameters()).dtype)
+
+    # Get number of layers for intervention mode
+    num_model_layers = None
+    if args.intervention:
+        num_model_layers = len(get_decoder_layers(model))
+        print(f"Intervention mode enabled. Model has {num_model_layers} layers.")
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
-    tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
+    tokenizer.padding_side = "right"
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     add_bos_supported = hasattr(tokenizer, "add_bos_token")
@@ -691,6 +745,31 @@ def main():
                 ppls = [float("inf")] * len(batch_endings_list[sample_idx])
             batch_compressed_ppls.append({"ppls": ppls, "convergence": convergence})
 
+        # Compute knockout PPLs and attention mass for intervention mode
+        batch_intervention_data = []
+        if args.intervention:
+            for sample_idx in range(actual_batch_size):
+                compression_embedding = batch_compression_results[sample_idx]["compression_embedding"]
+                if compression_embedding is None:
+                    batch_intervention_data.append(None)
+                    continue
+                batch_intervention_data.append(
+                    evaluate_sample_interventions(
+                        model=model,
+                        tokenizer=tokenizer,
+                        compression_embedding=compression_embedding,
+                        context=batch_contexts[sample_idx],
+                        endings=batch_endings_list[sample_idx],
+                        num_compression_tokens=args.num_compression_tokens,
+                        num_model_layers=num_model_layers,
+                        device=device,
+                        add_special_tokens=add_special_tokens,
+                        skip_per_layer=args.skip_per_layer,
+                        skip_cumulative=args.skip_cumulative,
+                        skip_reverse_cumulative=args.skip_reverse_cumulative,
+                    )
+                )
+
         # Process results for this batch
         for sample_idx in range(actual_batch_size):
             idx = start_idx + sample_idx
@@ -774,6 +853,13 @@ def main():
                     "counted_in_metrics": should_count_compressed,
                 },
             }
+
+            # Add intervention results
+            if args.intervention and batch_intervention_data:
+                intervention_data = batch_intervention_data[sample_idx]
+                if intervention_data is not None:
+                    result.update(build_intervention_result(intervention_data, label, num_model_layers))
+
             results.append(result)
 
         # Print progress
@@ -801,34 +887,49 @@ def main():
         correct_characters_compressed / total_characters_compressed if total_characters_compressed > 0 else 0.0
     )
 
+    # Build intervention summary
+    intervention_summary = None
+    if args.intervention:
+        intervention_summary = build_intervention_summary(
+            results,
+            num_model_layers,
+            skip_per_layer=args.skip_per_layer,
+            skip_cumulative=args.skip_cumulative,
+            skip_reverse_cumulative=args.skip_reverse_cumulative,
+        )
+
     # Save results
     results_file = os.path.join(args.output_dir, "results.json")
+    output_data = {
+        "args": vars(args),
+        "baseline": {
+            "accuracy": baseline_accuracy,
+            "token_normalized_accuracy": baseline_token_accuracy,
+            "char_normalized_accuracy": baseline_char_accuracy,
+            "correct_predictions": correct_predictions_baseline,
+            "total_predictions": total_predictions_baseline,
+            "total_tokens": total_tokens_baseline,
+            "total_characters": total_characters_baseline,
+        },
+        "compressed": {
+            "accuracy": compressed_accuracy,
+            "token_normalized_accuracy": compressed_token_accuracy,
+            "char_normalized_accuracy": compressed_char_accuracy,
+            "correct_predictions": correct_predictions_compressed,
+            "total_predictions": total_predictions_compressed,
+            "total_predictions_all": total_predictions_baseline,
+            "total_tokens": total_tokens_compressed,
+            "total_characters": total_characters_compressed,
+            "only_full_convergence": args.only_full_convergence,
+        },
+        "results": results,
+    }
+    if intervention_summary is not None:
+        output_data["intervention_summary"] = intervention_summary
+        output_data["num_model_layers"] = num_model_layers
     with open(results_file, "w", encoding="utf-8") as file:
         json.dump(
-            {
-                "args": vars(args),
-                "baseline": {
-                    "accuracy": baseline_accuracy,
-                    "token_normalized_accuracy": baseline_token_accuracy,
-                    "char_normalized_accuracy": baseline_char_accuracy,
-                    "correct_predictions": correct_predictions_baseline,
-                    "total_predictions": total_predictions_baseline,
-                    "total_tokens": total_tokens_baseline,
-                    "total_characters": total_characters_baseline,
-                },
-                "compressed": {
-                    "accuracy": compressed_accuracy,
-                    "token_normalized_accuracy": compressed_token_accuracy,
-                    "char_normalized_accuracy": compressed_char_accuracy,
-                    "correct_predictions": correct_predictions_compressed,
-                    "total_predictions": total_predictions_compressed,
-                    "total_predictions_all": total_predictions_baseline,
-                    "total_tokens": total_tokens_compressed,
-                    "total_characters": total_characters_compressed,
-                    "only_full_convergence": args.only_full_convergence,
-                },
-                "results": results,
-            },
+            output_data,
             file,
             indent=2,
             ensure_ascii=False,
@@ -852,7 +953,11 @@ def main():
     print(f"  Token-normalized Accuracy: {compressed_token_accuracy:.4f}")
     print(f"  Character-normalized Accuracy: {compressed_char_accuracy:.4f}")
     print(f"\nDifference: {compressed_accuracy - baseline_accuracy:+.4f}")
-    print(f"Results saved to: {results_file}")
+
+    if args.intervention and intervention_summary:
+        print_intervention_summary(intervention_summary, num_model_layers, baseline_accuracy)
+
+    print(f"\nResults saved to: {results_file}")
     print("=" * 50)
 
 
