@@ -83,11 +83,12 @@ def compute_attention_mass_per_layer(
         dim=1,
     )
 
-    outputs = model(
-        inputs_embeds=united_embeddings,
-        attention_mask=united_attention,
-        output_attentions=True,
-    )
+    with EagerAttentionContext(model):
+        outputs = model(
+            inputs_embeds=united_embeddings,
+            attention_mask=united_attention,
+            output_attentions=True,
+        )
 
     # attentions: tuple of [1, num_heads, seq_len, seq_len] per layer
     attention_mass = []
@@ -104,11 +105,29 @@ def compute_attention_mass_per_layer(
     return attention_mass
 
 
+class EagerAttentionContext:
+    """Context manager that temporarily switches model to eager attention and restores original on exit."""
+
+    def __init__(self, model: AutoModelForCausalLM):
+        self.model = model
+        self._original_impl = None
+
+    def __enter__(self):
+        self._original_impl = getattr(self.model.config, "_attn_implementation", None)
+        self.model.set_attn_implementation("eager")
+        return self
+
+    def __exit__(self, *args):
+        if self._original_impl is not None:
+            self.model.set_attn_implementation(self._original_impl)
+
+
 class AttentionKnockoutContext:
     """Context manager that masks attention to compression token positions at specified layers.
 
-    Registers forward pre-hooks on target decoder layers that modify the 4D attention mask
-    to set compression token columns to -inf, preventing any query from attending to those positions.
+    Switches to eager attention (required for 4D mask support), registers forward pre-hooks
+    on target decoder layers that modify the 4D attention mask to set compression token
+    columns to -inf, then restores original attention implementation on exit.
     """
 
     def __init__(
@@ -122,6 +141,7 @@ class AttentionKnockoutContext:
         self.num_compression_tokens = num_compression_tokens
         self.hooks: list[torch.utils.hooks.RemovableHook] = []
         self.layers = get_decoder_layers(model)
+        self._eager_ctx = EagerAttentionContext(model)
 
     def _make_hook(self):
         num_ct = self.num_compression_tokens
@@ -137,6 +157,7 @@ class AttentionKnockoutContext:
         return hook_fn
 
     def __enter__(self):
+        self._eager_ctx.__enter__()
         hook_fn = self._make_hook()
         for layer_idx in self.knockout_layers:
             handle = self.layers[layer_idx].register_forward_pre_hook(hook_fn, with_kwargs=True)
@@ -147,6 +168,7 @@ class AttentionKnockoutContext:
         for handle in self.hooks:
             handle.remove()
         self.hooks.clear()
+        self._eager_ctx.__exit__(*args)
 
 
 def compress_prefixes_batch(
@@ -782,9 +804,10 @@ def main():
     parser.add_argument(
         "--no-intervention",
         "--no_intervention",
+        dest="intervention",
         action="store_false",
         default=True,
-        help="Enable attention knockout intervention mode. Runs per-layer and cumulative knockout sweeps.",
+        help="Disable attention knockout intervention mode (enabled by default).",
     )
     parser.add_argument(
         "--skip_per_layer",
@@ -807,10 +830,7 @@ def main():
     device = get_device()
     # Load model and tokenizer
     print(f"Loading model from {args.model_checkpoint}...")
-    load_kwargs = {"dtype": torch_dtype}
-    if args.intervention:
-        load_kwargs["attn_implementation"] = "eager"
-    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, **load_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, dtype=torch_dtype)
     print("Loaded model dtype:", next(model.parameters()).dtype)
 
     # Get number of layers for intervention mode
