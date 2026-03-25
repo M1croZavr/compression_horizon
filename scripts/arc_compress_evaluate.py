@@ -694,6 +694,7 @@ def main():
     print(f"Loading model from {args.model_checkpoint}...")
     model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, torch_dtype=torch_dtype)
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
+    tokenizer.padding_side = "right"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     add_bos_supported = hasattr(tokenizer, "add_bos_token")

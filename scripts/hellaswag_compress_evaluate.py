@@ -847,7 +847,7 @@ def main():
     device = get_device()
     # Load model and tokenizer
     print(f"Loading model from {args.model_checkpoint}...")
-    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, dtype=torch_dtype)
+    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, torch_dtype=torch_dtype)
     print("Loaded model dtype:", next(model.parameters()).dtype)
 
     # Get number of layers for intervention mode
@@ -856,7 +856,9 @@ def main():
         num_model_layers = len(get_decoder_layers(model))
         print(f"Intervention mode enabled. Model has {num_model_layers} layers.")
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
-    tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
+    tokenizer.padding_side = "right"
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     add_bos_supported = hasattr(tokenizer, "add_bos_token")
