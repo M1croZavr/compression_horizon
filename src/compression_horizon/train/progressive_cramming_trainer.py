@@ -89,23 +89,32 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                     )
 
                 n_components = pca_components_device.shape[0]
-                pca_coefficients = torch.nn.Parameter(
-                    torch.randn(
-                        [batch_size, n_components],
-                        dtype=torch.float32,
-                        device=device,
+                per_sample_pca_coefficients = [
+                    torch.nn.Parameter(
+                        torch.randn(
+                            [1, n_components],
+                            dtype=torch.float32,
+                            device=device,
+                        )
+                        * 0.1
                     )
-                    * 0.1
-                )
+                    for _ in range(batch_size)
+                ]
 
+                pca_coefficients = torch.cat(per_sample_pca_coefficients, dim=0)
                 reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(0)
                 initialization_embeddings = (
                     reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size).detach().cpu()
                 )
 
-                optimizer, lr_scheduler = self._build_optimizer_and_scheduler([pca_coefficients])
+                per_sample_optimizers = []
+                per_sample_schedulers = []
+                for j in range(batch_size):
+                    opt, sched = self._build_optimizer_and_scheduler([per_sample_pca_coefficients[j]])
+                    per_sample_optimizers.append(opt)
+                    per_sample_schedulers.append(sched)
             else:
-                compression_tokens = self._init_compression_tokens(
+                full_init = self._init_compression_tokens(
                     batch_size,
                     num_compression_tokens,
                     hidden_size,
@@ -115,12 +124,20 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                     pca_mean=pca_mean,
                     loaded_embeddings=loaded_embeddings,
                 )
-                compression_tokens = torch.nn.Parameter(compression_tokens.data.to(device))
-                initialization_embeddings = compression_tokens.detach().clone().cpu()
-                optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
-                    [compression_tokens],
-                    num_training_steps=self.args.max_optimization_steps_per_sample,
-                )
+                initialization_embeddings = full_init.detach().clone().cpu()
+                per_sample_params = [
+                    torch.nn.Parameter(full_init.data[j : j + 1].clone().to(device)) for j in range(batch_size)
+                ]
+
+                per_sample_optimizers = []
+                per_sample_schedulers = []
+                for j in range(batch_size):
+                    opt, sched = self._build_optimizer_and_scheduler(
+                        [per_sample_params[j]],
+                        num_training_steps=self.args.max_optimization_steps_per_sample,
+                    )
+                    per_sample_optimizers.append(opt)
+                    per_sample_schedulers.append(sched)
 
             compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype, device=device).repeat(
                 batch_size, num_compression_tokens
@@ -130,6 +147,10 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             max_len = int(max(per_sample_lengths)) if len(per_sample_lengths) > 0 else full_attention_mask.shape[1]
             seq_len = min(min_len, max_len)
             stage_index = 0
+
+            converged_mask = [False] * batch_size
+            skipped_mask = [False] * batch_size
+            per_sample_steps_taken = [0] * batch_size
 
             while True:
                 scheduler_reset_used = False
@@ -146,12 +167,15 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                 pbar.set_description(f"Stage L={seq_len}")
                 last_loss_val = None
                 last_conv = None
-                steps_taken = 0
                 converged = False
+
+                # Reset per-stage convergence (but not skipped_mask or steps_taken)
+                converged_mask = [skipped_mask[j] for j in range(batch_size)]
 
                 while True:
                     for i in pbar:
                         if init_method == "pretrained_pca":
+                            pca_coefficients = torch.cat(per_sample_pca_coefficients, dim=0)
                             reconstructed_flat = torch.matmul(
                                 pca_coefficients, pca_components_device
                             ) + pca_mean_device.unsqueeze(0)
@@ -160,6 +184,8 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                                 num_compression_tokens,
                                 hidden_size,
                             )
+                        else:
+                            compression_tokens = torch.cat(per_sample_params, dim=0)
 
                         current_compression_tokens = compression_tokens.clone()
                         if self.args.low_dim_projection:
@@ -193,21 +219,37 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                             target_hidden=target_hidden,
                         )
                         loss.backward()
-                        steps_taken += 1
                         pbar.update(1)
 
                         if init_method == "pretrained_pca":
-                            grad_norm = pca_coefficients.grad.norm(2).item() if pca_coefficients.grad is not None else 0.0
+                            grad_norms = [
+                                (
+                                    per_sample_pca_coefficients[j].grad.norm(2).item()
+                                    if per_sample_pca_coefficients[j].grad is not None
+                                    else 0.0
+                                )
+                                for j in range(batch_size)
+                            ]
+                            grad_norm = sum(grad_norms) / len(grad_norms)
                             comp_mean = compression_tokens.mean().item()
                             comp_std = compression_tokens.std().item()
                         else:
-                            grad_norm = compression_tokens.grad.norm(2).item() if compression_tokens.grad is not None else 0.0
+                            grad_norms = [
+                                per_sample_params[j].grad.norm(2).item() if per_sample_params[j].grad is not None else 0.0
+                                for j in range(batch_size)
+                            ]
+                            grad_norm = sum(grad_norms) / len(grad_norms)
                             comp_mean = compression_tokens.mean().item()
                             comp_std = compression_tokens.std().item()
 
                         log_lr = self.args.learning_rate
-                        if lr_scheduler is not None:
-                            log_lr = lr_scheduler.get_last_lr()[0]
+                        active_scheduler = None
+                        for j in range(batch_size):
+                            if not skipped_mask[j] and not converged_mask[j]:
+                                active_scheduler = per_sample_schedulers[j]
+                                break
+                        if active_scheduler is not None:
+                            log_lr = active_scheduler.get_last_lr()[0]
 
                         pbar.set_postfix(
                             loss=loss.item(),
@@ -223,15 +265,21 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                             alignment_loss,
                             convergece_per_sample,
                             compression_tokens,
-                            lr_scheduler,
+                            active_scheduler,
                             generated_text,
                             ground_truth_text,
                         )
 
-                        optimizer.step()
-                        if lr_scheduler is not None:
-                            lr_scheduler.step()
-                        optimizer.zero_grad(set_to_none=True)
+                        # Per-sample optimizer step
+                        for j in range(batch_size):
+                            if skipped_mask[j] or converged_mask[j]:
+                                per_sample_optimizers[j].zero_grad(set_to_none=True)
+                            else:
+                                per_sample_optimizers[j].step()
+                                if per_sample_schedulers[j] is not None:
+                                    per_sample_schedulers[j].step()
+                                per_sample_optimizers[j].zero_grad(set_to_none=True)
+                                per_sample_steps_taken[j] += 1
 
                         if self.args.low_dim_projection and self.args.low_dim_proj_train and low_dim_optim is not None:
                             low_dim_optim.step()
@@ -242,7 +290,14 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                         last_loss_val = float(loss.item())
                         last_conv = convergece_per_sample.detach().cpu()
 
-                        if convergece_per_sample.mean().item() >= threshold:
+                        # Per-sample convergence check
+                        for j in range(batch_size):
+                            if not skipped_mask[j] and not converged_mask[j]:
+                                if convergece_per_sample[j].item() >= threshold:
+                                    converged_mask[j] = True
+
+                        all_active_converged = all(converged_mask[j] or skipped_mask[j] for j in range(batch_size))
+                        if all_active_converged:
                             converged = True
                             break
 
@@ -254,14 +309,18 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                         and self.args.progressive_reset_lr_scheduler_on_non_convergence
                         and not scheduler_reset_used
                     ):
-                        print(f"Not converged at seq_len={seq_len}, " "resetting LR scheduler and retrying...")
-                        if init_method == "pretrained_pca":
-                            optimizer, lr_scheduler = self._build_optimizer_and_scheduler([pca_coefficients])
-                        else:
-                            optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
-                                [compression_tokens],
-                                num_training_steps=self.args.max_optimization_steps_per_token,
-                            )
+                        print(f"Not converged at seq_len={seq_len}, " "resetting LR schedulers for non-converged samples...")
+                        for j in range(batch_size):
+                            if not skipped_mask[j] and not converged_mask[j]:
+                                if init_method == "pretrained_pca":
+                                    opt, sched = self._build_optimizer_and_scheduler([per_sample_pca_coefficients[j]])
+                                else:
+                                    opt, sched = self._build_optimizer_and_scheduler(
+                                        [per_sample_params[j]],
+                                        num_training_steps=self.args.max_optimization_steps_per_token,
+                                    )
+                                per_sample_optimizers[j] = opt
+                                per_sample_schedulers[j] = sched
                         scheduler_reset_used = True
                         pbar = tqdm(
                             range(self.args.max_optimization_steps_per_token),
@@ -273,19 +332,27 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                     else:
                         break
 
+                # Mark non-converged samples as permanently skipped
+                if not converged:
+                    for j in range(batch_size):
+                        if not skipped_mask[j] and not converged_mask[j]:
+                            skipped_mask[j] = True
+                            print(f"Sample {j} failed to converge at seq_len={seq_len}, marking as skipped.")
+
                 with torch.no_grad():
                     tokenizer = self.processing_class
-                    pca_coefficients_to_save = None
+
                     if init_method == "pretrained_pca":
+                        pca_coefficients = torch.cat(per_sample_pca_coefficients, dim=0)
                         reconstructed_flat = torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(
                             0
                         )
-                        pca_coefficients_to_save = pca_coefficients.clone().detach().to(torch.float32).cpu().numpy().tolist()
                         comp_tokens_gpu = reconstructed_flat.reshape(batch_size, num_compression_tokens, hidden_size)
                         comp_tokens_cpu = comp_tokens_gpu.detach().cpu()
                         orig_comp_tokens_gpu = comp_tokens_gpu
                         orig_comp_tokens_cpu = orig_comp_tokens_gpu.detach().cpu()
                     else:
+                        compression_tokens = torch.cat(per_sample_params, dim=0)
                         if self.args.low_dim_projection:
                             comp_tokens_gpu = low_dim_prjoection(compression_tokens)
                         else:
@@ -390,6 +457,12 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                         text = tokenizer.decode(ids.tolist(), skip_special_tokens=True) if tokenizer is not None else ""
                         sample_id_val = int(sample_id_counter + j)
 
+                        pca_coefficients_to_save = None
+                        if init_method == "pretrained_pca":
+                            pca_coefficients_to_save = (
+                                per_sample_pca_coefficients[j].clone().detach().to(torch.float32).cpu().numpy().tolist()
+                            )
+
                         if embeddings_dir is not None and stage_index % 500 == 0:
                             comp_tokens_bfloat = comp_tokens_gpu[j].to(torch.bfloat16).detach().cpu()
                             orig_comp_tokens_bfloat = orig_comp_tokens_gpu[j].to(torch.bfloat16).detach().cpu()
@@ -447,7 +520,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                                     )
                                 ),
                                 "convergence_threshold": float(threshold),
-                                "steps_taken": int(steps_taken),
+                                "steps_taken": int(per_sample_steps_taken[j]),
                                 "information_gain_bits": float(per_sample_info_gain[j]),
                             }
                         )
@@ -457,12 +530,12 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                     break
                 if max_stages_cap and stage_index >= max_stages_cap:
                     break
-                if not converged:
-                    print(
-                        "Not converged in max_optimization_steps_per_sample. " "Stop at seq_len =",
-                        seq_len,
-                    )
+
+                all_skipped = all(skipped_mask)
+                if all_skipped:
+                    print("All samples skipped. Stopping at seq_len =", seq_len)
                     break
+
                 seq_len = min(seq_len + step_increment, max_len)
 
             sample_id_counter += batch_size

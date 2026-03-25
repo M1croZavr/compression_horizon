@@ -26,14 +26,14 @@ INSTANCE_TYPE = "a100.1gpu"
 BASE_IMAGE = "cr.ai.cloud.ru/aicloud-base-images/py3.12-torch2.7.0:0.0.41"
 
 DATASET_NAME = "LarryLovestein/pg19_1k"
-LIMIT_DATASET_ITEMS = 100
+LIMIT_DATASET_ITEMS = 50
 MAX_SEQ_LEN = 4096
 MAX_OPTIMIZATION_STEPS_PER_SAMPLE = 10_000  # Reduced for quick validation
 MAX_OPTIMIZATION_STEPS_PER_TOKEN = 1_000  # Reduced for quick validation
 EMBEDDING_INIT_METHOD = "random0.02"
 
 # Training configuration
-PER_DEVICE_TRAIN_BATCH_SIZE = 1
+PER_DEVICE_TRAIN_BATCH_SIZE = 10
 NUM_GPUS = 1  # from a100.1gpu instance
 GRADIENT_ACCUMULATION_STEPS = 1
 TOTAL_BATCH_SIZE = PER_DEVICE_TRAIN_BATCH_SIZE * NUM_GPUS * GRADIENT_ACCUMULATION_STEPS
@@ -190,6 +190,9 @@ def build_experiment_configs() -> list[dict]:
                 exp_suffix = f"{exp_suffix}_hybrid_{variant['hybrid_alpha']}"
             if variant["num_alignment_layers"] != 1:
                 exp_suffix = f"{exp_suffix}_align_{variant['num_alignment_layers']}"
+
+            if PER_DEVICE_TRAIN_BATCH_SIZE != 1:
+                exp_suffix = f"{exp_suffix}_batch_{PER_DEVICE_TRAIN_BATCH_SIZE}"
 
             # Output directory during training (in_progress)
             output_dir_in_progress = f"artifacts/experiments_in_progress/{exp_suffix}"
