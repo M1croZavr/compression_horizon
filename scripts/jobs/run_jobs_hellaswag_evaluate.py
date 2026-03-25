@@ -48,7 +48,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--limit_samples",
         type=int,
-        default=None,
+        default=512,
         help="Limit the number of samples to evaluate. If not specified, defaults to 1024 and is not included in output dir.",
     )
     parser.add_argument(
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=None,
+        default=32,
         help="Batch size for compression and evaluation. If not specified, defaults to 4 and is not included in output dir.",
     )
     parser.add_argument(
@@ -145,7 +145,7 @@ if __name__ == "__main__":
         exp_suffix = f"hellaswag_{model_checkpoint.split('/')[1]}"
 
         # Build command arguments with defaults
-        limit_samples = args.limit_samples if args.limit_samples is not None else 1024
+        limit_samples = args.limit_samples if args.limit_samples is not None else 512
         num_compression_tokens = args.num_compression_tokens if args.num_compression_tokens is not None else 1
         max_optimization_steps = args.max_optimization_steps if args.max_optimization_steps is not None else 1000
         default_lr = lr_by_checkpoint[model_checkpoint]
@@ -179,7 +179,7 @@ if __name__ == "__main__":
             exp_suffix = f"{exp_suffix}_seed_{args.random_seed}"
 
         # Add limit_samples to output dir if specified (non-default)
-        if args.limit_samples is not None and args.limit_samples != 1024:
+        if args.limit_samples is not None and args.limit_samples != 100:
             exp_suffix = f"{exp_suffix}_samples_{args.limit_samples}"
 
         # Add num_compression_tokens to output dir if specified (non-default)
