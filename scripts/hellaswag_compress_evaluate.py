@@ -838,6 +838,12 @@ def main():
         default=False,
         help="Skip cumulative knockout sweep (only used with --intervention).",
     )
+    parser.add_argument(
+        "--skip_reverse_cumulative",
+        action="store_true",
+        default=False,
+        help="Skip reverse cumulative knockout sweep (only used with --intervention).",
+    )
     args = parser.parse_args()
 
     # Set random seed
@@ -906,6 +912,8 @@ def main():
         intervention_per_layer_total = {li: 0 for li in range(num_model_layers)}
         intervention_cumulative_correct = {li: 0 for li in range(num_model_layers)}
         intervention_cumulative_total = {li: 0 for li in range(num_model_layers)}
+        intervention_reverse_cumulative_correct = {li: 0 for li in range(num_model_layers)}
+        intervention_reverse_cumulative_total = {li: 0 for li in range(num_model_layers)}
 
     # Process in batches
     batch_size = args.batch_size
@@ -997,6 +1005,7 @@ def main():
         # Compute knockout PPLs and attention mass for intervention mode
         batch_per_layer_knockout_ppls = []
         batch_cumulative_knockout_ppls = []
+        batch_reverse_cumulative_knockout_ppls = []
         batch_attention_mass = []
         if args.intervention:
             for sample_idx in range(actual_batch_size):
@@ -1007,6 +1016,9 @@ def main():
                     num_endings = len(batch_endings_list[sample_idx])
                     batch_per_layer_knockout_ppls.append({li: [float("inf")] * num_endings for li in range(num_model_layers)})
                     batch_cumulative_knockout_ppls.append({li: [float("inf")] * num_endings for li in range(num_model_layers)})
+                    batch_reverse_cumulative_knockout_ppls.append(
+                        {li: [float("inf")] * num_endings for li in range(num_model_layers)}
+                    )
                     batch_attention_mass.append([0.0] * num_model_layers)
                     continue
 
@@ -1072,6 +1084,31 @@ def main():
                             ko_ppls = [float("inf")] * len(batch_endings_list[sample_idx])
                         sample_cumulative[li] = ko_ppls
                 batch_cumulative_knockout_ppls.append(sample_cumulative)
+
+                # Reverse cumulative knockout (from deepest layer backwards)
+                sample_reverse_cumulative = {}
+                if not args.skip_reverse_cumulative:
+                    for li in range(num_model_layers):
+                        # Knock out layers li..L-1 (from layer li to the last layer)
+                        try:
+                            ko_ppls = compute_ppl_with_compression_and_knockout_batch(
+                                model=model,
+                                tokenizer=tokenizer,
+                                compression_token_embeddings=comp_embeds_for_sample,
+                                contexts=contexts_for_sample,
+                                endings=batch_endings_list[sample_idx],
+                                knockout_layers=list(range(li, num_model_layers)),
+                                num_compression_tokens=args.num_compression_tokens,
+                                device=device,
+                                add_special_tokens=add_special_tokens,
+                            )
+                        except Exception as e:
+                            print(
+                                f"Error in reverse cumulative KO (layers {li}..{num_model_layers-1}) for sample {start_idx + sample_idx}: {e}"
+                            )
+                            ko_ppls = [float("inf")] * len(batch_endings_list[sample_idx])
+                        sample_reverse_cumulative[li] = ko_ppls
+                batch_reverse_cumulative_knockout_ppls.append(sample_reverse_cumulative)
 
         # Process results for this batch
         for sample_idx in range(actual_batch_size):
@@ -1197,6 +1234,23 @@ def main():
                             intervention_cumulative_correct[li] += 1
                     result["cumulative_knockout"] = cumulative_results
 
+                # Reverse cumulative knockout
+                if not args.skip_reverse_cumulative and batch_reverse_cumulative_knockout_ppls:
+                    reverse_cumulative_results = {}
+                    reverse_cumulative_data = batch_reverse_cumulative_knockout_ppls[sample_idx]
+                    for li, ko_ppls in reverse_cumulative_data.items():
+                        pred = int(torch.tensor(ko_ppls).argmin().item())
+                        is_correct = pred == label
+                        reverse_cumulative_results[str(li)] = {
+                            "ppls": ko_ppls,
+                            "predicted_label": pred,
+                            "is_correct": is_correct,
+                        }
+                        intervention_reverse_cumulative_total[li] += 1
+                        if is_correct:
+                            intervention_reverse_cumulative_correct[li] += 1
+                    result["reverse_cumulative_knockout"] = reverse_cumulative_results
+
             results.append(result)
 
         # Print progress
@@ -1250,6 +1304,17 @@ def main():
                     "total": total,
                 }
             intervention_summary["cumulative_knockout"] = cumulative_summary
+        if not args.skip_reverse_cumulative:
+            reverse_cumulative_summary = {}
+            for li in range(num_model_layers):
+                total = intervention_reverse_cumulative_total[li]
+                correct = intervention_reverse_cumulative_correct[li]
+                reverse_cumulative_summary[str(li)] = {
+                    "accuracy": correct / total if total > 0 else 0.0,
+                    "correct": correct,
+                    "total": total,
+                }
+            intervention_summary["reverse_cumulative_knockout"] = reverse_cumulative_summary
 
         # Average attention mass across samples
         all_attn_mass = [r["attention_mass_per_layer"] for r in results if "attention_mass_per_layer" in r]
@@ -1335,6 +1400,13 @@ def main():
             print(f"  Full knockout (all layers) accuracy: {full_ko_acc:.4f}")
             print(f"  Base accuracy: {baseline_accuracy:.4f}")
             print(f"  Sanity check delta (should be ~0): {full_ko_acc - baseline_accuracy:+.4f}")
+        if "reverse_cumulative_knockout" in intervention_summary:
+            print("\nReverse Cumulative Knockout:")
+            first_layer = "0"
+            full_rev_ko_acc = intervention_summary["reverse_cumulative_knockout"][first_layer]["accuracy"]
+            print(f"  Full reverse knockout (all layers) accuracy: {full_rev_ko_acc:.4f}")
+            print(f"  Base accuracy: {baseline_accuracy:.4f}")
+            print(f"  Sanity check delta (should be ~0): {full_rev_ko_acc - baseline_accuracy:+.4f}")
 
     print(f"\nResults saved to: {results_file}")
     print("=" * 50)
