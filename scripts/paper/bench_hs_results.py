@@ -568,13 +568,12 @@ def plot_cumulative_knockout(
 
 def run_intervention_plots(
     results_path: str,
-    output_dir: str,
     attention_mass_path: Optional[str] = None,
     model_label: Optional[str] = None,
 ) -> None:
-    """Generate all intervention knockout plots and save to output_dir."""
+    """Generate all intervention knockout plots and save to the same dir as results_path."""
     data = load_intervention_results(results_path)
-    out = Path(output_dir)
+    out = Path(results_path).parent
     out.mkdir(parents=True, exist_ok=True)
 
     if model_label is None:
@@ -691,12 +690,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Optional attention mass cache JSON for overlay on per-layer plot and scatter plot.",
     )
     parser.add_argument(
-        "--plot-output-dir",
-        type=str,
-        default=None,
-        help="Directory to save intervention plots. Defaults to same dir as the results JSON.",
-    )
-    parser.add_argument(
         "--model-label",
         type=str,
         default=None,
@@ -706,11 +699,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # If --plot-intervention is given, generate plots and exit
     if args.plot_intervention:
-        results_path = args.plot_intervention
-        plot_out = args.plot_output_dir or str(Path(results_path).parent)
         run_intervention_plots(
-            results_path=results_path,
-            output_dir=plot_out,
+            results_path=args.plot_intervention,
             attention_mass_path=args.attention_mass_file,
             model_label=args.model_label,
         )
@@ -733,6 +723,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         if summary is None:
             continue
         summaries.append(summary)
+
+        # Auto-generate intervention plots if results contain intervention data
+        try:
+            with open(results_file, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if "intervention_summary" in raw:
+                run_intervention_plots(
+                    results_path=results_file,
+                    attention_mass_path=args.attention_mass_file,
+                    model_label=args.model_label,
+                )
+        except Exception as e:
+            print(f"Failed to generate intervention plots for {results_file}: {e}", file=sys.stderr)
 
     # Sort for readability
     def sort_key(s: HSRunSummary):
