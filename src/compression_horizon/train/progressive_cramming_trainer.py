@@ -163,6 +163,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                     range(self.args.max_optimization_steps_per_token),
                     total=self.args.max_optimization_steps_per_token,
                     leave=False,
+                    disable=True,
                 )
                 pbar.set_description(f"Stage L={seq_len}")
                 last_loss_val = None
