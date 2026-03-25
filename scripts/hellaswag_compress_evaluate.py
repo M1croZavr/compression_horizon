@@ -227,7 +227,7 @@ def compress_prefixes_batch(
 
     # Get token embeddings to determine dtype
     with torch.no_grad():
-        token_embeddings = model.model.embed_tokens(input_ids)  # [batch_size, seq_len, hidden]
+        token_embeddings = model.get_input_embeddings()(input_ids)  # [batch_size, seq_len, hidden]
 
     # Get dtype from model embeddings
     embedding_dtype = token_embeddings.dtype
@@ -535,7 +535,7 @@ def compute_ppl_with_compression_batch(
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
     # Get token embeddings for all texts
-    token_embeddings = model.model.embed_tokens(input_ids)  # [batch_size, seq_len, hidden]
+    token_embeddings = model.get_input_embeddings()(input_ids)  # [batch_size, seq_len, hidden]
 
     # Prepare batched inputs with compression tokens
     united_token_embeddings_list = []
