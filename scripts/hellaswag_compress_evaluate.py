@@ -223,11 +223,11 @@ def compress_prefixes_batch(
     input_ids = encoded["input_ids"].to(device)  # [batch_size, seq_len]
     attention_mask = encoded["attention_mask"].to(device)  # [batch_size, seq_len]
 
-    hidden_size = model.config.hidden_size
-
-    # Get token embeddings to determine dtype
+    # Get token embeddings to determine dtype and hidden_size
     with torch.no_grad():
         token_embeddings = model.get_input_embeddings()(input_ids)  # [batch_size, seq_len, hidden]
+
+    hidden_size = token_embeddings.shape[-1]
 
     # Get dtype from model embeddings
     embedding_dtype = token_embeddings.dtype
