@@ -76,7 +76,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=16,
+        default=128,
         help="Batch size for compression and evaluation. If not specified, defaults to 4 and is not included in output dir.",
     )
     parser.add_argument(
