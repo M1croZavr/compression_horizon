@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Results aggregation and LaTeX table printer for HellaSwag evaluation experiments.
+Results aggregation and LaTeX table printer for MMLU evaluation experiments.
 
-This script scans experiment artifact folders produced by hellaswag_compress_evaluate.py
+This script scans experiment artifact folders produced by mmlu_compress_evaluate.py
 and builds a LaTeX table with:
 - experiment properties (model, loss type, hybrid alpha, etc.)
 - metrics (baseline accuracy, compressed accuracy, difference)
@@ -30,7 +30,7 @@ from tqdm.auto import tqdm
 
 
 @dataclass
-class HSRunSummary:
+class MMLURunSummary:
     # Identifiers
     run_dir: str
     run_name: str
@@ -47,6 +47,10 @@ class HSRunSummary:
     num_alignment_layers: Optional[int] = None
     inverted_alignment: Optional[bool] = None
     random_seed: Optional[int] = None
+    # MMLU-specific properties
+    subject: Optional[str] = None
+    num_few_shot: Optional[int] = None
+    compression_mode: Optional[str] = None
     # Metrics
     baseline_accuracy: Optional[float] = None
     baseline_token_accuracy: Optional[float] = None
@@ -63,6 +67,7 @@ class HSRunSummary:
     accuracy_difference: Optional[float] = None
     token_accuracy_difference: Optional[float] = None
     char_accuracy_difference: Optional[float] = None
+    num_subjects: Optional[int] = None
 
 
 LATEX_ESCAPE_MAP = {
@@ -82,16 +87,19 @@ LATEX_ESCAPE_MAP = {
 def latex_escape(text: Optional[str]) -> str:
     if text is None:
         return ""
+    # Escape backslashes first so they are not affected by later replacements.
+    sentinel = "LATEXBACKSLASHSENTINEL"
+    escaped = str(text).replace("\\", sentinel)
     out = []
-    for ch in str(text):
+    for ch in escaped:
         out.append(LATEX_ESCAPE_MAP.get(ch, ch))
-    return "".join(out)
+    return "".join(out).replace(sentinel, LATEX_ESCAPE_MAP["\\"])
 
 
 def parse_run_name_for_properties(run_name: str) -> Dict[str, Optional[str]]:
     """
     Parse fields from run directory name:
-    - hellaswag_{model}_samples_{N}_lr_{lr}_batch_{B}_loss_{loss}_hybrid_{alpha}_align_{L}
+    - mmlu_{model}_samples_{N}_lr_{lr}_batch_{B}_loss_{loss}_hybrid_{alpha}_align_{L}
     """
     props: Dict[str, Optional[str]] = {
         "model_checkpoint": None,
@@ -103,44 +111,37 @@ def parse_run_name_for_properties(run_name: str) -> Dict[str, Optional[str]]:
         "num_alignment_layers": None,
     }
 
-    # Remove "hellaswag_" prefix
-    name = run_name.replace("hellaswag_", "")
+    # Remove "mmlu_" prefix
+    name = run_name.replace("mmlu_", "")
 
     # Extract model (everything until "_samples_")
     m_model = re.search(r"^([^_]+(?:_[^_]+)*?)_samples_", name)
     if m_model:
         model = m_model.group(1)
-        # Replace common model name patterns
         model = model.replace("Meta-Llama-3.1-8B", "unsloth/Meta-Llama-3.1-8B")
         model = model.replace("SmolLM2-1.7B", "HuggingFaceTB/SmolLM2-1.7B")
         props["model_checkpoint"] = model
 
-    # Extract samples
     m_samples = re.search(r"_samples_([0-9]+)", name)
     if m_samples:
         props["limit_samples"] = int(m_samples.group(1))
 
-    # Extract learning rate
     m_lr = re.search(r"_lr_([0-9.]+)", name)
     if m_lr:
         props["learning_rate"] = float(m_lr.group(1))
 
-    # Extract batch size
     m_batch = re.search(r"_batch_([0-9]+)", name)
     if m_batch:
         props["batch_size"] = int(m_batch.group(1))
 
-    # Extract loss type
     m_loss = re.search(r"_loss_([^_]+)", name)
     if m_loss:
         props["loss_type"] = m_loss.group(1)
 
-    # Extract hybrid alpha
     m_hybrid = re.search(r"_hybrid_([0-9.]+)", name)
     if m_hybrid:
         props["hybrid_alpha"] = float(m_hybrid.group(1))
 
-    # Extract alignment layers
     m_align = re.search(r"_align_([0-9]+)", name)
     if m_align:
         props["num_alignment_layers"] = int(m_align.group(1))
@@ -159,9 +160,7 @@ def discover_run_results(base_dirs: Iterable[str]) -> List[str]:
         base_path = Path(base)
         if not base_path.exists():
             continue
-        # Look for results.json files in subdirectories
         for results_file in base_path.rglob("results.json"):
-            # Skip if it's in the root directory (might be a summary file)
             if results_file.parent == base_path:
                 continue
             results.append(str(results_file))
@@ -186,7 +185,7 @@ abbreviation = {
 }
 
 
-def aggregate_results(results_file: str) -> Optional[HSRunSummary]:
+def aggregate_results(results_file: str) -> Optional[MMLURunSummary]:
     """
     Load and aggregate results from a results.json file.
     """
@@ -200,14 +199,13 @@ def aggregate_results(results_file: str) -> Optional[HSRunSummary]:
     args = data.get("args", {})
     baseline = data.get("baseline", {})
     compressed = data.get("compressed", {})
+    per_subject = data.get("per_subject", {})
 
     run_dir = str(Path(results_file).parent)
     run_name = Path(results_file).parent.name
 
-    # Parse properties from run name
     parsed = parse_run_name_for_properties(run_name)
 
-    # Get properties from args (args take precedence)
     model_checkpoint = args.get("model_checkpoint") or parsed.get("model_checkpoint")
     if model_checkpoint in abbreviation.get("model_checkpoint", {}):
         model_checkpoint = abbreviation["model_checkpoint"][model_checkpoint]
@@ -242,7 +240,7 @@ def aggregate_results(results_file: str) -> Optional[HSRunSummary]:
         compressed_valid / compressed_total_pred if compressed_valid is not None and compressed_total_pred else None
     )
 
-    summary = HSRunSummary(
+    summary = MMLURunSummary(
         run_dir=run_dir,
         run_name=run_name,
         model_checkpoint=model_checkpoint,
@@ -257,6 +255,9 @@ def aggregate_results(results_file: str) -> Optional[HSRunSummary]:
         num_alignment_layers=args.get("num_alignment_layers") or parsed.get("num_alignment_layers"),
         inverted_alignment=args.get("inverted_alignment"),
         random_seed=args.get("random_seed"),
+        subject=args.get("subject"),
+        num_few_shot=args.get("num_few_shot"),
+        compression_mode=args.get("compression_mode"),
         baseline_accuracy=baseline_accuracy,
         baseline_token_accuracy=baseline_token_accuracy,
         baseline_char_accuracy=baseline_char_accuracy,
@@ -272,6 +273,7 @@ def aggregate_results(results_file: str) -> Optional[HSRunSummary]:
         accuracy_difference=accuracy_difference,
         token_accuracy_difference=token_accuracy_difference,
         char_accuracy_difference=char_accuracy_difference,
+        num_subjects=len(per_subject) if per_subject else None,
     )
     return summary
 
@@ -279,7 +281,7 @@ def aggregate_results(results_file: str) -> Optional[HSRunSummary]:
 def to_percentage_cell(val: Optional[float]) -> str:
     if val is None:
         return ""
-    return f"{val * 100:.2f}\\%"
+    return f"{val * 100:.2f}%"
 
 
 def to_float_cell(val: Optional[float], decimals: int = 4) -> str:
@@ -289,16 +291,15 @@ def to_float_cell(val: Optional[float], decimals: int = 4) -> str:
 
 
 def build_latex_table(
-    summaries: List[HSRunSummary], selected_columns: Optional[List[str]] = None, tablefmt: str = "latex_raw"
+    summaries: List[MMLURunSummary], selected_columns: Optional[List[str]] = None, tablefmt: str = "latex_raw"
 ) -> str:
     """
     Build a LaTeX tabular with key properties and metrics using tabulate.
 
     Args:
-        summaries: List of HSRunSummary objects to include in the table
+        summaries: List of MMLURunSummary objects to include in the table
         selected_columns: Optional list of column field names to include. If None, includes all columns.
     """
-    # Columns for properties
     prop_cols = [
         ("run_name", "RunName"),
         ("model_checkpoint", "Model"),
@@ -313,8 +314,11 @@ def build_latex_table(
         ("num_alignment_layers", "AlignLayers"),
         ("inverted_alignment", "InvAlign"),
         ("random_seed", "Seed"),
+        ("subject", "Subject"),
+        ("num_few_shot", "FewShot"),
+        ("compression_mode", "CompMode"),
+        ("num_subjects", "Subjects"),
     ]
-    # Metric columns
     metric_cols = [
         ("baseline_accuracy", "Baseline Acc"),
         ("baseline_valid_pct", "Baseline Valid"),
@@ -365,299 +369,133 @@ def build_latex_table(
                 row.append("True" if val else "False")
             else:
                 cell = "" if val is None else str(val)
-                row.append(latex_escape(cell))
+                row.append(cell)
+                # row.append(latex_escape(cell))
         table_rows.append(row)
 
     return tabulate(table_rows, headers=headers, tablefmt=tablefmt)
 
 
-# ----------------------- Intervention Knockout Plots ----------------------- #
+# ----------------------- Per-Subject Breakdown Plot ------------------------ #
 
 
-def load_intervention_results(results_path: str) -> Dict:
-    """Load a results.json that contains intervention_summary."""
+def plot_per_subject_comparison(
+    results_path: str,
+    output_path: Optional[str] = None,
+    model_label: Optional[str] = None,
+) -> None:
+    """Bar chart comparing baseline vs compressed accuracy per MMLU subject."""
     with open(results_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    if "intervention_summary" not in data:
-        raise ValueError(f"No intervention_summary in {results_path}")
-    return data
 
-
-def load_attention_mass(attention_mass_path: str) -> List[float]:
-    """Load per-layer attention mass from a cache JSON file.
-
-    Supports two formats:
-    - List of floats (one per layer): direct per-layer attention mass %
-    - Dict with 'avg_attention_mass_per_layer_compression' key: list of floats
-    """
-    with open(attention_mass_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if isinstance(data, list):
-        return [float(v) for v in data]
-    if isinstance(data, dict) and "avg_attention_mass_per_layer_compression" in data:
-        return [float(v) for v in data["avg_attention_mass_per_layer_compression"]]
-    raise ValueError(f"Unrecognized attention mass format in {attention_mass_path}")
-
-
-def plot_per_layer_knockout(
-    data: Dict,
-    output_path: str,
-    attention_mass: Optional[List[float]] = None,
-    model_label: Optional[str] = None,
-) -> None:
-    """Per-layer knockout plot: x=layer, y1=accuracy with KO at that layer, y2=attention mass.
-
-    Args:
-        data: Loaded intervention results JSON.
-        output_path: Path to save the plot.
-        attention_mass: Optional per-layer attention mass (% values).
-        model_label: Optional label for the model.
-    """
-    summary = data["intervention_summary"]
-    if "per_layer_knockout" not in summary:
-        print("No per_layer_knockout data found, skipping plot.", file=sys.stderr)
+    per_subject = data.get("per_subject", {})
+    if not per_subject:
+        print("No per_subject data found, skipping plot.", file=sys.stderr)
         return
 
-    per_layer = summary["per_layer_knockout"]
-    num_layers = data.get("num_model_layers", len(per_layer))
-    layers = list(range(num_layers))
-    accuracies = [per_layer[str(li)]["accuracy"] for li in layers]
-
-    base_acc = data.get("baseline", {}).get("accuracy")
-    cram_acc = data.get("compressed", {}).get("accuracy")
-
-    fig, ax1 = plt.subplots(figsize=(12, 5))
-
-    title = "Per-Layer Attention Knockout"
-    if model_label:
-        title += f" ({model_label})"
-
-    color_acc = "#2563eb"
-    ax1.plot(layers, accuracies, "o-", color=color_acc, linewidth=1.5, markersize=4, label="KO accuracy")
-    if base_acc is not None:
-        ax1.axhline(y=base_acc, color="#16a34a", linestyle="--", linewidth=1, label=f"Base = {base_acc:.3f}")
-    if cram_acc is not None:
-        ax1.axhline(y=cram_acc, color="#dc2626", linestyle="--", linewidth=1, label=f"Cram = {cram_acc:.3f}")
-    ax1.set_xlabel("Layer index")
-    ax1.set_ylabel("Accuracy (KO at layer)", color=color_acc)
-    ax1.tick_params(axis="y", labelcolor=color_acc)
-    ax1.set_xlim(-0.5, num_layers - 0.5)
-
-    if attention_mass is not None and len(attention_mass) == num_layers:
-        color_attn = "#f97316"
-        ax2 = ax1.twinx()
-        ax2.bar(layers, attention_mass, alpha=0.3, color=color_attn, label="Attention mass %")
-        ax2.set_ylabel("Attention mass on compression token (%)", color=color_attn)
-        ax2.tick_params(axis="y", labelcolor=color_attn)
-        # Combine legends
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=8)
-    else:
-        ax1.legend(loc="upper right", fontsize=8)
-
-    ax1.set_title(title)
-    ax1.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved per-layer knockout plot to {output_path}")
-
-
-def plot_scatter_attention_vs_recovery(
-    data: Dict,
-    output_path: str,
-    attention_mass: List[float],
-    model_label: Optional[str] = None,
-) -> None:
-    """Scatter plot: x=attention mass at layer l, y=accuracy delta from Cram baseline.
-
-    Args:
-        data: Loaded intervention results JSON.
-        output_path: Path to save the plot.
-        attention_mass: Per-layer attention mass (% values). Required.
-        model_label: Optional label for the model.
-    """
-    summary = data["intervention_summary"]
-    if "per_layer_knockout" not in summary:
-        print("No per_layer_knockout data found, skipping scatter plot.", file=sys.stderr)
-        return
-
-    per_layer = summary["per_layer_knockout"]
-    num_layers = data.get("num_model_layers", len(per_layer))
-    cram_acc = data.get("compressed", {}).get("accuracy", 0.0)
-
-    if len(attention_mass) != num_layers:
-        print(
-            f"Attention mass length ({len(attention_mass)}) != num_layers ({num_layers}), skipping.",
-            file=sys.stderr,
-        )
-        return
-
-    x_mass = np.array(attention_mass)
-    y_delta = np.array([per_layer[str(li)]["accuracy"] - cram_acc for li in range(num_layers)])
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-
-    title = "Attention Mass vs. Accuracy Recovery"
-    if model_label:
-        title += f" ({model_label})"
-
-    ax.scatter(x_mass, y_delta, c=np.arange(num_layers), cmap="viridis", s=80, edgecolors="k", linewidths=0.5)
-
-    # Add layer labels to a few notable points
-    for li in range(num_layers):
-        ax.annotate(str(li), (x_mass[li], y_delta[li]), fontsize=16, ha="center", va="bottom", alpha=0.7)
-
-    # Fit and plot trend line
-    if np.std(x_mass) > 1e-8 and np.std(y_delta) > 1e-8:
-        z = np.polyfit(x_mass, y_delta, 1)
-        p = np.poly1d(z)
-        x_line = np.linspace(x_mass.min(), x_mass.max(), 100)
-        ax.plot(x_line, p(x_line), "--", color="red", linewidth=1, alpha=0.7, label=f"Linear fit (slope={z[0]:.4f})")
-        corr = np.corrcoef(x_mass, y_delta)[0, 1]
-        ax.set_title(f"{title}\nPearson r = {corr:.3f}")
-        ax.legend(fontsize=8)
-    else:
-        ax.set_title(title)
-
-    ax.axhline(y=0, color="gray", linestyle=":", linewidth=0.8)
-    ax.set_xlabel("Attention mass on compression token (%)")
-    ax.set_ylabel("Accuracy delta from Cram baseline")
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved scatter plot to {output_path}")
-
-
-def plot_cumulative_knockout(
-    data: Dict,
-    output_path: str,
-    model_label: Optional[str] = None,
-) -> None:
-    """Cumulative knockout curve: x=number of layers knocked out (0..L), y=accuracy.
-
-    Plots both forward (layers 0..li) and reverse (layers li..L-1) cumulative
-    knockout on the same chart when both are available.
-
-    Args:
-        data: Loaded intervention results JSON.
-        output_path: Path to save the plot.
-        model_label: Optional label for the model.
-    """
-    summary = data["intervention_summary"]
-    has_forward = "cumulative_knockout" in summary
-    has_reverse = "reverse_cumulative_knockout" in summary
-
-    if not has_forward and not has_reverse:
-        print("No cumulative_knockout data found, skipping plot.", file=sys.stderr)
-        return
-
-    num_layers = data.get("num_model_layers")
-    if num_layers is None:
-        if has_forward:
-            num_layers = len(summary["cumulative_knockout"])
-        else:
-            num_layers = len(summary["reverse_cumulative_knockout"])
-
-    base_acc = data.get("baseline", {}).get("accuracy")
-    cram_acc = data.get("compressed", {}).get("accuracy")
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-
-    title = "Cumulative Knockout Recovery Curve"
-    if model_label:
-        title += f" ({model_label})"
-
-    # Forward cumulative: knock out layers 0..li
-    if has_forward:
-        cumulative = summary["cumulative_knockout"]
-        # x = number of layers knocked out: 0 (= Cram), 1, 2, ..., L
-        x_fwd = [0] + [li + 1 for li in range(num_layers)]
-        y_fwd = [cram_acc if cram_acc is not None else 0.0] + [cumulative[str(li)]["accuracy"] for li in range(num_layers)]
-        ax.plot(x_fwd, y_fwd, "o-", color="#2563eb", linewidth=1.5, markersize=4, label="Forward KO (layers 0..k)")
-
-    # Reverse cumulative: knock out layers li..L-1
-    if has_reverse:
-        reverse_cumulative = summary["reverse_cumulative_knockout"]
-        # x = number of layers knocked out from the end: 0 (= Cram), 1, 2, ..., L
-        # li=L-1 knocks out 1 layer (last), li=L-2 knocks out 2, ..., li=0 knocks out L
-        x_rev = [0] + [num_layers - li for li in range(num_layers - 1, -1, -1)]
-        y_rev = [cram_acc if cram_acc is not None else 0.0] + [
-            reverse_cumulative[str(li)]["accuracy"] for li in range(num_layers - 1, -1, -1)
-        ]
-        ax.plot(x_rev, y_rev, "s-", color="#9333ea", linewidth=1.5, markersize=4, label="Reverse KO (layers k..L-1)")
-
-    if base_acc is not None:
-        ax.axhline(y=base_acc, color="#16a34a", linestyle="--", linewidth=1, label=f"Base = {base_acc:.3f}")
-    if cram_acc is not None:
-        ax.axhline(y=cram_acc, color="#dc2626", linestyle="--", linewidth=1, label=f"Cram = {cram_acc:.3f}")
-
-    ax.set_xlabel("Number of layers knocked out (0 = Cram, L = Base)")
-    ax.set_ylabel("Accuracy")
-    ax.set_xlim(-0.5, num_layers + 0.5)
-    ax.set_title(title)
-    ax.legend(loc="best", fontsize=8)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved cumulative knockout plot to {output_path}")
-
-
-def run_intervention_plots(
-    results_path: str,
-    attention_mass_path: Optional[str] = None,
-    model_label: Optional[str] = None,
-) -> None:
-    """Generate all intervention knockout plots and save to the same dir as results_path."""
-    data = load_intervention_results(results_path)
-    out = Path(results_path).parent
-    out.mkdir(parents=True, exist_ok=True)
+    if output_path is None:
+        output_path = str(Path(results_path).parent / "per_subject_comparison.png")
 
     if model_label is None:
         model_label = data.get("args", {}).get("model_checkpoint", "")
 
-    # Get attention mass: prefer external file, fall back to results.json embedded data
-    attention_mass = None
-    if attention_mass_path:
-        attention_mass = load_attention_mass(attention_mass_path)
-    elif "avg_attention_mass_per_layer" in data.get("intervention_summary", {}):
-        attention_mass = data["intervention_summary"]["avg_attention_mass_per_layer"]
+    # Sort subjects by baseline accuracy descending
+    subjects = sorted(per_subject.keys(), key=lambda s: per_subject[s].get("baseline_accuracy", 0), reverse=True)
+    baseline_accs = [per_subject[s].get("baseline_accuracy", 0) for s in subjects]
+    compressed_accs = [per_subject[s].get("compressed_accuracy", 0) for s in subjects]
 
-    summary = data.get("intervention_summary", {})
+    x = np.arange(len(subjects))
+    width = 0.35
 
-    if "per_layer_knockout" in summary:
-        plot_per_layer_knockout(
-            data, str(out / "per_layer_knockout.png"), attention_mass=attention_mass, model_label=model_label
-        )
+    fig, ax = plt.subplots(figsize=(max(12, len(subjects) * 0.4), 6))
 
-    if "per_layer_knockout" in summary and attention_mass is not None:
-        plot_scatter_attention_vs_recovery(
-            data, str(out / "scatter_attention_vs_recovery.png"), attention_mass, model_label=model_label
-        )
+    ax.bar(x - width / 2, baseline_accs, width, label="Baseline", color="#2563eb", alpha=0.8)
+    ax.bar(x + width / 2, compressed_accs, width, label="Compressed", color="#dc2626", alpha=0.8)
 
-    if "cumulative_knockout" in summary:
-        plot_cumulative_knockout(data, str(out / "cumulative_knockout.png"), model_label=model_label)
+    ax.set_xlabel("Subject")
+    ax.set_ylabel("Accuracy")
+    title = "MMLU Per-Subject: Baseline vs Compressed"
+    if model_label:
+        title += f" ({model_label})"
+    ax.set_title(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels([s.replace("_", " ").title() for s in subjects], rotation=90, fontsize=6)
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(True, alpha=0.3, axis="y")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved per-subject comparison plot to {output_path}")
+
+
+def plot_accuracy_difference_distribution(
+    results_path: str,
+    output_path: Optional[str] = None,
+    model_label: Optional[str] = None,
+) -> None:
+    """Histogram of per-subject accuracy difference (compressed - baseline)."""
+    with open(results_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    per_subject = data.get("per_subject", {})
+    if not per_subject:
+        print("No per_subject data found, skipping plot.", file=sys.stderr)
+        return
+
+    if output_path is None:
+        output_path = str(Path(results_path).parent / "accuracy_difference_dist.png")
+
+    if model_label is None:
+        model_label = data.get("args", {}).get("model_checkpoint", "")
+
+    diffs = []
+    for s, stats in per_subject.items():
+        b = stats.get("baseline_accuracy", 0)
+        c = stats.get("compressed_accuracy", 0)
+        diffs.append(c - b)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    ax.hist(diffs, bins=20, color="#2563eb", alpha=0.7, edgecolor="black")
+    ax.axvline(x=0, color="red", linestyle="--", linewidth=1)
+    mean_diff = np.mean(diffs)
+    ax.axvline(x=mean_diff, color="#16a34a", linestyle="--", linewidth=1, label=f"Mean = {mean_diff:.4f}")
+
+    ax.set_xlabel("Accuracy Difference (Compressed - Baseline)")
+    ax.set_ylabel("Number of Subjects")
+    title = "MMLU Per-Subject Accuracy Difference Distribution"
+    if model_label:
+        title += f"\n({model_label})"
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved accuracy difference distribution plot to {output_path}")
+
+
+# ------------------------------- Main -------------------------------------- #
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="hs_results.py",
-        description="Aggregate HellaSwag evaluation experiment artifacts and print a LaTeX table.",
+        prog="mmlu_results.py",
+        description="Aggregate MMLU evaluation experiment artifacts and print a LaTeX table.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
             """\
             By default scans:
-              - artifacts/hellaswag_evaluation/*/results.json
+              - artifacts/mmlu_evaluation/*/results.json
             """
         ),
     )
     parser.add_argument(
         "--dirs",
         nargs="*",
-        default=["artifacts/hellaswag_evaluation"],
+        default=["artifacts/mmlu_evaluation"],
         help="Base directories to scan for runs.",
     )
     parser.add_argument(
@@ -674,6 +512,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "run_name, model_checkpoint, limit_samples, num_compression_tokens, "
         "max_optimization_steps, learning_rate, batch_size, dtype, loss_type, "
         "hybrid_alpha, num_alignment_layers, inverted_alignment, random_seed, "
+        "subject, num_few_shot, compression_mode, num_subjects, "
         "baseline_accuracy, baseline_token_accuracy, baseline_char_accuracy, "
         "compressed_accuracy, compressed_token_accuracy, compressed_char_accuracy, "
         "accuracy_difference, token_accuracy_difference, char_accuracy_difference. "
@@ -719,21 +558,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Filter by inverted_alignment. Accepts: true/false, 1/0, yes/no, t/f, y/n (case-insensitive).",
     )
     parser.add_argument("--seed", type=int, default=None, help="Filter by random seed (int).")
-
-    # Intervention knockout plotting
+    parser.add_argument("--subject-filter", type=str, default=None, help="Filter by MMLU subject (e.g., 'abstract_algebra').")
     parser.add_argument(
-        "--plot-intervention",
+        "--compression-mode", type=str, default=None, help="Filter by compression mode (prefix_only, full_prompt)."
+    )
+    parser.add_argument("--num-few-shot", type=int, default=None, help="Filter by number of few-shot examples (int).")
+
+    # Plotting
+    parser.add_argument(
+        "--plot-subjects",
         type=str,
         default=None,
         metavar="RESULTS_JSON",
-        help="Path to a results.json with intervention_summary. Generates knockout plots and exits.",
-    )
-    parser.add_argument(
-        "--attention-mass-file",
-        type=str,
-        default=None,
-        metavar="JSON",
-        help="Optional attention mass cache JSON for overlay on per-layer plot and scatter plot.",
+        help="Path to a results.json with per_subject data. Generates per-subject comparison plots and exits.",
     )
     parser.add_argument(
         "--model-label",
@@ -743,11 +580,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # If --plot-intervention is given, generate plots and exit
-    if args.plot_intervention:
-        run_intervention_plots(
-            results_path=args.plot_intervention,
-            attention_mass_path=args.attention_mass_file,
+    # If --plot-subjects is given, generate plots and exit
+    if args.plot_subjects:
+        plot_per_subject_comparison(
+            results_path=args.plot_subjects,
+            model_label=args.model_label,
+        )
+        plot_accuracy_difference_distribution(
+            results_path=args.plot_subjects,
             model_label=args.model_label,
         )
         return 0
@@ -759,7 +599,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f" - {d}", file=sys.stderr)
         return 1
 
-    summaries: List[HSRunSummary] = []
+    summaries: List[MMLURunSummary] = []
     for results_file in tqdm(results_files, desc="Processing Runs"):
         try:
             summary = aggregate_results(results_file)
@@ -770,21 +610,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
         summaries.append(summary)
 
-        # Auto-generate intervention plots if results contain intervention data
+        # Auto-generate per-subject plots if data is present
         try:
             with open(results_file, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            if "intervention_summary" in raw:
-                run_intervention_plots(
+            if "per_subject" in raw and len(raw["per_subject"]) > 1:
+                plot_per_subject_comparison(
                     results_path=results_file,
-                    attention_mass_path=args.attention_mass_file,
+                    model_label=args.model_label,
+                )
+                plot_accuracy_difference_distribution(
+                    results_path=results_file,
                     model_label=args.model_label,
                 )
         except Exception as e:
-            print(f"Failed to generate intervention plots for {results_file}: {e}", file=sys.stderr)
+            print(f"Failed to generate plots for {results_file}: {e}", file=sys.stderr)
 
     # Sort for readability
-    def sort_key(s: HSRunSummary):
+    def sort_key(s: MMLURunSummary):
         return (
             s.model_checkpoint or "",
             str(s.loss_type or ""),
@@ -797,7 +640,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     summaries_sorted = sorted(summaries, key=sort_key)
 
     # Apply property filters
-    def matches_filters(s: HSRunSummary) -> bool:
+    def matches_filters(s: MMLURunSummary) -> bool:
         if args.loss_type is not None and (s.loss_type or "").lower() != args.loss_type.lower():
             return False
         if args.hybrid_alpha is not None:
@@ -833,6 +676,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         ):
             return False
         if args.seed is not None and (s.random_seed is None or int(s.random_seed) != int(args.seed)):
+            return False
+        if args.subject_filter is not None and (s.subject or "").lower() != args.subject_filter.lower():
+            return False
+        if args.compression_mode is not None and (s.compression_mode or "").lower() != args.compression_mode.lower():
+            return False
+        if args.num_few_shot is not None and (s.num_few_shot is None or int(s.num_few_shot) != int(args.num_few_shot)):
             return False
         return True
 
