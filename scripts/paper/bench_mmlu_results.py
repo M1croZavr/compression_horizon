@@ -631,6 +631,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return (
             s.model_checkpoint or "",
             str(s.loss_type or ""),
+            str(s.compression_mode or ""),
             float(s.hybrid_alpha or 0),
             int(s.num_alignment_layers or 0),
             float(s.learning_rate or 0),
