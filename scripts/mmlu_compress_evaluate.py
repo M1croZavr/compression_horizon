@@ -654,11 +654,13 @@ def main():
 
         # --- Compression ---
         if args.compression_mode == "random":
-            # Random mode: use random normal embeddings instead of optimization
-            hidden_size = model.get_input_embeddings().weight.shape[1]
-            embedding_dtype = model.get_input_embeddings().weight.dtype
+            # Random mode: use random normal embeddings matching the scale of real embeddings
+            embed_weight = model.get_input_embeddings().weight
+            hidden_size = embed_weight.shape[1]
+            embedding_dtype = embed_weight.dtype
+            embed_std = embed_weight.detach().float().std().item()
             batch_compression_embeddings = [
-                torch.randn(args.num_compression_tokens, hidden_size, dtype=embedding_dtype, device=device) * 0.02
+                torch.randn(args.num_compression_tokens, hidden_size, dtype=embedding_dtype, device=device) * embed_std
                 for _ in range(actual_batch_size)
             ]
             batch_convergences = [0.0] * actual_batch_size
@@ -746,7 +748,7 @@ def main():
                     model=model,
                     tokenizer=tokenizer,
                     compression_embedding=emb,
-                    text_suffix=batch_suffixes[i],
+                    text_suffix=batch_full_prompts[i],
                     max_new_tokens=args.max_new_tokens,
                     device=device,
                     add_special_tokens=add_special_tokens,

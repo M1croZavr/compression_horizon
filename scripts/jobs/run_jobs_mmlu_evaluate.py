@@ -34,6 +34,11 @@ if __name__ == "__main__":
         help="Only print generated scripts, do not launch jobs.",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run jobs even if artifact directory already exists (override existing results).",
+    )
+    parser.add_argument(
         "--model",
         nargs="+",
         default=None,
@@ -255,7 +260,7 @@ if __name__ == "__main__":
             exp_suffix = f"{exp_suffix}_mode_{args.compression_mode}"
 
         out_dir_name = f"artifacts/mmlu_evaluation/{exp_suffix}"
-        if os.path.exists(out_dir_name):
+        if os.path.exists(out_dir_name) and not args.force:
             print("Experiment", out_dir_name, "exists, skip.")
             continue
 
