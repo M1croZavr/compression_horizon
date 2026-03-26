@@ -407,6 +407,8 @@ def plot_per_layer_knockout(
 ) -> None:
     """Per-layer knockout plot: x=layer, y1=accuracy with KO at that layer, y2=attention mass.
 
+    Also overlays teacher-forced reconstruction accuracy if available.
+
     Args:
         data: Loaded intervention results JSON.
         output_path: Path to save the plot.
@@ -423,6 +425,12 @@ def plot_per_layer_knockout(
     layers = list(range(num_layers))
     accuracies = [per_layer[str(li)]["accuracy"] for li in layers]
 
+    # Reconstruction accuracy (teacher-forced prefix reconstruction)
+    per_layer_recon = summary.get("per_layer_reconstruction")
+    recon_accuracies = None
+    if per_layer_recon is not None:
+        recon_accuracies = [per_layer_recon[str(li)]["avg_accuracy"] for li in layers]
+
     base_acc = data.get("baseline", {}).get("accuracy")
     cram_acc = data.get("compressed", {}).get("accuracy")
 
@@ -434,6 +442,9 @@ def plot_per_layer_knockout(
 
     color_acc = "#2563eb"
     ax1.plot(layers, accuracies, "o-", color=color_acc, linewidth=1.5, markersize=4, label="KO accuracy")
+    if recon_accuracies is not None:
+        color_recon = "#a855f7"
+        ax1.plot(layers, recon_accuracies, "s-", color=color_recon, linewidth=1.5, markersize=4, label="TF recon accuracy")
     if base_acc is not None:
         ax1.axhline(y=base_acc, color="#16a34a", linestyle="--", linewidth=1, label=f"Base = {base_acc:.3f}")
     if cram_acc is not None:
@@ -539,7 +550,8 @@ def plot_cumulative_knockout(
     """Cumulative knockout curve: x=number of layers knocked out (0..L), y=accuracy.
 
     Plots both forward (layers 0..li) and reverse (layers li..L-1) cumulative
-    knockout on the same chart when both are available.
+    knockout on the same chart when both are available. Also overlays teacher-forced
+    reconstruction accuracy if available.
 
     Args:
         data: Loaded intervention results JSON.
@@ -578,6 +590,16 @@ def plot_cumulative_knockout(
         y_fwd = [cram_acc if cram_acc is not None else 0.0] + [cumulative[str(li)]["accuracy"] for li in range(num_layers)]
         ax.plot(x_fwd, y_fwd, "o-", color="#2563eb", linewidth=1.5, markersize=4, label="Forward KO (layers 0..k)")
 
+    # Forward reconstruction accuracy
+    if "cumulative_reconstruction" in summary:
+        cum_recon = summary["cumulative_reconstruction"]
+        x_fwd_r = [0] + [li + 1 for li in range(num_layers)]
+        # At 0 knocked-out layers, reconstruction = full compressed reconstruction (no KO)
+        # Use first layer's accuracy as proxy for "no KO" (or we could compute it separately)
+        # For consistency, start with a placeholder that represents Cram reconstruction
+        y_fwd_r = [1.0] + [cum_recon[str(li)]["avg_accuracy"] for li in range(num_layers)]
+        ax.plot(x_fwd_r, y_fwd_r, "o--", color="#60a5fa", linewidth=1.5, markersize=4, alpha=0.8, label="Forward TF recon")
+
     # Reverse cumulative: knock out layers li..L-1
     if has_reverse:
         reverse_cumulative = summary["reverse_cumulative_knockout"]
@@ -588,6 +610,13 @@ def plot_cumulative_knockout(
             reverse_cumulative[str(li)]["accuracy"] for li in range(num_layers - 1, -1, -1)
         ]
         ax.plot(x_rev, y_rev, "s-", color="#9333ea", linewidth=1.5, markersize=4, label="Reverse KO (layers k..L-1)")
+
+    # Reverse reconstruction accuracy
+    if "reverse_cumulative_reconstruction" in summary:
+        rev_recon = summary["reverse_cumulative_reconstruction"]
+        x_rev_r = [0] + [num_layers - li for li in range(num_layers - 1, -1, -1)]
+        y_rev_r = [1.0] + [rev_recon[str(li)]["avg_accuracy"] for li in range(num_layers - 1, -1, -1)]
+        ax.plot(x_rev_r, y_rev_r, "s--", color="#c084fc", linewidth=1.5, markersize=4, alpha=0.8, label="Reverse TF recon")
 
     if base_acc is not None:
         ax.axhline(y=base_acc, color="#16a34a", linestyle="--", linewidth=1, label=f"Base = {base_acc:.3f}")
