@@ -277,6 +277,63 @@ def compute_ppl_with_compression_and_knockout_batch(
 
 
 # ---------------------------------------------------------------------------
+# Reconstruction accuracy with knockout
+# ---------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def compute_reconstruction_accuracy_with_knockout(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    compression_token_embeddings: torch.Tensor,
+    context: str,
+    knockout_layers: list[int],
+    num_compression_tokens: int = 1,
+    device: Optional[torch.device] = None,
+    add_special_tokens: bool = True,
+) -> float:
+    """Compute teacher-forced reconstruction accuracy of the compressed prefix under knockout.
+
+    Runs a forward pass with compression tokens prepended to context tokens, with attention
+    to compression tokens knocked out at specified layers. Returns the fraction of context
+    tokens correctly predicted (argmax of logits == actual next token).
+    """
+    if device is None:
+        device = get_device()
+
+    model = model.to(device)
+    model.eval()
+
+    encoded = tokenizer(context, truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens)
+    input_ids = encoded["input_ids"].to(device)  # [1, seq_len]
+    attention_mask = encoded["attention_mask"].to(device)  # [1, seq_len]
+
+    embed_fn = model.get_input_embeddings()
+    token_embeddings = embed_fn(input_ids)  # [1, seq_len, hidden]
+
+    comp_embeds = compression_token_embeddings.unsqueeze(0).to(token_embeddings.dtype).to(device)
+    united_embeddings = torch.cat([comp_embeds, token_embeddings], dim=1)
+    united_attention = torch.cat(
+        [torch.ones((1, num_compression_tokens), dtype=attention_mask.dtype, device=device), attention_mask],
+        dim=1,
+    )
+
+    num_ct = num_compression_tokens
+    with AttentionKnockoutContext(model, knockout_layers, num_ct):
+        outputs = model(inputs_embeds=united_embeddings, attention_mask=united_attention)
+
+    seq_len = int(attention_mask.sum().item())
+    # logits[num_ct - 1] predicts first context token, logits[num_ct + j - 1] predicts context token j
+    # We predict context tokens 0..seq_len-1 from logits[num_ct-1..num_ct+seq_len-2]
+    pred_logits = outputs.logits[0, num_ct - 1 : num_ct + seq_len - 1]  # [seq_len, vocab]
+    predicted_tokens = pred_logits.argmax(dim=-1)  # [seq_len]
+    target_tokens = input_ids[0, :seq_len]  # [seq_len]
+
+    accuracy = (predicted_tokens == target_tokens).float().mean().item()
+    return accuracy
+
+
+# ---------------------------------------------------------------------------
 # High-level intervention evaluation
 # ---------------------------------------------------------------------------
 
@@ -337,38 +394,71 @@ def evaluate_sample_interventions(
             add_special_tokens=add_special_tokens,
         )
 
+    def _run_reconstruction(knockout_layers: list[int]) -> float:
+        return compute_reconstruction_accuracy_with_knockout(
+            model=model,
+            tokenizer=tokenizer,
+            compression_token_embeddings=compression_embedding,
+            context=context,
+            knockout_layers=knockout_layers,
+            num_compression_tokens=num_compression_tokens,
+            device=device,
+            add_special_tokens=add_special_tokens,
+        )
+
     # Per-layer knockout
     if not skip_per_layer:
         per_layer = {}
+        per_layer_recon = {}
         for li in range(num_model_layers):
             try:
                 per_layer[li] = _run_knockout([li])
             except Exception as e:
                 print(f"Error in per-layer KO (layer {li}): {e}")
                 per_layer[li] = [float("inf")] * num_endings
+            try:
+                per_layer_recon[li] = _run_reconstruction([li])
+            except Exception as e:
+                print(f"Error in per-layer recon (layer {li}): {e}")
+                per_layer_recon[li] = 0.0
         result["per_layer_knockout"] = per_layer
+        result["per_layer_reconstruction"] = per_layer_recon
 
     # Cumulative knockout (layers 0..li)
     if not skip_cumulative:
         cumulative = {}
+        cumulative_recon = {}
         for li in range(num_model_layers):
             try:
                 cumulative[li] = _run_knockout(list(range(li + 1)))
             except Exception as e:
                 print(f"Error in cumulative KO (layers 0..{li}): {e}")
                 cumulative[li] = [float("inf")] * num_endings
+            try:
+                cumulative_recon[li] = _run_reconstruction(list(range(li + 1)))
+            except Exception as e:
+                print(f"Error in cumulative recon (layers 0..{li}): {e}")
+                cumulative_recon[li] = 0.0
         result["cumulative_knockout"] = cumulative
+        result["cumulative_reconstruction"] = cumulative_recon
 
     # Reverse cumulative knockout (layers li..L-1)
     if not skip_reverse_cumulative:
         reverse_cumulative = {}
+        reverse_cumulative_recon = {}
         for li in range(num_model_layers):
             try:
                 reverse_cumulative[li] = _run_knockout(list(range(li, num_model_layers)))
             except Exception as e:
                 print(f"Error in reverse cumulative KO (layers {li}..{num_model_layers - 1}): {e}")
                 reverse_cumulative[li] = [float("inf")] * num_endings
+            try:
+                reverse_cumulative_recon[li] = _run_reconstruction(list(range(li, num_model_layers)))
+            except Exception as e:
+                print(f"Error in reverse cumulative recon (layers {li}..{num_model_layers - 1}): {e}")
+                reverse_cumulative_recon[li] = 0.0
         result["reverse_cumulative_knockout"] = reverse_cumulative
+        result["reverse_cumulative_reconstruction"] = reverse_cumulative_recon
 
     return result
 
@@ -403,6 +493,11 @@ def build_intervention_result(
             result[key] = {
                 str(li): build_knockout_result_entry(ko_ppls, label) for li, ko_ppls in intervention_data[key].items()
             }
+
+    # Reconstruction accuracy per layer (teacher-forced prefix reconstruction)
+    for key in ("per_layer_reconstruction", "cumulative_reconstruction", "reverse_cumulative_reconstruction"):
+        if key in intervention_data:
+            result[key] = {str(li): acc for li, acc in intervention_data[key].items()}
 
     return result
 
@@ -454,6 +549,33 @@ def build_intervention_summary(
             }
         summary[key] = layer_summary
 
+    # Average reconstruction accuracy per layer
+    recon_keys = []
+    if not skip_per_layer:
+        recon_keys.append("per_layer_reconstruction")
+    if not skip_cumulative:
+        recon_keys.append("cumulative_reconstruction")
+    if not skip_reverse_cumulative:
+        recon_keys.append("reverse_cumulative_reconstruction")
+
+    for key in recon_keys:
+        acc_sums = {li: 0.0 for li in range(num_model_layers)}
+        acc_counts = {li: 0 for li in range(num_model_layers)}
+        for r in results:
+            if key not in r:
+                continue
+            for li_str, acc in r[key].items():
+                li = int(li_str)
+                acc_sums[li] += acc
+                acc_counts[li] += 1
+        layer_recon = {}
+        for li in range(num_model_layers):
+            layer_recon[str(li)] = {
+                "avg_accuracy": acc_sums[li] / acc_counts[li] if acc_counts[li] > 0 else 0.0,
+                "total": acc_counts[li],
+            }
+        summary[key] = layer_recon
+
     # Average attention mass
     all_attn_mass = [r["attention_mass_per_layer"] for r in results if "attention_mass_per_layer" in r]
     if all_attn_mass:
@@ -484,6 +606,22 @@ def print_intervention_summary(
         )
         print(
             f"  Worst single-layer KO: layer {worst_layer} (accuracy={summary['per_layer_knockout'][worst_layer]['accuracy']:.4f})"
+        )
+
+    if "per_layer_reconstruction" in summary:
+        best_recon = max(
+            summary["per_layer_reconstruction"],
+            key=lambda li: summary["per_layer_reconstruction"][li]["avg_accuracy"],
+        )
+        worst_recon = min(
+            summary["per_layer_reconstruction"],
+            key=lambda li: summary["per_layer_reconstruction"][li]["avg_accuracy"],
+        )
+        print(
+            f"  Best recon layer: {best_recon} (avg_accuracy={summary['per_layer_reconstruction'][best_recon]['avg_accuracy']:.4f})"
+        )
+        print(
+            f"  Worst recon layer: {worst_recon} (avg_accuracy={summary['per_layer_reconstruction'][worst_recon]['avg_accuracy']:.4f})"
         )
 
     if "cumulative_knockout" in summary:
