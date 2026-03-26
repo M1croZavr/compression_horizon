@@ -560,7 +560,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--seed", type=int, default=None, help="Filter by random seed (int).")
     parser.add_argument("--subject-filter", type=str, default=None, help="Filter by MMLU subject (e.g., 'abstract_algebra').")
     parser.add_argument(
-        "--compression-mode", type=str, default=None, help="Filter by compression mode (prefix_only, full_prompt)."
+        "--compression-mode", type=str, default=None, help="Filter by compression mode (prefix_only, full_prompt, random)."
     )
     parser.add_argument("--num-few-shot", type=int, default=None, help="Filter by number of few-shot examples (int).")
 

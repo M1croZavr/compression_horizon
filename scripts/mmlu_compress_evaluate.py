@@ -539,9 +539,10 @@ def main():
         "--compression_mode",
         type=str,
         default="prefix_only",
-        choices=["prefix_only", "full_prompt"],
+        choices=["prefix_only", "full_prompt", "random"],
         help="Compression mode: 'prefix_only' compresses few-shot prefix only (shared per subject), "
-        "'full_prompt' compresses entire prompt per sample (warm-started from prefix compression).",
+        "'full_prompt' compresses entire prompt per sample (warm-started from prefix compression), "
+        "'random' uses random normal embeddings instead of optimized compression tokens.",
     )
     args = parser.parse_args()
 
@@ -652,17 +653,69 @@ def main():
             baseline_generated = [""] * actual_batch_size
 
         # --- Compression ---
-        # Ensure prefix compression is cached for all subjects in this batch
-        for subj in set(batch_subjects):
-            if subj not in prefix_compression_cache:
-                few_shots = few_shot_cache[subj]
-                prefix_text = format_few_shot_prefix(subj, few_shots)
-                print(f"Compressing prefix for subject: {subj}")
+        if args.compression_mode == "random":
+            # Random mode: use random normal embeddings instead of optimization
+            hidden_size = model.get_input_embeddings().weight.shape[1]
+            embedding_dtype = model.get_input_embeddings().weight.dtype
+            batch_compression_embeddings = [
+                torch.randn(args.num_compression_tokens, hidden_size, dtype=embedding_dtype, device=device) * 0.02
+                for _ in range(actual_batch_size)
+            ]
+            batch_convergences = [0.0] * actual_batch_size
+        else:
+            # Ensure prefix compression is cached for all subjects in this batch
+            for subj in set(batch_subjects):
+                if subj not in prefix_compression_cache:
+                    few_shots = few_shot_cache[subj]
+                    prefix_text = format_few_shot_prefix(subj, few_shots)
+                    print(f"Compressing prefix for subject: {subj}")
+                    try:
+                        prefix_results = compress_prefixes_batch(
+                            model=model,
+                            tokenizer=tokenizer,
+                            texts=[prefix_text],
+                            num_compression_tokens=args.num_compression_tokens,
+                            max_steps=args.max_optimization_steps,
+                            learning_rate=args.learning_rate,
+                            loss_type=args.loss_type,
+                            hybrid_alpha=args.hybrid_alpha,
+                            num_alignment_layers=args.num_alignment_layers,
+                            inverted_alignment=args.inverted_alignment,
+                            device=device,
+                            add_special_tokens=add_special_tokens,
+                        )
+                        prefix_compression_cache[subj] = prefix_results[0]["compression_embedding"]
+                    except Exception as e:
+                        print(f"Error compressing prefix for subject {subj}: {e}")
+                        prefix_compression_cache[subj] = None
+
+            # Determine compression embeddings per sample
+            if args.compression_mode == "prefix_only":
+                # Use cached prefix compression directly
+                batch_compression_embeddings = []
+                batch_convergences = []
+                for i in range(actual_batch_size):
+                    subj = batch_subjects[i]
+                    emb = prefix_compression_cache.get(subj)
+                    batch_compression_embeddings.append(emb)
+                    batch_convergences.append(1.0 if emb is not None else 0.0)
+            else:
+                # full_prompt mode: compress full prompt with warm start from prefix
+                batch_texts_to_compress = batch_full_prompts
+                # Get warm-start embeddings per sample
+                init_emb = None
+                # Use the first subject's cached embedding as warm start
+                # (in practice, batch may have mixed subjects; use per-sample init)
+                # We compress the batch, using a single init for simplicity
+                # For mixed subjects, we use the first available cached embedding
+                first_subj = batch_subjects[0]
+                init_emb = prefix_compression_cache.get(first_subj)
+
                 try:
-                    prefix_results = compress_prefixes_batch(
+                    full_results = compress_prefixes_batch(
                         model=model,
                         tokenizer=tokenizer,
-                        texts=[prefix_text],
+                        texts=batch_texts_to_compress,
                         num_compression_tokens=args.num_compression_tokens,
                         max_steps=args.max_optimization_steps,
                         learning_rate=args.learning_rate,
@@ -672,56 +725,14 @@ def main():
                         inverted_alignment=args.inverted_alignment,
                         device=device,
                         add_special_tokens=add_special_tokens,
+                        init_embeddings=init_emb,
                     )
-                    prefix_compression_cache[subj] = prefix_results[0]["compression_embedding"]
+                    batch_compression_embeddings = [r["compression_embedding"] for r in full_results]
+                    batch_convergences = [r["convergence"] for r in full_results]
                 except Exception as e:
-                    print(f"Error compressing prefix for subject {subj}: {e}")
-                    prefix_compression_cache[subj] = None
-
-        # Determine compression embeddings per sample
-        if args.compression_mode == "prefix_only":
-            # Use cached prefix compression directly
-            batch_compression_embeddings = []
-            batch_convergences = []
-            for i in range(actual_batch_size):
-                subj = batch_subjects[i]
-                emb = prefix_compression_cache.get(subj)
-                batch_compression_embeddings.append(emb)
-                batch_convergences.append(1.0 if emb is not None else 0.0)
-        else:
-            # full_prompt mode: compress full prompt with warm start from prefix
-            batch_texts_to_compress = batch_full_prompts
-            # Get warm-start embeddings per sample
-            init_emb = None
-            # Use the first subject's cached embedding as warm start
-            # (in practice, batch may have mixed subjects; use per-sample init)
-            # We compress the batch, using a single init for simplicity
-            # For mixed subjects, we use the first available cached embedding
-            first_subj = batch_subjects[0]
-            init_emb = prefix_compression_cache.get(first_subj)
-
-            try:
-                full_results = compress_prefixes_batch(
-                    model=model,
-                    tokenizer=tokenizer,
-                    texts=batch_texts_to_compress,
-                    num_compression_tokens=args.num_compression_tokens,
-                    max_steps=args.max_optimization_steps,
-                    learning_rate=args.learning_rate,
-                    loss_type=args.loss_type,
-                    hybrid_alpha=args.hybrid_alpha,
-                    num_alignment_layers=args.num_alignment_layers,
-                    inverted_alignment=args.inverted_alignment,
-                    device=device,
-                    add_special_tokens=add_special_tokens,
-                    init_embeddings=init_emb,
-                )
-                batch_compression_embeddings = [r["compression_embedding"] for r in full_results]
-                batch_convergences = [r["convergence"] for r in full_results]
-            except Exception as e:
-                print(f"Error compressing full prompts for batch {batch_idx}: {e}")
-                batch_compression_embeddings = [None] * actual_batch_size
-                batch_convergences = [0.0] * actual_batch_size
+                    print(f"Error compressing full prompts for batch {batch_idx}: {e}")
+                    batch_compression_embeddings = [None] * actual_batch_size
+                    batch_convergences = [0.0] * actual_batch_size
 
         # --- Compressed generation ---
         compressed_generated = []

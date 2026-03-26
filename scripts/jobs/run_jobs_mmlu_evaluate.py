@@ -132,7 +132,7 @@ if __name__ == "__main__":
         "--compression_mode",
         type=str,
         default=None,
-        choices=["prefix_only", "full_prompt"],
+        choices=["prefix_only", "full_prompt", "random"],
         help="Compression mode. If not specified, defaults to 'prefix_only'.",
     )
     args = parser.parse_args()
