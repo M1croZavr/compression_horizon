@@ -37,7 +37,6 @@ PER_DEVICE_TRAIN_BATCH_SIZE = 10
 NUM_GPUS = 1  # from a100.1gpu instance
 GRADIENT_ACCUMULATION_STEPS = 1
 TOTAL_BATCH_SIZE = PER_DEVICE_TRAIN_BATCH_SIZE * NUM_GPUS * GRADIENT_ACCUMULATION_STEPS
-MAX_STEPS = LIMIT_DATASET_ITEMS // TOTAL_BATCH_SIZE  # 100 samples / 1 batch_size = 100 steps
 
 # ── Per-model settings ──────────────────────────────────────────────────────────
 
@@ -142,8 +141,7 @@ def build_experiment_configs() -> list[dict]:
         checkpoint = mcfg["checkpoint"]
         lr = mcfg["learning_rate"]
         per_device_train_batch_size = mcfg.get("per_device_train_batch_size", PER_DEVICE_TRAIN_BATCH_SIZE)
-        total_batch_size = per_device_train_batch_size * NUM_GPUS * GRADIENT_ACCUMULATION_STEPS
-        max_steps = LIMIT_DATASET_ITEMS // total_batch_size
+
         model_short = checkpoint.split("/")[-1]
         variants = _make_variants(
             mcfg["low_dim_size"],
@@ -162,7 +160,6 @@ def build_experiment_configs() -> list[dict]:
                 f"--model_checkpoint {checkpoint}",
                 f"--per_device_train_batch_size {per_device_train_batch_size}",
                 f"--gradient_accumulation_steps {GRADIENT_ACCUMULATION_STEPS}",
-                f"--max_steps {max_steps}",
                 f"--max_optimization_steps_per_sample {MAX_OPTIMIZATION_STEPS_PER_SAMPLE}",
                 f"--max_optimization_steps_per_token {MAX_OPTIMIZATION_STEPS_PER_TOKEN}",
                 f"--learning_rate {lr}",
