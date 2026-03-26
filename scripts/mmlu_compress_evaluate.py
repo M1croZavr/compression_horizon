@@ -111,6 +111,9 @@ def generate_baseline_batch(
     model = model.to(device)
     model.eval()
 
+    # Left-padding is required for correct batched generation with causal LMs
+    tokenizer.padding_side = "left"
+
     encoded = tokenizer(prompts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens)
     input_ids = encoded["input_ids"].to(device)
     attention_mask = encoded["attention_mask"].to(device)
@@ -241,6 +244,10 @@ def compress_prefixes_batch(
 
     loss_type = (loss_type or "cross_entropy").lower()
     use_alignment = hybrid_alpha is not None and loss_type != "cross_entropy"
+
+    # Right-padding is required for compression training so that compression tokens
+    # are prepended at correct positions before the actual content
+    tokenizer.padding_side = "right"
 
     encoded = tokenizer(texts, padding="longest", truncation=True, return_tensors="pt", add_special_tokens=add_special_tokens)
     input_ids = encoded["input_ids"].to(device)
