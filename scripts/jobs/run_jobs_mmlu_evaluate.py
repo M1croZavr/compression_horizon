@@ -6,7 +6,7 @@ from mls.manager.job.utils import get_in_progress_jobs, training_job_api_from_pr
 from scripts.jobs.run_training import MODEL_CONFIGS
 
 """
-python scripts/jobs/run_jobs_arc_evaluate.py \
+python scripts/jobs/run_jobs_mmlu_evaluate.py \
   --limit_samples 512 \
   --num_compression_tokens 1 \
   --max_optimization_steps 1000 \
@@ -15,7 +15,7 @@ python scripts/jobs/run_jobs_arc_evaluate.py \
   --model Llama-3.1 SmolLM2-1.7B gemma-3-4b-pt EleutherAI/pythia-1.4b
 """
 """
-python scripts/jobs/run_jobs_arc_evaluate.py \
+python scripts/jobs/run_jobs_mmlu_evaluate.py \
   --limit_samples 512 \
   --num_compression_tokens 1 \
   --max_optimization_steps 1000 \
@@ -27,18 +27,16 @@ python scripts/jobs/run_jobs_arc_evaluate.py \
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Launch ARC compression evaluation jobs.")
+    parser = argparse.ArgumentParser(description="Launch MMLU compression evaluation jobs.")
     parser.add_argument(
         "--dry",
         action="store_true",
         help="Only print generated scripts, do not launch jobs.",
     )
     parser.add_argument(
-        "--arc_split",
-        type=str,
-        default="ARC-Easy",
-        choices=["ARC-Easy", "ARC-Challenge"],
-        help="ARC dataset split to use (default: ARC-Easy)",
+        "--force",
+        action="store_true",
+        help="Run jobs even if artifact directory already exists (override existing results).",
     )
     parser.add_argument(
         "--model",
@@ -116,6 +114,32 @@ if __name__ == "__main__":
         default=False,
         help="Disable BOS token insertion during tokenization.",
     )
+    # MMLU-specific arguments
+    parser.add_argument(
+        "--subject",
+        type=str,
+        default="all",
+        help="MMLU subject to evaluate, or 'all' for all subjects.",
+    )
+    parser.add_argument(
+        "--num_few_shot",
+        type=int,
+        default=None,
+        help="Number of few-shot examples. If not specified, defaults to 5.",
+    )
+    parser.add_argument(
+        "--max_new_tokens",
+        type=int,
+        default=None,
+        help="Maximum new tokens to generate. If not specified, defaults to 5.",
+    )
+    parser.add_argument(
+        "--compression_mode",
+        type=str,
+        default=None,
+        choices=["prefix_only", "full_prompt", "random"],
+        help="Compression mode. If not specified, defaults to 'prefix_only'.",
+    )
     args = parser.parse_args()
     workdir = os.getcwd()
     python_path = "/workspace-SR004.nfs2/d.tarasov/envs/compression_horizon/bin/python"
@@ -139,7 +163,6 @@ if __name__ == "__main__":
         for checkpoint in checkpoints:
             checkpoint_lower = checkpoint.lower()
             model_name = checkpoint.split("/")[-1].lower() if "/" in checkpoint else checkpoint_lower
-            # Match if any filter is found in full checkpoint path or model name
             if any(filt in checkpoint_lower or filt in model_name for filt in model_filters):
                 filtered_checkpoints.append(checkpoint)
         checkpoints = filtered_checkpoints
@@ -148,9 +171,7 @@ if __name__ == "__main__":
             sys.exit(0)
 
     for model_checkpoint in checkpoints:
-        # Build experiment suffix with split name
-        split_suffix = args.arc_split.replace("-", "_")  # ARC-Easy -> ARC_Easy, ARC-Challenge -> ARC_Challenge
-        exp_suffix = f"arc_{split_suffix}_{model_checkpoint.split('/')[1]}"
+        exp_suffix = f"mmlu_{model_checkpoint.split('/')[1]}"
 
         # Build command arguments with defaults
         limit_samples = args.limit_samples if args.limit_samples is not None else 100
@@ -162,10 +183,13 @@ if __name__ == "__main__":
         dtype = args.dtype if args.dtype is not None else "bf16"
         loss_type = args.loss_type if args.loss_type is not None else "cross_entropy"
         num_alignment_layers = args.num_alignment_layers if args.num_alignment_layers is not None else 0
+        subject = args.subject if args.subject is not None else "all"
+        num_few_shot = args.num_few_shot if args.num_few_shot is not None else 5
+        max_new_tokens = args.max_new_tokens if args.max_new_tokens is not None else 5
+        compression_mode = args.compression_mode if args.compression_mode is not None else "prefix_only"
 
         cmd_args = [
             f"--model_checkpoint {model_checkpoint}",
-            f"--arc_split {args.arc_split}",
             f"--limit_samples {limit_samples}",
             f"--num_compression_tokens {num_compression_tokens}",
             f"--max_optimization_steps {max_optimization_steps}",
@@ -174,6 +198,10 @@ if __name__ == "__main__":
             f"--dtype {dtype}",
             f"--loss_type {loss_type}",
             f"--num_alignment_layers {num_alignment_layers}",
+            f"--subject {subject}",
+            f"--num_few_shot {num_few_shot}",
+            f"--max_new_tokens {max_new_tokens}",
+            f"--compression_mode {compression_mode}",
         ]
         if args.hybrid_alpha is not None:
             cmd_args.append(f"--hybrid_alpha {args.hybrid_alpha}")
@@ -182,32 +210,29 @@ if __name__ == "__main__":
         if args.no_bos_token:
             cmd_args.append("--no_bos_token")
 
-        # Add random_seed if specified (non-default)
+        # Build experiment suffix
         if args.random_seed is not None and args.random_seed != 42:
             cmd_args.append(f"--random_seed {args.random_seed}")
             exp_suffix = f"{exp_suffix}_seed_{args.random_seed}"
 
-        # Add limit_samples to output dir if specified (non-default)
+        if subject != "all":
+            exp_suffix = f"{exp_suffix}_subj_{subject}"
+
         if args.limit_samples is not None and args.limit_samples != 100:
             exp_suffix = f"{exp_suffix}_samples_{args.limit_samples}"
 
-        # Add num_compression_tokens to output dir if specified (non-default)
         if args.num_compression_tokens is not None and args.num_compression_tokens != 1:
             exp_suffix = f"{exp_suffix}_tokens_{args.num_compression_tokens}"
 
-        # Add max_optimization_steps to output dir if specified (non-default)
         if args.max_optimization_steps is not None and args.max_optimization_steps != 1000:
             exp_suffix = f"{exp_suffix}_steps_{args.max_optimization_steps}"
 
-        # Match run_training: include lr in output dir when != 0.01
         if learning_rate != 0.01:
             exp_suffix = f"{exp_suffix}_lr_{learning_rate}"
 
-        # Add batch_size to output dir if specified (non-default)
         if args.batch_size is not None and args.batch_size != 4:
             exp_suffix = f"{exp_suffix}_batch_{args.batch_size}"
 
-        # Add dtype to output dir if specified (non-default)
         if args.dtype is not None and args.dtype != "bf16":
             exp_suffix = f"{exp_suffix}_dtype_{args.dtype}"
 
@@ -225,15 +250,24 @@ if __name__ == "__main__":
         if args.no_bos_token:
             exp_suffix = f"{exp_suffix}_nobos"
 
-        out_dir_name = f"artifacts/arc_evaluation/{exp_suffix}"
-        if os.path.exists(out_dir_name):
+        if args.num_few_shot is not None and args.num_few_shot != 5:
+            exp_suffix = f"{exp_suffix}_shots_{args.num_few_shot}"
+
+        if args.max_new_tokens is not None and args.max_new_tokens != 5:
+            exp_suffix = f"{exp_suffix}_gentokens_{args.max_new_tokens}"
+
+        if args.compression_mode is not None and args.compression_mode != "prefix_only":
+            exp_suffix = f"{exp_suffix}_mode_{args.compression_mode}"
+
+        out_dir_name = f"artifacts/mmlu_evaluation/{exp_suffix}"
+        if os.path.exists(out_dir_name) and not args.force:
             print("Experiment", out_dir_name, "exists, skip.")
             continue
 
         # Add output_dir to command
         cmd_args.append(f"--output_dir {out_dir_name}")
-        script = f" cd {workdir} && {python_path} -m scripts.arc_compress_evaluate  {' '.join(cmd_args)}"
-        job_desc = f"CH: arc {args.arc_split} eval {exp_suffix} #{author_name} #multimodal #notify_completed @mrsndmn"
+        script = f" cd {workdir} && {python_path} -m scripts.mmlu_compress_evaluate  {' '.join(cmd_args)}"
+        job_desc = f"CH: mmlu eval {exp_suffix} #{author_name} #multimodal #notify_completed @mrsndmn"
 
         # Check if job with same description already exists in queue
         if job_desc in in_progress_job_descs:
@@ -252,8 +286,8 @@ if __name__ == "__main__":
             "type": "binary_exp",
             "shm_size_class": "medium",
             "base_image": "cr.ai.cloud.ru/aicloud-base-images/py3.12-torch2.7.0:0.0.41",
-            "n_workers": 1,  # Количество воркеров.
-            "processes_per_worker": 1,  # Количество процессов на воркер. Для accelerate нужно запускать 1 процесс на воркер. Для torchrun лучше не заполнять этот параметр. По умолчанию запускается по количеству GPU на одном воркере - это подходит для torchrun.
+            "n_workers": 1,
+            "processes_per_worker": 1,
         }
 
         print(f"\033[32m Would launch with description:\033[0m {job_desc}")
