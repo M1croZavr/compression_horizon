@@ -48,6 +48,7 @@ MODEL_CONFIGS = [
         "low_dim_size": 256,
         "hybrid_num_alignment_layers": 4,
         "hybrid_lowdim_num_alignment_layers": 8,
+        "per_device_train_batch_size": 10,
     },
     {
         "checkpoint": "EleutherAI/pythia-1.4b",
@@ -55,6 +56,7 @@ MODEL_CONFIGS = [
         "low_dim_size": 256,
         "hybrid_num_alignment_layers": 8,
         "hybrid_lowdim_num_alignment_layers": 8,
+        "per_device_train_batch_size": 50,
     },
     {
         "checkpoint": "HuggingFaceTB/SmolLM2-1.7B",
@@ -62,6 +64,7 @@ MODEL_CONFIGS = [
         "low_dim_size": 256,
         "hybrid_num_alignment_layers": 8,
         "hybrid_lowdim_num_alignment_layers": 8,
+        "per_device_train_batch_size": 50,
     },
     {
         "checkpoint": "unsloth/gemma-3-4b-pt",
@@ -69,6 +72,7 @@ MODEL_CONFIGS = [
         "low_dim_size": 32,
         "hybrid_num_alignment_layers": 8,
         "hybrid_lowdim_num_alignment_layers": 8,
+        "per_device_train_batch_size": 50,
     },
 ]
 
@@ -137,6 +141,9 @@ def build_experiment_configs() -> list[dict]:
     for mcfg in MODEL_CONFIGS:
         checkpoint = mcfg["checkpoint"]
         lr = mcfg["learning_rate"]
+        per_device_train_batch_size = mcfg.get("per_device_train_batch_size", PER_DEVICE_TRAIN_BATCH_SIZE)
+        total_batch_size = per_device_train_batch_size * NUM_GPUS * GRADIENT_ACCUMULATION_STEPS
+        max_steps = LIMIT_DATASET_ITEMS // total_batch_size
         model_short = checkpoint.split("/")[-1]
         variants = _make_variants(
             mcfg["low_dim_size"],
@@ -153,9 +160,9 @@ def build_experiment_configs() -> list[dict]:
                 f"--max_sequence_length {MAX_SEQ_LEN}",
                 "--warmup_steps 100",
                 f"--model_checkpoint {checkpoint}",
-                f"--per_device_train_batch_size {PER_DEVICE_TRAIN_BATCH_SIZE}",
+                f"--per_device_train_batch_size {per_device_train_batch_size}",
                 f"--gradient_accumulation_steps {GRADIENT_ACCUMULATION_STEPS}",
-                f"--max_steps {MAX_STEPS}",
+                f"--max_steps {max_steps}",
                 f"--max_optimization_steps_per_sample {MAX_OPTIMIZATION_STEPS_PER_SAMPLE}",
                 f"--max_optimization_steps_per_token {MAX_OPTIMIZATION_STEPS_PER_TOKEN}",
                 f"--learning_rate {lr}",
@@ -191,8 +198,8 @@ def build_experiment_configs() -> list[dict]:
             if variant["num_alignment_layers"] != 1:
                 exp_suffix = f"{exp_suffix}_align_{variant['num_alignment_layers']}"
 
-            if PER_DEVICE_TRAIN_BATCH_SIZE != 1:
-                exp_suffix = f"{exp_suffix}_batch_{PER_DEVICE_TRAIN_BATCH_SIZE}"
+            if per_device_train_batch_size != 1:
+                exp_suffix = f"{exp_suffix}_batch_{per_device_train_batch_size}"
 
             # Output directory during training (in_progress)
             output_dir_in_progress = f"artifacts/experiments_in_progress/{exp_suffix}"
