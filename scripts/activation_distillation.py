@@ -92,6 +92,8 @@ def load_or_create_tokenized_dataset(
         # kwargs['streaming'] = True
     elif dataset_name == "LarryLovestein/pg19_1k":
         kwargs["split"] = "train"
+    elif dataset_name == "LarryLovestein/fanfics_1k":
+        kwargs["split"] = "train"
 
     raw_dataset = load_dataset(dataset_name, **kwargs)
 

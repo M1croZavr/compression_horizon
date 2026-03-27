@@ -55,7 +55,7 @@ MODEL_CONFIGS = [
         "low_dim_size": 256,
         "hybrid_num_alignment_layers": 8,
         "hybrid_lowdim_num_alignment_layers": 8,
-        "per_device_train_batch_size": 50,
+        "per_device_train_batch_size": 25,
     },
     {
         "checkpoint": "HuggingFaceTB/SmolLM2-1.7B",
@@ -63,7 +63,7 @@ MODEL_CONFIGS = [
         "low_dim_size": 256,
         "hybrid_num_alignment_layers": 8,
         "hybrid_lowdim_num_alignment_layers": 8,
-        "per_device_train_batch_size": 50,
+        "per_device_train_batch_size": 25,
     },
     {
         "checkpoint": "unsloth/gemma-3-4b-pt",
@@ -71,7 +71,7 @@ MODEL_CONFIGS = [
         "low_dim_size": 32,
         "hybrid_num_alignment_layers": 8,
         "hybrid_lowdim_num_alignment_layers": 8,
-        "per_device_train_batch_size": 50,
+        "per_device_train_batch_size": 10,
     },
 ]
 
@@ -131,10 +131,14 @@ def _make_variants(
     ]
 
 
-def build_experiment_configs() -> list[dict]:
+def build_experiment_configs(
+    dataset_name: str = DATASET_NAME,
+    limit_dataset_items: int = LIMIT_DATASET_ITEMS,
+    max_seq_len: int = MAX_SEQ_LEN,
+) -> list[dict]:
     """Build all progressive experiment configs from MODEL_CONFIGS x variants."""
     workdir = os.getcwd()
-    dataset_suffix = DATASET_NAME.split("/")[-1]
+    dataset_suffix = dataset_name.split("/")[-1]
     configs: list[dict] = []
 
     for mcfg in MODEL_CONFIGS:
@@ -155,7 +159,7 @@ def build_experiment_configs() -> list[dict]:
                 "--remove_unused_columns False",
                 f"--num_alignment_layers {variant['num_alignment_layers']}",
                 f"--loss_type {variant['loss_type']}",
-                f"--max_sequence_length {MAX_SEQ_LEN}",
+                f"--max_sequence_length {max_seq_len}",
                 "--warmup_steps 100",
                 f"--model_checkpoint {checkpoint}",
                 f"--per_device_train_batch_size {per_device_train_batch_size}",
@@ -165,8 +169,8 @@ def build_experiment_configs() -> list[dict]:
                 f"--learning_rate {lr}",
                 "--progressive_train 1",
                 f"--embedding_init_method {EMBEDDING_INIT_METHOD}",
-                f"--limit_dataset_items {LIMIT_DATASET_ITEMS}",
-                f"--dataset_name {DATASET_NAME}",
+                f"--limit_dataset_items {limit_dataset_items}",
+                f"--dataset_name {dataset_name}",
             ]
 
             if variant["no_bos_token"]:
@@ -179,7 +183,7 @@ def build_experiment_configs() -> list[dict]:
                 cmd_args.append("--low_dim_projection")
 
             # Build output dir suffix (mirrors run_jobs_progressive.py naming)
-            exp_suffix = f"sl_{MAX_SEQ_LEN}_{model_short}_ds_{dataset_suffix}_limit_{LIMIT_DATASET_ITEMS}"
+            exp_suffix = f"sl_{max_seq_len}_{model_short}_ds_{dataset_suffix}_limit_{limit_dataset_items}"
             if variant["low_dim_size"] is not None:
                 exp_suffix = f"{exp_suffix}_lowdim_{variant['low_dim_size']}"
             if variant["low_dim_projection"]:
@@ -217,11 +221,11 @@ def build_experiment_configs() -> list[dict]:
                 "hybrid_alpha": variant["hybrid_alpha"],
                 "embedding_init_method": EMBEDDING_INIT_METHOD,
                 "random_seed": 42,
-                "max_sequence_length": MAX_SEQ_LEN,
+                "max_sequence_length": max_seq_len,
                 "num_alignment_layers": variant["num_alignment_layers"],
                 "learning_rate": lr,
-                "limit_dataset_items": LIMIT_DATASET_ITEMS,
-                "dataset_name": DATASET_NAME,
+                "limit_dataset_items": limit_dataset_items,
+                "dataset_name": dataset_name,
                 "low_dim_projection": variant["low_dim_projection"],
                 "low_dim_size": variant["low_dim_size"],
                 "no_bos_token": variant["no_bos_token"],
@@ -233,10 +237,6 @@ def build_experiment_configs() -> list[dict]:
             configs.append(config)
 
     return configs
-
-
-# ── Module-level variable ───────────────────────────────────────────────────────
-experiment_configs: list[dict] = build_experiment_configs()
 
 
 def build_args() -> argparse.Namespace:
@@ -268,22 +268,38 @@ def build_args() -> argparse.Namespace:
         default=None,
         help="Filter experiments by variant name (e.g. simple, lowdim, hybrid, hybrid_lowdim, nobos).",
     )
+    parser.add_argument(
+        "--dataset-name",
+        default=None,
+        help=f"Dataset name to use for training (default: {DATASET_NAME}).",
+    )
+    parser.add_argument(
+        "--limit-dataset-items",
+        type=int,
+        default=None,
+        help=f"Number of dataset items to use (default: {LIMIT_DATASET_ITEMS}).",
+    )
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=None,
+        help=f"Maximum sequence length (default: {MAX_SEQ_LEN}).",
+    )
     args = parser.parse_args()
+    return args
 
-    # Auto-detect rerun scenario: if ALL experiments exist and no --no-force, default to --force
-    # Check for completed experiments in the FINAL directory (artifacts/experiments_progressive)
+
+def auto_force_detect(args: argparse.Namespace, configs: list[dict]) -> None:
+    """Auto-detect rerun scenario: if ALL experiments exist and no --no-force, default to --force."""
     if not args.force and not args.no_force:
-        # Check if most experiments already exist in FINAL location
-        existing_count = sum(1 for cfg in experiment_configs if os.path.isdir(cfg["output_dir_final"]))
-        if existing_count > 0 and existing_count == len(experiment_configs):
+        existing_count = sum(1 for cfg in configs if os.path.isdir(cfg["output_dir_final"]))
+        if existing_count > 0 and existing_count == len(configs):
             mode_str = " (dry-run)" if args.dry else ""
             print(
                 f"\033[33m[AUTO-FORCE] All {existing_count} experiments already exist. Enabling --force mode to rerun them{mode_str}.\033[0m"
             )
             print("\033[33m[AUTO-FORCE] Use --no-force to disable this behavior.\033[0m")
             args.force = True
-
-    return args
 
 
 def filter_configs(
@@ -303,7 +319,13 @@ def filter_configs(
 
 if __name__ == "__main__":
     args = build_args()
-    configs = filter_configs(experiment_configs, args.model, args.variant)
+    configs = build_experiment_configs(
+        dataset_name=args.dataset_name or DATASET_NAME,
+        limit_dataset_items=args.limit_dataset_items if args.limit_dataset_items is not None else LIMIT_DATASET_ITEMS,
+        max_seq_len=args.max_seq_len if args.max_seq_len is not None else MAX_SEQ_LEN,
+    )
+    auto_force_detect(args, configs)
+    configs = filter_configs(configs, args.model, args.variant)
 
     if not configs:
         print("\033[33mNo experiments matched the filters.\033[0m")
