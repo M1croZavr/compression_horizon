@@ -295,7 +295,8 @@ def calculate_convergence(
         sample_predicted_tokens = sample_logits.argmax(dim=-1)  # [orig_seq_len]
         sample_labels = batch_labels[i, :orig_seq_len]  # [orig_seq_len] - exclude padding
 
-        convergence = (sample_predicted_tokens == sample_labels).float().mean().item()
+        matches = (sample_predicted_tokens == sample_labels)
+        convergence = matches.sum().item() / matches.numel()
         convergences.append(convergence)
     return convergences
 
