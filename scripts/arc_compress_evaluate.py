@@ -209,15 +209,20 @@ def compress_prefixes_batch(
         total_loss = 0.0
         for i in range(batch_size):
             sequence_len = int(attention_mask[i].sum().item())
-            sample_logits = compression_outputs.logits[i : i + 1, :num_compression_tokens + sequence_len]  # [1, compression + sequence, vocabulary]
+            sample_logits = compression_outputs.logits[
+                i : i + 1, : num_compression_tokens + sequence_len
+            ]  # [1, compression + sequence, vocabulary]
             sample_input_ids = input_ids[i : i + 1, :sequence_len]  # [1, sequence]
             sample_attention_mask = attention_mask[i : i + 1, :sequence_len]  # [1, sequence]
             if use_alignment:
                 assert target_outputs is not None
                 sample_compression_hidden_states = tuple(
-                    hs_layer[i : i + 1, : num_compression_tokens + sequence_len] for hs_layer in compression_outputs.hidden_states
+                    hs_layer[i : i + 1, : num_compression_tokens + sequence_len]
+                    for hs_layer in compression_outputs.hidden_states
                 )
-                sample_target_hidden_states = tuple(hs_layer[i : i + 1, :sequence_len] for hs_layer in target_outputs.hidden_states)
+                sample_target_hidden_states = tuple(
+                    hs_layer[i : i + 1, :sequence_len] for hs_layer in target_outputs.hidden_states
+                )
                 sample_loss, _ = compute_hybrid_cross_entropy_and_alignment_loss(
                     logits=sample_logits,
                     input_ids=sample_input_ids,
@@ -295,7 +300,7 @@ def calculate_convergence(
         sample_predicted_tokens = sample_logits.argmax(dim=-1)  # [orig_seq_len]
         sample_labels = batch_labels[i, :orig_seq_len]  # [orig_seq_len] - exclude padding
 
-        matches = (sample_predicted_tokens == sample_labels)
+        matches = sample_predicted_tokens == sample_labels
         convergence = matches.sum().item() / matches.numel()
         convergences.append(convergence)
     return convergences
@@ -363,8 +368,8 @@ def compute_ppl_baseline_batch(
             ppl = float("inf")
         ppls.append(ppl)
         # Perplexity only on ending
-        sample_ending_logits = sample_logits[:, context_len - 1:, :]  # [1, ending, vocabulary]
-        sample_ending_input_ids = sample_input_ids[:, context_len - 1:]  # [1, ending]
+        sample_ending_logits = sample_logits[:, context_len - 1 :, :]  # [1, ending, vocabulary]
+        sample_ending_input_ids = sample_input_ids[:, context_len - 1 :]  # [1, ending]
         ending_ppl = estimate_token_perplexity(sample_ending_logits, sample_ending_input_ids)
         if math.isnan(ending_ppl):
             ending_ppl = float("inf")
@@ -429,7 +434,9 @@ def compute_ppl_compression_batch(
         sequence_len = int(attention_mask[i].sum().item())
         sample_token_embeddings = token_embeddings[i : i + 1, :sequence_len]  # [1, sequence, hidden]
         sample_attention_mask = attention_mask[i : i + 1, :sequence_len]  # [1, sequence]
-        sample_compression_token_embeddings = compression_token_embeddings.unsqueeze(0).to(token_embeddings.dtype)  # [1, compression, hidden]
+        sample_compression_token_embeddings = compression_token_embeddings.unsqueeze(0).to(
+            token_embeddings.dtype
+        )  # [1, compression, hidden]
         # Concatenate
         united_token_embeddings = torch.cat(
             [sample_compression_token_embeddings, sample_token_embeddings], dim=1
@@ -481,14 +488,18 @@ def compute_ppl_compression_batch(
     for i in range(len(full_texts)):
         # Perplexity on all sequence
         sequence_len = int(attention_mask[i].sum().item())
-        sample_logits = outputs.logits[i : i + 1, num_compression_tokens : num_compression_tokens + sequence_len]  # [1, sequence, vocabulary]
+        sample_logits = outputs.logits[
+            i : i + 1, num_compression_tokens : num_compression_tokens + sequence_len
+        ]  # [1, sequence, vocabulary]
         sample_input_ids = input_ids[i : i + 1, :sequence_len]  # [1, sequence]
         ppl = estimate_token_perplexity(sample_logits, sample_input_ids)
         if math.isnan(ppl):
             ppl = float("inf")
         ppls.append(ppl)
         # Perplexity with compression tokens edge
-        sample_logits = outputs.logits[i : i + 1, num_compression_tokens - 1 : num_compression_tokens + sequence_len]  # [1, sequence + 1, vocabulary]
+        sample_logits = outputs.logits[
+            i : i + 1, num_compression_tokens - 1 : num_compression_tokens + sequence_len
+        ]  # [1, sequence + 1, vocabulary]
         sample_input_ids = input_ids[i : i + 1, :sequence_len]  # [1, sequence]
         edge_ppl = estimate_token_perplexity_full_labels(sample_logits, sample_input_ids)
         if math.isnan(edge_ppl):
@@ -496,9 +507,7 @@ def compute_ppl_compression_batch(
         edge_ppls.append(edge_ppl)
         # Perplexity only on endings
         sample_logits = outputs.logits[
-            i : i + 1,
-            num_compression_tokens + max(0, context_len - 1) : num_compression_tokens + sequence_len,
-            :
+            i : i + 1, num_compression_tokens + max(0, context_len - 1) : num_compression_tokens + sequence_len, :
         ]  # [1, ending, vocabulary]
         sample_input_ids = input_ids[i : i + 1, max(0, context_len - 1) : sequence_len]  # [1, ending]
         ending_ppl = estimate_token_perplexity(sample_logits, sample_input_ids)
@@ -524,7 +533,7 @@ def answer_key_to_index(answer_key: str, labels: list[str]) -> int:
     if answer_key.isdigit():
         return int(answer_key) - 1
     # Fallback for letter answer keys not in labels
-    letter_to_idx = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4}
+    letter_to_idx = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4}
     return letter_to_idx.get(answer_key.upper(), 0)
 
 
@@ -756,10 +765,7 @@ def main():
         # Extract batch data - ARC format
         batch_contexts = [item["question"] for item in batch_items]
         batch_endings_list = [item["choices"]["text"] for item in batch_items]
-        batch_labels = [
-            answer_key_to_index(item["answerKey"], item["choices"]["label"])
-            for item in batch_items
-        ]
+        batch_labels = [answer_key_to_index(item["answerKey"], item["choices"]["label"]) for item in batch_items]
 
         # Compute baseline PPL for all endings (batched)
         batch_baseline_ppls = []
@@ -964,7 +970,6 @@ def main():
                 correct_predictions_compression_only_edge += int(compression_only_edge_is_correct)
                 correct_predictions_compression_only_endings += int(compression_only_endings_is_correct)
 
-
             # Compute token/char counts for correct ending
             token_count = None
             char_count = None
@@ -981,7 +986,7 @@ def main():
                     correct_tokens_baseline += token_count
                     correct_characters_baseline += char_count
                 if baseline_endings_is_correct:
-                        correct_tokens_baseline_endings += token_count
+                    correct_tokens_baseline_endings += token_count
 
                 # Compressed token/char counts (respects only_full_convergence flag)
                 if should_count_compressed:
@@ -1088,33 +1093,63 @@ def main():
     baseline_char_accuracy = correct_characters_baseline / total_characters_baseline if total_characters_baseline > 0 else 0.0
 
     # 2. Baseline endings
-    baseline_endings_accuracy = correct_predictions_baseline_endings / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
-    baseline_endings_token_accuracy = correct_tokens_baseline_endings / total_tokens_baseline if total_tokens_baseline > 0 else 0.0
+    baseline_endings_accuracy = (
+        correct_predictions_baseline_endings / total_predictions_baseline if total_predictions_baseline > 0 else 0.0
+    )
+    baseline_endings_token_accuracy = (
+        correct_tokens_baseline_endings / total_tokens_baseline if total_tokens_baseline > 0 else 0.0
+    )
 
     # 3. Compression
-    compression_accuracy = correct_predictions_compression / total_predictions_compression if total_predictions_compression > 0 else 0.0
+    compression_accuracy = (
+        correct_predictions_compression / total_predictions_compression if total_predictions_compression > 0 else 0.0
+    )
     compression_token_accuracy = correct_tokens_compression / total_tokens_compression if total_tokens_compression > 0 else 0.0
-    compression_char_accuracy = correct_characters_compression / total_characters_compression if total_characters_compression > 0 else 0.0
+    compression_char_accuracy = (
+        correct_characters_compression / total_characters_compression if total_characters_compression > 0 else 0.0
+    )
 
     # 4. Compression edge
-    compression_edge_accuracy = correct_predictions_compression_edge / total_predictions_compression if total_predictions_compression > 0 else 0.0
-    compression_edge_token_accuracy = correct_tokens_compression_edge / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    compression_edge_accuracy = (
+        correct_predictions_compression_edge / total_predictions_compression if total_predictions_compression > 0 else 0.0
+    )
+    compression_edge_token_accuracy = (
+        correct_tokens_compression_edge / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    )
 
     # 5. Compression endings
-    compression_endings_accuracy = correct_predictions_compression_endings / total_predictions_compression if total_predictions_compression > 0 else 0.0
-    compression_endings_token_accuracy = correct_tokens_compression_endings / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    compression_endings_accuracy = (
+        correct_predictions_compression_endings / total_predictions_compression if total_predictions_compression > 0 else 0.0
+    )
+    compression_endings_token_accuracy = (
+        correct_tokens_compression_endings / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    )
 
     # 6. Compression only
-    compression_only_accuracy = correct_predictions_compression_only / total_predictions_compression if total_predictions_compression > 0 else 0.0
-    compression_only_token_accuracy = correct_tokens_compression_only / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    compression_only_accuracy = (
+        correct_predictions_compression_only / total_predictions_compression if total_predictions_compression > 0 else 0.0
+    )
+    compression_only_token_accuracy = (
+        correct_tokens_compression_only / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    )
 
     # 7. Compression only edge
-    compression_only_edge_accuracy = correct_predictions_compression_only_edge / total_predictions_compression if total_predictions_compression > 0 else 0.0
-    compression_only_edge_token_accuracy = correct_tokens_compression_only_edge / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    compression_only_edge_accuracy = (
+        correct_predictions_compression_only_edge / total_predictions_compression if total_predictions_compression > 0 else 0.0
+    )
+    compression_only_edge_token_accuracy = (
+        correct_tokens_compression_only_edge / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    )
 
     # 8. Compression only endings
-    compression_only_endings_accuracy = correct_predictions_compression_only_endings / total_predictions_compression if total_predictions_compression > 0 else 0.0
-    compression_only_endings_token_accuracy = correct_tokens_compression_only_endings / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    compression_only_endings_accuracy = (
+        correct_predictions_compression_only_endings / total_predictions_compression
+        if total_predictions_compression > 0
+        else 0.0
+    )
+    compression_only_endings_token_accuracy = (
+        correct_tokens_compression_only_endings / total_tokens_compression if total_tokens_compression > 0 else 0.0
+    )
 
     # Build intervention summary
     intervention_summary = None
@@ -1259,7 +1294,9 @@ def main():
     print(f"   Token-normalized: {compression_edge_token_accuracy:.4f}")
 
     print("\n5. Compression Endings (answers-only PPL with compression context):")
-    print(f"   Accuracy: {compression_endings_accuracy:.4f} (diff: {compression_endings_accuracy - baseline_endings_accuracy:+.4f})")
+    print(
+        f"   Accuracy: {compression_endings_accuracy:.4f} (diff: {compression_endings_accuracy - baseline_endings_accuracy:+.4f})"
+    )
     print(f"   Token-normalized: {compression_endings_token_accuracy:.4f}")
 
     print("\n" + "-" * 70)
@@ -1271,11 +1308,15 @@ def main():
     print(f"   Token-normalized: {compression_only_token_accuracy:.4f}")
 
     print("\n7. Compression Only Edge (answers-only PPL):")
-    print(f"   Accuracy: {compression_only_edge_accuracy:.4f} (diff: {compression_only_edge_accuracy - baseline_accuracy:+.4f})")
+    print(
+        f"   Accuracy: {compression_only_edge_accuracy:.4f} (diff: {compression_only_edge_accuracy - baseline_accuracy:+.4f})"
+    )
     print(f"   Token-normalized: {compression_only_edge_token_accuracy:.4f}")
 
     print("\n8. Compression Only Endings (alternative answers PPL):")
-    print(f"   Accuracy: {compression_only_endings_accuracy:.4f} (diff: {compression_only_endings_accuracy - baseline_endings_accuracy:+.4f})")
+    print(
+        f"   Accuracy: {compression_only_endings_accuracy:.4f} (diff: {compression_only_endings_accuracy - baseline_endings_accuracy:+.4f})"
+    )
     print(f"   Token-normalized: {compression_only_endings_token_accuracy:.4f}")
 
     if args.intervention and intervention_summary:
