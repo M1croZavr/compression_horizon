@@ -16,21 +16,26 @@ def calculate_distances(compression_embeddings: torch.Tensor, sequence_embedding
     return cosine, l2, l1
 
 
-def estimate_token_perplexity(logits: torch.Tensor, labels: torch.Tensor) -> float:
+def estimate_token_perplexity(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor | None = None) -> float:
     """Compute perplexity from logits, labels, and attention mask."""
     log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
-    tgt = labels[:, 1:]
-    nll = -log_probs.gather(dim=-1, index=tgt.unsqueeze(-1)).squeeze(-1)
+    nll = -log_probs.gather(dim=-1, index=labels[:, 1:].unsqueeze(-1)).squeeze(-1)
+    if mask is not None:
+        nll = nll[mask[:, 1:].bool()]
     if nll.numel() == 0:
         return float("nan")
     ppl = torch.exp(nll.mean()).item()
     return float(ppl)
 
 
-def estimate_token_perplexity_full_labels(logits: torch.Tensor, labels: torch.Tensor) -> float:
+def estimate_token_perplexity_full_labels(
+    logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor | None = None
+) -> float:
     """Compute perplexity from logits, labels, and attention mask."""
     log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
     nll = -log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+    if mask is not None:
+        nll = nll[mask.bool()]
     if nll.numel() == 0:
         return float("nan")
     ppl = torch.exp(nll.mean()).item()
