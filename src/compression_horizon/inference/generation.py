@@ -14,6 +14,7 @@ def generate_from_compression(
     num_return_sequences: int = 1,
     add_noise=False,
     random_position_ids: bool = False,
+    return_generated_ids: bool = False,
 ) -> list[str]:
     """Generates a sequence starting from compressed embeddings."""
     # Cast to the same device
@@ -98,7 +99,7 @@ def generate_from_compression(
             break
 
     texts = tokenizer.batch_decode(generated_token_ids, skip_special_tokens=True)
-    return texts
+    return texts, generated_token_ids if return_generated_ids else texts
 
 
 @torch.no_grad()
