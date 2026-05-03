@@ -178,6 +178,7 @@ PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
 
 
 # tab:all_progressive_modifications
+# tab:rebuttle_all_progressive_modifications
 PYTHONPATH=./src:. python scripts/paper/low_dimesional.py \
   --checkpoints \
     artifacts/experiments_progressive/sl_4096_Meta-Llama-3.1-8B_ds_pg19_1k_limit_50_lr_0.1/progressive_prefixes \
