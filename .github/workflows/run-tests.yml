@@ -11,6 +11,6 @@ jobs:
     - uses: actions/checkout@v4
     - name: Run pytest
       env:
-        PYTHONPATH: ./src
+        PYTHONPATH: ./src:.
         HF_HOME: /workspace-SR004.nfs2/.cache/huggingface
       run: ls -l && /home/jovyan/.mlspace/envs/compression_horizon/bin/pytest -v ./tests/

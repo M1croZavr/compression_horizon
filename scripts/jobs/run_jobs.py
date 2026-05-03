@@ -4,7 +4,7 @@ import os
 from itertools import product
 from typing import List, Optional
 
-from mls.manager.job.utils import training_job_api_from_profile
+from mls.manager.job.utils import get_in_progress_jobs, training_job_api_from_profile
 
 
 def parse_hybrid_alpha_list(values: List[str]) -> List[Optional[float]]:
@@ -28,7 +28,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument(
         "--embedding_init_methods",
         nargs="+",
-        default=["mvnormal"],
+        default=["random0.02"],
         help="List of embedding initialization methods.",
     )
     parser.add_argument(
@@ -43,7 +43,7 @@ def build_args() -> argparse.Namespace:
         "--fix_position_ids",
         nargs="+",
         type=int,
-        default=[0, 1],
+        default=[0],
         help="Fix position ids or not?",
     )
     parser.add_argument(
@@ -56,7 +56,7 @@ def build_args() -> argparse.Namespace:
     parser.add_argument(
         "--hybrid_alphas",
         nargs="+",
-        default=[None, "1.0"],
+        default=[None],
         help='List of hybrid alpha values. Use "none" to disable hybrid and use cross-entropy loss.',
     )
 
@@ -94,7 +94,7 @@ def build_args() -> argparse.Namespace:
     )
 
     # Training defaults that were previously hardcoded
-    parser.add_argument("--per_device_train_batch_size", type=int, default=16)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=4)
     parser.add_argument("--max_optimization_steps_per_sample", type=int, default=1000)
     parser.add_argument("--learning_rate", type=float, default=0.01)
     parser.add_argument("--warmup_steps", type=int, default=100)
@@ -103,6 +103,18 @@ def build_args() -> argparse.Namespace:
         type=int,
         default=100,
         help="Limit the number of dataset items to use.",
+    )
+    parser.add_argument(
+        "--low_dim_size",
+        type=int,
+        default=None,
+        help="Low dimension size for projection. If not specified, not included in output dir.",
+    )
+    parser.add_argument(
+        "--low_dim_projection",
+        action="store_true",
+        default=False,
+        help="Enable low dimension projection. If not specified, not included in output dir.",
     )
     parser.add_argument(
         "--remove_unused_columns",
@@ -122,12 +134,18 @@ def build_args() -> argparse.Namespace:
         default=5,
         help="num_alignment_layers to use when hybrid is enabled.",
     )
+    parser.add_argument(
+        "--no_bos_token",
+        action="store_true",
+        default=False,
+        help="Disable BOS token insertion during dataset tokenization.",
+    )
 
     # Infra
     parser.add_argument("--instance_type", default="a100.1gpu")
     parser.add_argument(
         "--base_image",
-        default="cr.ai.cloud.ru/aicloud-base-images/cuda12.1-torch2-py311:0.0.36",
+        default="cr.ai.cloud.ru/aicloud-base-images/py3.12-torch2.7.0:0.0.41",
     )
     parser.add_argument("--n_workers", type=int, default=1)
     parser.add_argument("--processes_per_worker", type=int, default=1)
@@ -156,6 +174,11 @@ if __name__ == "__main__":
     client, extra_options = training_job_api_from_profile(args.profile)
 
     author_name = args.author_name
+
+    # Get in-progress jobs once at the start
+    region = extra_options["region"]
+    in_progress_jobs = get_in_progress_jobs()
+    in_progress_job_descs = {job.get("job_desc", "") for job in in_progress_jobs}
 
     hybrid_alpha_values = parse_hybrid_alpha_list(args.hybrid_alphas)
     model_checkpoints = args.model_checkpoints if args.model_checkpoints is not None else [args.model_checkpoint]
@@ -203,12 +226,28 @@ if __name__ == "__main__":
             f"--embedding_init_method {embedding_init_method}",
             f"--fix_position_ids {fix_position_ids}",
         ]
+        if args.no_bos_token:
+            args_parts.append("--no_bos_token")
+        if args.low_dim_size is not None:
+            args_parts.append(f"--low_dim_size {args.low_dim_size}")
+        if args.low_dim_projection:
+            args_parts.append("--low_dim_projection")
         if is_hybrid:
             args_parts.append(f"--hybrid_alpha {hybrid_alpha}")
         args_for_hash = " ".join(args_parts).strip()
 
         # Build deterministic output directory: essential prefix + hash of arguments
         prefix = f"ch_{loss_type}_hybrid_alpha_{hybrid_alpha}_init_{embedding_init_method}_seq_len_{max_sequence_length}"
+        if args.dtype and args.dtype != "bfloat16":  # Only add to dir name if non-default
+            prefix = f"{prefix}_dtype_{args.dtype}"
+        if args.limit_dataset_items and args.limit_dataset_items != 100:  # Only add to dir name if non-default
+            prefix = f"{prefix}_limit_{args.limit_dataset_items}"
+        if args.low_dim_size is not None:
+            prefix = f"{prefix}_lowdim_{args.low_dim_size}"
+        if args.low_dim_projection:
+            prefix = f"{prefix}_lowproj"
+        if args.no_bos_token:
+            prefix = f"{prefix}_nobos"
         cmd_hash8 = hashlib.sha1(args_for_hash.encode("utf-8")).hexdigest()[:8]
         output_dir = os.path.join("artifacts/experiments", f"{prefix}_{cmd_hash8}")
 
@@ -231,8 +270,13 @@ if __name__ == "__main__":
             f"ckpt={model_checkpoint} "
             f"dtype={args.dtype} "
             f"fix_position_ids={fix_position_ids} "
-            f"#{author_name} #rnd #multimodal @mrsndmn"
+            f"#{author_name} #rnd #multimodal #notify_completed @mrsndmn"
         )
+
+        # Check if job with same description already exists in queue
+        if job_desc in in_progress_job_descs:
+            print(f"\033[33mSkipping: job already in queue with description:\033[0m {job_desc}")
+            continue
 
         payload = {
             "script": base_cmd,

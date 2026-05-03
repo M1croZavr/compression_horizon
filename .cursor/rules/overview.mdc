@@ -42,8 +42,11 @@ alwaysApply: true
 
 
 ### How to run
+
+For all python commands use python interpreter path: /home/jovyan/.mlspace/envs/compression_horizon/bin/python
+
 ```bash
-python -m scripts.activation_distillation \
+/home/jovyan/.mlspace/envs/compression_horizon/bin/python -m scripts.activation_distillation \
   --model_checkpoint HuggingFaceTB/SmolLM2-135M \
   --per_device_train_batch_size 1 \
   --max_sequence_length 128 \
@@ -63,3 +66,9 @@ python -m scripts.activation_distillation \
 ### Notes
 - The base model weights remain frozen; only the prepended compression tokens are optimized per-sample.
 - `loss_type` and `num_alignment_layers` significantly influence behavior; start with `l2` and `0` respectively, then ablate.
+
+# Artifacts
+
+## Progressive training artifacts
+
+Ceckout training method to see how artifacts are saved: `def progressive_train` @src/compression_horizon/train/trainer.py

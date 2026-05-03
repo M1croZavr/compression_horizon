@@ -1,5 +1,6 @@
+run
 # CI configurations
-.github/actions-runner
+.github/actions-runner*
 
 # Cache
 __pycache__
@@ -21,7 +22,11 @@ xet/
 # Debug
 /tests/bar.py
 
+# Other
 trainer_output/
+supplemetnary/
+supplemetnary.zip
+.claude
 
 # MacOS system
 .DS_Store

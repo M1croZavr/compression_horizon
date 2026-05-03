@@ -11,6 +11,14 @@ from datasets import Dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+# Check if flash-attn is available
+# try:
+#     import flash_attn
+
+#     FLASH_ATTN_AVAILABLE = True
+# except ImportError:
+FLASH_ATTN_AVAILABLE = False
+
 
 def curve_length_from_points(points: torch.Tensor) -> float:
     """Compute polyline length given sampled points along a curve.
@@ -32,12 +40,18 @@ def load_progressive_dataset(dataset_path: str) -> Dataset:
 
 def filter_records(
     ds: Dataset,
-    sample_id: Optional[int] = None,
+    sample_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+
+    sample_ids = None
+    if sample_id is not None:
+        sample_ids = set(int(sid) for sid in sample_id.split(","))
+
+    print("sample_ids", sample_ids)
     for i in range(len(ds)):
         r = ds[i]
-        if sample_id is not None and int(r.get("sample_id", -1)) != int(sample_id):
+        if i not in sample_ids:
             continue
         rows.append(r)
     return rows
@@ -58,13 +72,44 @@ def collate_stages_by_sample(
 
 
 def to_tensor_embedding(row: Dict[str, Any], device: torch.device) -> torch.Tensor:
-    emb = torch.tensor(row["embedding"], dtype=torch.float32, device=device)
+    emb = torch.tensor(row["embedding"], dtype=torch.bfloat16, device=device)
     return emb
 
 
-def prepare_model(model_name: str, device: torch.device):
-    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+def prepare_model(model_name: str, device: torch.device, use_flash_attention_2: bool = True, use_torch_compile: bool = True):
+    """Prepare model with optional flash attention 2 and torch.compile for faster training.
+
+    Args:
+        model_name: HuggingFace model checkpoint name
+        device: Target device (cuda/cpu)
+        use_flash_attention_2: Whether to use flash attention 2 (if available)
+        use_torch_compile: Whether to compile the model with torch.compile
+
+    Returns:
+        Tuple of (model, tokenizer)
+    """
+    attn_implementation = None
+    if use_flash_attention_2 and FLASH_ATTN_AVAILABLE:
+        attn_implementation = "flash_attention_2"
+        print("Using flash_attention_2 for faster training")
+    elif use_flash_attention_2 and not FLASH_ATTN_AVAILABLE:
+        print("Warning: flash_attention_2 requested but not available. Install with: pip install flash-attn")
+        print("Falling back to default attention implementation")
+
+    model_kwargs = {}
+    if attn_implementation:
+        model_kwargs["attn_implementation"] = attn_implementation
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs).to(device)
+    model.to(torch.bfloat16)
     model.eval()
+
+    if use_torch_compile and device.type == "cuda":
+        print("Compiling model with torch.compile for faster training")
+        model = torch.compile(model, mode="reduce-overhead")
+    elif use_torch_compile and device.type != "cuda":
+        print("Warning: torch.compile requested but device is not CUDA. Skipping compilation.")
+
     tok = AutoTokenizer.from_pretrained(model_name)
     if tok.pad_token is None and tok.eos_token is not None:
         tok.pad_token = tok.eos_token
@@ -84,7 +129,7 @@ def compute_convergence(
         dtype=attention_mask.dtype,
         device=attention_mask.device,
     )
-    inputs_embeds_with_ct = torch.cat([compression_tokens, inputs_embeds], dim=1)
+    inputs_embeds_with_ct = torch.cat([compression_tokens, inputs_embeds], dim=1).to(torch.bfloat16)
     attention_mask_with_ct = torch.cat([attn_ct, attention_mask], dim=1)
     outputs = model(inputs_embeds=inputs_embeds_with_ct, attention_mask=attention_mask_with_ct)
     preds = outputs.logits[:, 0:-1].argmax(dim=-1)
@@ -146,7 +191,7 @@ def learn_bezier_and_evaluate(
     lr: float = 1e-2,
     batch_t: int = 16,
     seed: int = 42,
-    evaluate_every: int = 100,
+    evaluate_every: int = 0,
 ) -> Tuple[torch.Tensor, np.ndarray, np.ndarray, float]:
     torch.manual_seed(int(seed))
     device = e0.device
@@ -188,7 +233,7 @@ def learn_bezier_and_evaluate(
         attn_b = attention_mask.expand(B, -1)
         ids_b = input_ids.expand(B, -1)
         attn_ct = torch.ones((B, C), dtype=attn_b.dtype, device=device)
-        x = torch.cat([ct, inputs_b], dim=1)
+        x = torch.cat([ct, inputs_b], dim=1).to(torch.bfloat16)
         m = torch.cat([attn_ct, attn_b], dim=1)
         out = model(inputs_embeds=x, attention_mask=m)
         return cross_entropy_loss_for_batch(out.logits, ids_b, attn_b)
@@ -204,17 +249,21 @@ def learn_bezier_and_evaluate(
         opt.step()
         lr_scheduler.step()
 
-        if iter_i % evaluate_every == 0:
+        if evaluate_every > 0 and iter_i % evaluate_every == 0:
             ts_np = np.linspace(0.0, 1.0, num_points, dtype=np.float32)
             accs: List[float] = []
+            curve_pts: List[torch.Tensor] = []
             with torch.no_grad():
                 for tval in tqdm(ts_np, desc="Evaluating Bezier curve"):
-                    t_t = torch.tensor([tval], device=device, dtype=torch.float32)
+                    t_t = torch.tensor([tval], device=device, dtype=torch.bfloat16)
                     ct = _bezier_points(t_t)
                     acc = compute_convergence(model, ct, inputs_embeds, attention_mask, input_ids)
                     accs.append(acc)
+                    curve_pts.append(ct.squeeze(0))  # [C, D]
+            bezier_points = torch.stack(curve_pts, dim=0)  # [K, C, D]
+            bezier_length = curve_length_from_points(bezier_points)
             print(
-                f"Iteration {iter_i}, mean accuracy: {torch.tensor(accs).mean().item()}, min accuracy: {torch.tensor(accs).min().item()}, max accuracy: {torch.tensor(accs).max().item()}"
+                f"Iteration {iter_i}, mean accuracy: {torch.tensor(accs).mean().item()}, min accuracy: {torch.tensor(accs).min().item()}, max accuracy: {torch.tensor(accs).max().item()}, curve length: {bezier_length:.4f}"
             )
             plt.plot(ts_np, accs, label="Bezier (learned)", linewidth=2)
             plt.xlabel("t")
@@ -231,7 +280,7 @@ def learn_bezier_and_evaluate(
     curve_pts: List[torch.Tensor] = []
     with torch.no_grad():
         for tval in tqdm(ts_np, desc="Evaluating Bezier curve"):
-            t_t = torch.tensor([tval], device=device, dtype=torch.float32)
+            t_t = torch.tensor([tval], device=device, dtype=torch.bfloat16)
             ct = _bezier_points(t_t)
             acc = compute_convergence(model, ct, inputs_embeds, attention_mask, input_ids)
             accs.append(acc)
@@ -258,63 +307,31 @@ def pick_model_name(rows: List[Dict[str, Any]]) -> Optional[str]:
 
 def main():
     parser = argparse.ArgumentParser(description="Interpolate compression embeddings and evaluate accuracies")
-    parser.add_argument(
-        "--dataset_path1",
-        type=str,
-        required=True,
-        help="Path to progressive_prefixes dataset",
-    )
-    parser.add_argument(
-        "--dataset_path2",
-        type=str,
-        required=True,
-        help="Path to progressive_prefixes dataset",
-    )
-    parser.add_argument("--sample_id", type=int, default=None, help="Optional sample_id filter")
-    parser.add_argument(
-        "--model_checkpoint",
-        type=str,
-        default=None,
-        help="HF model name; inferred if omitted",
-    )
-    parser.add_argument(
-        "--num_points",
-        type=int,
-        default=300,
-        help="Number of evaluation points along t  [0,1]",
-    )
-    parser.add_argument(
-        "--bezier_steps",
-        type=int,
-        default=5000,
-        help="Optimization steps for Bezier control point",
-    )
-    parser.add_argument(
-        "--bezier_lr",
-        type=float,
-        default=1e-2,
-        help="Learning rate for Bezier control point",
-    )
-    parser.add_argument(
-        "--bezier_batch_t",
-        type=int,
-        default=32,
-        help="Number of t samples per optimization step",
-    )
+    parser.add_argument("--dataset_path1", type=str, required=True, help="Path to progressive_prefixes dataset")
+    parser.add_argument("--dataset_path2", type=str, required=True, help="Path to progressive_prefixes dataset")
+    parser.add_argument("--sample_id", type=str, default=None, help="Optional sample_id filter")
+    parser.add_argument("--model_checkpoint", type=str, default=None, help="HF model name; inferred if omitted")
+    parser.add_argument("--num_points", type=int, default=300, help="Number of evaluation points along t  [0,1]")
+    parser.add_argument("--bezier_steps", type=int, default=5000, help="Optimization steps for Bezier control point")
+    parser.add_argument("--bezier_lr", type=float, default=1e-2, help="Learning rate for Bezier control point")
+    parser.add_argument("--bezier_batch_t", type=int, default=32, help="Number of t samples per optimization step")
     parser.add_argument("--bezier_order", type=int, default=2, help="Bezier curve order (>=2)")
-    parser.add_argument(
-        "--bezier_weight_decay",
-        type=float,
-        default=0.0,
-        help="Weight decay for Bezier control point",
-    )
+    parser.add_argument("--bezier_weight_decay", type=float, default=0.0, help="Weight decay for Bezier control point")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output_dir", type=str, default="/tmp", help="Where to save plots and parameters")
     parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="/tmp",
-        help="Where to save plots and parameters",
+        "--use_flash_attention_2",
+        action="store_true",
+        default=True,
+        help="Use flash attention 2 for faster training (if available)",
     )
+    parser.add_argument(
+        "--no_flash_attention_2", dest="use_flash_attention_2", action="store_false", help="Disable flash attention 2"
+    )
+    parser.add_argument(
+        "--use_torch_compile", action="store_true", default=True, help="Compile model with torch.compile for faster training"
+    )
+    parser.add_argument("--no_torch_compile", dest="use_torch_compile", action="store_false", help="Disable torch.compile")
 
     args = parser.parse_args()
 
@@ -335,7 +352,12 @@ def main():
     model_name = args.model_checkpoint or pick_model_name(rows)
     if not model_name:
         raise ValueError("Could not infer model checkpoint from dataset; please pass --model_checkpoint")
-    model, tok = prepare_model(model_name, device)
+    model, tok = prepare_model(
+        model_name,
+        device,
+        use_flash_attention_2=args.use_flash_attention_2,
+        use_torch_compile=args.use_torch_compile,
+    )
     # Freeze model weights; we only optimize Bezier control points
     for p in model.parameters():
         p.requires_grad_(False)
@@ -347,6 +369,8 @@ def main():
     all_bez_accs: List[np.ndarray] = []
     all_lin_lengths: List[float] = []
     all_bez_lengths: List[float] = []
+
+    print("by_sid", len(by_sid), by_sid.keys())
 
     for sid, stages in by_sid.items():
         first = stages[0]
@@ -371,13 +395,7 @@ def main():
         e1 = to_tensor_embedding(last, device)
 
         ts_lin, accs_lin = evaluate_linear_curve(
-            model,
-            e0,
-            e1,
-            inputs_embeds,
-            attention_mask,
-            input_ids,
-            num_points=int(args.num_points),
+            model, e0, e1, inputs_embeds, attention_mask, input_ids, num_points=int(args.num_points)
         )
         # Exact for linear interpolation even with discretization at uniform t
         linear_length = float(torch.linalg.norm((e1 - e0).reshape(-1)).item())
@@ -402,12 +420,7 @@ def main():
 
         plt.figure(figsize=(7, 4))
         plt.plot(ts_lin, accs_lin, label=f"Linear (L={linear_length:.2f})", linewidth=2)
-        plt.plot(
-            ts_bez,
-            accs_bez,
-            label=f"Bezier (learned, L={bezier_length:.2f})",
-            linewidth=2,
-        )
+        plt.plot(ts_bez, accs_bez, label=f"Bezier (learned, L={bezier_length:.2f})", linewidth=2)
         plt.xlabel("t")
         plt.ylabel("convergence accuracy")
         plt.title(f"Interpolation Accuracy (sample {sid})")
@@ -456,21 +469,9 @@ def main():
         mean_bez_len = float(np.mean(all_bez_lengths)) if len(all_bez_lengths) > 0 else 0.0
 
         plt.figure(figsize=(7, 4))
-        plt.plot(
-            all_ts,
-            lin_mean,
-            label=f"Linear (mean, L={mean_lin_len:.2f})",
-            color="C0",
-            linewidth=2,
-        )
+        plt.plot(all_ts, lin_mean, label=f"Linear (mean, L={mean_lin_len:.2f})", color="C0", linewidth=2)
         plt.fill_between(all_ts, lin_mean - lin_std, lin_mean + lin_std, color="C0", alpha=0.2)
-        plt.plot(
-            all_ts,
-            bez_mean,
-            label=f"Bezier (mean, L={mean_bez_len:.2f})",
-            color="C1",
-            linewidth=2,
-        )
+        plt.plot(all_ts, bez_mean, label=f"Bezier (mean, L={mean_bez_len:.2f})", color="C1", linewidth=2)
         plt.fill_between(all_ts, bez_mean - bez_std, bez_mean + bez_std, color="C1", alpha=0.2)
         plt.xlabel("t")
         plt.ylabel("convergence accuracy")
