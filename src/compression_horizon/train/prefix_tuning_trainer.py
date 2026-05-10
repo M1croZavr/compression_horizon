@@ -166,7 +166,6 @@ class PrefixTuningTrainer(BaseTrainer):
                             prefix_param,
                             lr_scheduler,
                             embedding_namespace="prefix_tuning",
-                            grad_norm_namespace="prefix_tuning",
                         )
 
                     if float(convergence_per_sample.mean().item()) >= 1.0:
