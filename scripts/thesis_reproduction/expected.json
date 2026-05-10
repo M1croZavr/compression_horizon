@@ -12,5 +12,19 @@
       "final_convergence":      {"kind": "measured",      "mean": 0.684, "std": 0.175}
     },
     "notes": "Full cramming with fixed token budget. compressed_tokens is an input parameter (= max_sequence_length); only information_gain_bits and final_convergence are measured outputs."
+  },
+  "full_cramming/llama_3_2_1b": {
+    "paper_section": "Table 11 (Appendix C)",
+    "model": "unsloth/Llama-3.2-1B",
+    "trainer_type": "full",
+    "dataset": "LarryLovestein/pg19_1k",
+    "num_samples": 10,
+    "max_sequence_length": 512,
+    "expected": {
+      "compressed_tokens":      {"kind": "configuration", "value": 512, "tolerance": 0},
+      "information_gain_bits":  {"kind": "measured",      "mean": 1965.0, "std": 244.0},
+      "final_convergence":      {"kind": "measured",      "mean": 0.998, "std": 0.001}
+    },
+    "notes": "Full cramming Llama-3.2-1B baseline. Paper reports accuracy 0.998 ± 0 — near-perfect reconstruction; refactor should reproduce this within machine epsilon. Std=0 in paper, set to 0.001 to avoid div-by-zero in z-score; verdict relies on absolute |delta| < 0.005."
   }
 }
