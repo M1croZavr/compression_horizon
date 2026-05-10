@@ -37,6 +37,17 @@ def _select_trainer_cls(args) -> type:
     return FullCrammingTrainer
 
 
+def _resolve_attn_implementation() -> str:
+    """Use flash_attention_2 if the flash_attn package is available, else fall back to sdpa."""
+    try:
+        import flash_attn  # noqa: F401
+
+        return "flash_attention_2"
+    except ImportError:
+        print("flash_attn not installed, falling back to attn_implementation='sdpa'")
+        return "sdpa"
+
+
 def main() -> None:
     parser = transformers.HfArgumentParser(MyTrainingArguments)
     (args,) = parser.parse_args_into_dataclasses()
@@ -53,15 +64,18 @@ def main() -> None:
     torch_dtype = resolve_torch_dtype(args.dtype)
     print(f"torch_dtype: {torch_dtype}")
 
+    attn_implementation = _resolve_attn_implementation()
+    print(f"attn_implementation: {attn_implementation}")
+
     if args.train_compression_head or "experiments_compression_head/ch_head_" in args.model_checkpoint:
         from compression_horizon.models.llama_compression_head import LlamaForCausalLMCompressionHead
 
         model = LlamaForCausalLMCompressionHead.from_pretrained(
-            args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
+            args.model_checkpoint, dtype=torch_dtype, attn_implementation=attn_implementation
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            args.model_checkpoint, torch_dtype=torch_dtype, attn_implementation="flash_attention_2"
+            args.model_checkpoint, dtype=torch_dtype, attn_implementation=attn_implementation
         )
         for p in model.parameters():
             p.requires_grad = False

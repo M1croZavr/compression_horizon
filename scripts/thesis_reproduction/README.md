@@ -36,7 +36,7 @@ Each experiment:
 bash scripts/thesis_reproduction/experiments/full_cramming/pythia_160m.sh
 
 # 2. Or compare an already-trained run against the paper.
-PYTHONPATH=./src python scripts/thesis_reproduction/analyze.py \
+uv run python scripts/thesis_reproduction/analyze.py \
     --experiment full_cramming/pythia_160m
 ```
 

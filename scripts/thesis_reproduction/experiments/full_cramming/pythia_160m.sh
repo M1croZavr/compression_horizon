@@ -11,9 +11,9 @@ cd "$(git rev-parse --show-toplevel)"
 EXPERIMENT="full_cramming/pythia_160m"
 OUTPUT_DIR="artifacts/thesis_reproduction/${EXPERIMENT}"
 
-PYTHONPATH=./src python scripts/thesis_reproduction/train.py \
+uv run python scripts/thesis_reproduction/train.py \
   --model_checkpoint EleutherAI/pythia-160m \
-  --dataset_name mrsndmn/pg19 \
+  --dataset_name LarryLovestein/pg19_1k \
   --max_sequence_length 32 \
   --limit_dataset_items 10 \
   --per_device_train_batch_size 10 \
@@ -29,4 +29,4 @@ echo
 echo "==============================================================================="
 echo "Training finished. Comparing with paper expected values..."
 echo "==============================================================================="
-PYTHONPATH=./src python scripts/thesis_reproduction/analyze.py --experiment "$EXPERIMENT"
+uv run python scripts/thesis_reproduction/analyze.py --experiment "$EXPERIMENT"

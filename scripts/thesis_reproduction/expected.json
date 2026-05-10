@@ -3,7 +3,7 @@
     "paper_section": "Table 11 (Appendix C)",
     "model": "EleutherAI/pythia-160m",
     "trainer_type": "full",
-    "dataset": "mrsndmn/pg19",
+    "dataset": "LarryLovestein/pg19_1k",
     "num_samples": 10,
     "max_sequence_length": 32,
     "expected": {
