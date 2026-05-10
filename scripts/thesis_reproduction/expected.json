@@ -4,13 +4,13 @@
     "model": "EleutherAI/pythia-160m",
     "trainer_type": "full",
     "dataset": "LarryLovestein/pg19_1k",
-    "num_samples": 10,
+    "num_samples": 50,
     "max_sequence_length": 32,
     "expected": {
-      "compressed_tokens": {"value": 32, "tolerance": 0},
-      "information_gain_bits": {"mean": 105.0, "std": 20.0},
-      "final_convergence":     {"mean": 0.684, "std": 0.175}
+      "compressed_tokens":      {"kind": "configuration", "value": 32, "tolerance": 0},
+      "information_gain_bits":  {"kind": "measured",      "mean": 105.0, "std": 20.0},
+      "final_convergence":      {"kind": "measured",      "mean": 0.684, "std": 0.175}
     },
-    "notes": "Full cramming with fixed token budget. Accuracy reflects how close the model gets to perfect reconstruction (paper reports 0.684 ± 0.175)."
+    "notes": "Full cramming with fixed token budget. compressed_tokens is an input parameter (= max_sequence_length); only information_gain_bits and final_convergence are measured outputs."
   }
 }

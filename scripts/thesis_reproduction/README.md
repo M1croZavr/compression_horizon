@@ -32,6 +32,11 @@ Each experiment:
 ## How to run
 
 ```bash
+# 0. (Optional, for closest match to paper) install flash-attn.
+#    Without it, the script auto-falls-back to PyTorch sdpa attention,
+#    which is numerically very close in bf16 but not identical.
+uv pip install flash-attn --no-build-isolation
+
 # 1. Run the experiment (training + post-hoc comparison).
 bash scripts/thesis_reproduction/experiments/full_cramming/pythia_160m.sh
 
@@ -50,9 +55,9 @@ Output of `analyze.py` is a `OUR | PAPER | DELTA | VERDICT` table where
 
 ## Currently included
 
-| Experiment | Paper anchor | Time on A100 | Numbers we expect |
-|---|---|---|---|
-| `full_cramming/pythia_160m` | Table 11 (Appendix C) | ~5-10 min | 32 tokens, IG 105 ± 20, acc 0.684 ± 0.175 |
+| Experiment | Paper anchor | Samples | Time on A100 | Numbers we expect |
+|---|---|---|---|---|
+| `full_cramming/pythia_160m` | Table 11 (Appendix C) | 50 | ~5-10 min | 32 tokens, IG 105 ± 20, acc 0.684 ± 0.175 |
 
 ## To be added later
 
