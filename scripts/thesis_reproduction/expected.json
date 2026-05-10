@@ -1,0 +1,16 @@
+{
+  "full_cramming/pythia_160m": {
+    "paper_section": "Table 11 (Appendix C)",
+    "model": "EleutherAI/pythia-160m",
+    "trainer_type": "full",
+    "dataset": "mrsndmn/pg19",
+    "num_samples": 10,
+    "max_sequence_length": 32,
+    "expected": {
+      "compressed_tokens": {"value": 32, "tolerance": 0},
+      "information_gain_bits": {"mean": 105.0, "std": 20.0},
+      "final_convergence":     {"mean": 0.684, "std": 0.175}
+    },
+    "notes": "Full cramming with fixed token budget. Accuracy reflects how close the model gets to perfect reconstruction (paper reports 0.684 ± 0.175)."
+  }
+}
