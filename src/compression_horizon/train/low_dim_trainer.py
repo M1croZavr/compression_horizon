@@ -42,7 +42,7 @@ class LowDimTrainer(BaseTrainer):
             with torch.no_grad():
                 token_embeddings = model.get_input_embeddings()(input_ids)
 
-            target_hidden = self.compute_target_hidden(model, token_embeddings, attention_mask)
+            target_hidden_states = self.compute_hidden_states(model, token_embeddings, attention_mask)
 
             compression_token_embeddings = self._init_compression_tokens(
                 batch_size,
@@ -50,7 +50,7 @@ class LowDimTrainer(BaseTrainer):
                 self.args.low_dim_size,
                 init_method,
                 mvn_dist,
-                single_compressed_embeddings_initialization=None,
+                single_compression_token_embeddings_initialization=None,
                 token_embeddings=token_embeddings,
                 pca_components=pca_components,
                 pca_mean=pca_mean,
@@ -131,7 +131,7 @@ class LowDimTrainer(BaseTrainer):
                     convergence_per_sample,
                     generated_text,
                     ground_truth_text,
-                ) = self.compute_loss(
+                ) = self.forward_and_compute_loss(
                     model,
                     input_ids,
                     token_embeddings,
@@ -139,7 +139,7 @@ class LowDimTrainer(BaseTrainer):
                     united_token_embeddings,
                     united_attention_mask,
                     num_compression_tokens,
-                    target_hidden=target_hidden,
+                    target_hidden_states=target_hidden_states,
                 )
                 loss.backward()
 
@@ -236,7 +236,7 @@ class LowDimTrainer(BaseTrainer):
             self.writer.flush()
             self.writer.close()
 
-        if final_projection is not None and self.args.low_dim_proj_train:
+        if final_projection is not None and self.args.low_dim_projection_train:
             output_dir = self.args.output_dir
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
@@ -251,11 +251,9 @@ class LowDimTrainer(BaseTrainer):
                 )
                 print(f"Saved low-dimensional projection weights to {projection_save_path}")
 
-        save_path = self._save_artifacts(
-            final_compression_token_embeddings_cpu,
+        return self._save_artifacts(
             collected_rows,
-            "compressed_prefixes",
+            tensor=final_compression_token_embeddings_cpu,
+            tensor_filename="compression_embeddings.pt",
+            subdir_name="compressed_prefixes",
         )
-        if save_path is not None:
-            return save_path
-        return None

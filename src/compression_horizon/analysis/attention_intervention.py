@@ -13,7 +13,7 @@ from typing import Optional
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from compression_horizon.metric import estimate_token_perplexity
+from compression_horizon.analysis.perplexity import estimate_token_perplexity
 from compression_horizon.utils.launch import get_device
 
 # ---------------------------------------------------------------------------

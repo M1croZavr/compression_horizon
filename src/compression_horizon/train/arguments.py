@@ -85,11 +85,11 @@ class MyTrainingArguments(TrainingArguments):
         default=32,
         metadata={"help": "Dimension of small space for embeddings regularization"},
     )
-    low_dim_proj_checkpoint: str | None = field(
+    low_dim_projection_checkpoint: str | None = field(
         default=None,
         metadata={"help": "Path to checkpoint file to load low-dimensional projection state from."},
     )
-    low_dim_proj_train: bool = field(
+    low_dim_projection_train: bool = field(
         default=True,
         metadata={"help": "Whether to optimize the low-dimensional projection (False to freeze it)."},
     )
@@ -161,17 +161,9 @@ class MyTrainingArguments(TrainingArguments):
         default=128,
         metadata={"help": "Max sequence length for compressing in training."},
     )
-    max_optimization_steps_per_sample: int = field(
-        default=1_000,
-        metadata={"help": "Max optimization steps for training 1 sample."},
-    )
     max_optimization_steps_per_token: int = field(
         default=1_000,
         metadata={"help": "Max optimization steps for training 1 token (only applicable for progressive training)."},
-    )
-    random_seed: int | None = field(default=42, metadata={"help": "Random seed for reproducibility (None to skip)."})
-    fix_position_ids: bool = field(
-        default=False,
     )
     generate_in_compute_loss: bool = field(
         default=False,

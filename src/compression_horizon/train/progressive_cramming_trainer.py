@@ -1,13 +1,13 @@
 """Progressive cramming trainer: progressive sequence-length stages."""
 
-import math
 import os
 
 import torch
-import torch.nn.functional as F
 from tqdm.auto import tqdm
 
+from compression_horizon.analysis.information_gain import compute_information_gain
 from compression_horizon.train.base import BaseTrainer
+from compression_horizon.train.inputs import build_compression_attention_mask, build_united_input
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 
@@ -52,7 +52,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                 full_model_token_embeddings = model.get_input_embeddings()(full_input_ids)
             full_attention_mask = batch.attention_mask.squeeze(1).to(device)
 
-            target_hidden_full = self.compute_target_hidden(model, full_model_token_embeddings, full_attention_mask)
+            target_hidden_states_full = self.compute_hidden_states(model, full_model_token_embeddings, full_attention_mask)
 
             hidden_size = full_model_token_embeddings.shape[-1]
             if self.args.low_dim_projection:
@@ -139,8 +139,11 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                     per_sample_optimizers.append(opt)
                     per_sample_schedulers.append(sched)
 
-            compression_tokens_attention_mask = torch.tensor([[1]], dtype=full_attention_mask.dtype, device=device).repeat(
-                batch_size, num_compression_tokens
+            compression_attention_mask = build_compression_attention_mask(
+                batch_size,
+                num_compression_tokens,
+                device=device,
+                dtype=full_attention_mask.dtype,
             )
 
             per_sample_lengths = full_attention_mask.sum(dim=1).tolist()
@@ -156,7 +159,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                 scheduler_reset_used = False
                 input_ids = full_input_ids[:, :seq_len]
                 inputs_embeds = full_model_token_embeddings[:, :seq_len, :]
-                target_hidden = list(h[:, :seq_len] for h in target_hidden_full)
+                target_hidden_states = list(h[:, :seq_len] for h in target_hidden_states_full)
                 attention_mask = full_attention_mask[:, :seq_len]
 
                 pbar = tqdm(
@@ -180,28 +183,23 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                             reconstructed_flat = torch.matmul(
                                 pca_coefficients, pca_components_device
                             ) + pca_mean_device.unsqueeze(0)
-                            compression_tokens = reconstructed_flat.reshape(
+                            compression_token_embeddings = reconstructed_flat.reshape(
                                 batch_size,
                                 num_compression_tokens,
                                 hidden_size,
                             )
                         else:
-                            compression_tokens = torch.cat(per_sample_params, dim=0)
+                            compression_token_embeddings = torch.cat(per_sample_params, dim=0)
 
-                        current_compression_tokens = compression_tokens.clone()
+                        compression_token_embeddings = compression_token_embeddings.clone()
                         if self.args.low_dim_projection:
-                            current_compression_tokens = low_dim_prjoection(compression_tokens)
+                            compression_token_embeddings = low_dim_prjoection(compression_token_embeddings)
 
-                        model_tokens_with_compression_tokens = torch.cat(
-                            [
-                                current_compression_tokens.to(inputs_embeds.device).to(inputs_embeds.dtype),
-                                inputs_embeds,
-                            ],
-                            dim=1,
-                        )
-                        attention_mask_with_compression_tokens = torch.cat(
-                            [compression_tokens_attention_mask, attention_mask],
-                            dim=1,
+                        united_token_embeddings, united_attention_mask = build_united_input(
+                            compression_token_embeddings,
+                            compression_attention_mask,
+                            inputs_embeds,
+                            attention_mask,
                         )
                         (
                             loss,
@@ -209,15 +207,15 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                             convergece_per_sample,
                             generated_text,
                             ground_truth_text,
-                        ) = self.compute_loss(
+                        ) = self.forward_and_compute_loss(
                             model,
                             input_ids,
                             inputs_embeds,
                             attention_mask,
-                            model_tokens_with_compression_tokens,
-                            attention_mask_with_compression_tokens,
+                            united_token_embeddings,
+                            united_attention_mask,
                             num_compression_tokens,
-                            target_hidden=target_hidden,
+                            target_hidden_states=target_hidden_states,
                         )
                         loss.backward()
                         pbar.update(1)
@@ -232,16 +230,16 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                                 for j in range(batch_size)
                             ]
                             grad_norm = sum(grad_norms) / len(grad_norms)
-                            comp_mean = compression_tokens.mean().item()
-                            comp_std = compression_tokens.std().item()
+                            comp_mean = compression_token_embeddings.mean().item()
+                            comp_std = compression_token_embeddings.std().item()
                         else:
                             grad_norms = [
                                 per_sample_params[j].grad.norm(2).item() if per_sample_params[j].grad is not None else 0.0
                                 for j in range(batch_size)
                             ]
                             grad_norm = sum(grad_norms) / len(grad_norms)
-                            comp_mean = compression_tokens.mean().item()
-                            comp_std = compression_tokens.std().item()
+                            comp_mean = compression_token_embeddings.mean().item()
+                            comp_std = compression_token_embeddings.std().item()
 
                         log_lr = self.args.learning_rate
                         active_scheduler = None
@@ -265,7 +263,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                             loss,
                             alignment_loss,
                             convergece_per_sample,
-                            compression_tokens,
+                            compression_token_embeddings,
                             active_scheduler,
                             generated_text,
                             ground_truth_text,
@@ -282,7 +280,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                                 per_sample_optimizers[j].zero_grad(set_to_none=True)
                                 per_sample_steps_taken[j] += 1
 
-                        if self.args.low_dim_projection and self.args.low_dim_proj_train and low_dim_optim is not None:
+                        if self.args.low_dim_projection and self.args.low_dim_projection_train and low_dim_optim is not None:
                             low_dim_optim.step()
                             low_dim_optim.zero_grad()
                             if low_dim_scheduler is not None:
@@ -371,81 +369,14 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                     if self.args.low_dim_projection:
                         final_compression_tokens_for_ig = low_dim_prjoection(final_compression_tokens_for_ig)
 
-                    per_sample_info_gain = []
-                    for j in range(batch_size):
-                        sample_input_ids = input_ids[j : j + 1]
-                        sample_attention_mask = attention_mask[j : j + 1]
-                        sample_compression_tokens = final_compression_tokens_for_ig[j : j + 1]
-
-                        sample_outputs_lm = model(
-                            input_ids=sample_input_ids,
-                            attention_mask=sample_attention_mask,
-                        )
-                        sample_logits_lm = sample_outputs_lm.logits
-
-                        sample_shift_logits_lm = sample_logits_lm[:, :-1, :].contiguous()
-                        sample_shift_labels_lm = sample_input_ids[:, 1:].contiguous()
-                        sample_shift_mask_lm = sample_attention_mask[:, 1:].contiguous()
-
-                        sample_shift_logits_lm_flat = sample_shift_logits_lm.view(-1, sample_shift_logits_lm.size(-1))
-                        sample_shift_labels_lm_flat = sample_shift_labels_lm.view(-1)
-                        sample_shift_mask_lm_flat = sample_shift_mask_lm.view(-1)
-
-                        sample_valid_mask_lm = sample_shift_mask_lm_flat.bool()
-                        if sample_valid_mask_lm.sum() > 0:
-                            sample_ce_lm_sum = F.cross_entropy(
-                                sample_shift_logits_lm_flat[sample_valid_mask_lm],
-                                sample_shift_labels_lm_flat[sample_valid_mask_lm],
-                                reduction="sum",
-                            )
-                            sample_H_LM_bits = sample_ce_lm_sum.item() / math.log(2)
-                        else:
-                            sample_H_LM_bits = 0.0
-
-                        sample_inputs_embeds = inputs_embeds[j : j + 1]
-                        sample_model_tokens_with_compression = torch.cat(
-                            [
-                                sample_compression_tokens.to(sample_inputs_embeds.device).to(sample_inputs_embeds.dtype),
-                                sample_inputs_embeds,
-                            ],
-                            dim=1,
-                        )
-                        sample_compression_attention_mask = compression_tokens_attention_mask[j : j + 1]
-                        sample_attention_mask_with_compression = torch.cat(
-                            [
-                                sample_compression_attention_mask,
-                                sample_attention_mask,
-                            ],
-                            dim=1,
-                        )
-
-                        sample_outputs_mem = model(
-                            inputs_embeds=sample_model_tokens_with_compression,
-                            attention_mask=sample_attention_mask_with_compression,
-                        )
-                        sample_logits_mem = sample_outputs_mem.logits
-                        sample_aligned_logits_mem = sample_logits_mem[:, num_compression_tokens:, :]
-                        sample_shift_logits_mem = sample_aligned_logits_mem[:, :-1, :].contiguous()
-                        sample_shift_labels_mem = sample_input_ids[:, 1:].contiguous()
-                        sample_shift_mask_mem = sample_attention_mask[:, 1:].contiguous()
-
-                        sample_shift_logits_mem_flat = sample_shift_logits_mem.view(-1, sample_shift_logits_mem.size(-1))
-                        sample_shift_labels_mem_flat = sample_shift_labels_mem.view(-1)
-                        sample_shift_mask_mem_flat = sample_shift_mask_mem.view(-1)
-
-                        sample_valid_mask_mem = sample_shift_mask_mem_flat.bool()
-                        if sample_valid_mask_mem.sum() > 0:
-                            sample_ce_mem_sum = F.cross_entropy(
-                                sample_shift_logits_mem_flat[sample_valid_mask_mem],
-                                sample_shift_labels_mem_flat[sample_valid_mask_mem],
-                                reduction="sum",
-                            )
-                            sample_H_LM_mem_bits = sample_ce_mem_sum.item() / math.log(2)
-                        else:
-                            sample_H_LM_mem_bits = 0.0
-
-                        sample_info_gain = sample_H_LM_bits - sample_H_LM_mem_bits
-                        per_sample_info_gain.append(sample_info_gain)
+                    per_sample_info_gain = compute_information_gain(
+                        model=model,
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        token_embeddings=inputs_embeds,
+                        compression_token_embeddings=final_compression_tokens_for_ig,
+                        compression_attention_mask=compression_attention_mask,
+                    )
 
                     embeddings_dir = None
                     if self.args.output_dir:
@@ -545,7 +476,9 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             self.writer.flush()
             self.writer.close()
 
-        save_path = self._save_artifacts(None, collected_rows, "progressive_prefixes")
-        if save_path is not None:
-            return save_path
-        return None
+        return self._save_artifacts(
+            collected_rows,
+            tensor=None,
+            tensor_filename="compression_embeddings.pt",
+            subdir_name="progressive_prefixes",
+        )
