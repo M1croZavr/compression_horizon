@@ -39,5 +39,24 @@
       "information_gain_bits":  {"kind": "measured", "mean": 168.0, "std": 66.0}
     },
     "notes": "Progressive cramming SmolLM2-135M baseline (lr=0.1, no alignment, no low-dim). compressed_tokens here is a MEASURED outcome — the largest stage_seq_len at which the trainer reaches 100% teacher-forced accuracy. analyze.py aggregates per-stage rows into one final-converged-stage row per sample before computing statistics. Trajectory Length (178 ± 40) and PCA 99% (12.2 ± 2.96) from Table 13 require post-hoc analysis over the saved stage trajectory and are added as a separate analyzer in a follow-up."
+  },
+  "attention_hijacking/smollm2_135m_progressive": {
+    "paper_section": "Table 3 (Section 5.5)",
+    "model": "HuggingFaceTB/SmolLM2-135M",
+    "reference_model": "HuggingFaceTB/SmolLM2-1.7B (paper Table 3 row)",
+    "trainer_type": "progressive",
+    "dataset": "LarryLovestein/pg19_1k",
+    "num_samples": 50,
+    "analyzer": "attention_hijacking",
+    "expected": {
+      "compression_mass": {"mean": 49.85, "std": 2.75},
+      "bos_mass":         {"mean": 56.47, "std": 9.19},
+      "correlation":      {"mean": 0.9532, "std": 0.05}
+    },
+    "qualitative": {
+      "min_compression_mass": 30.0,
+      "min_correlation": 0.5
+    },
+    "notes": "Attention-hijacking analysis on the embeddings produced by the SmolLM2-135M progressive run. Paper Table 3 reports stats only for SmolLM2-1.7B (and a few other sizes); the 135M row is NOT in the paper, so we treat the comparison as qualitative — the verdict is determined by the `qualitative` block (compression_mass ≥ 30% AND correlation ≥ 0.5), confirming the hijacking phenomenon described in Section 5.5 also manifests at the 135M scale."
   }
 }

@@ -135,10 +135,75 @@ def _split_metrics(spec: dict) -> tuple[dict, dict]:
     return configuration, measured
 
 
+def _analyze_attention_hijacking(experiment_name: str, spec: dict, output_dir: str) -> bool:
+    """Compare a saved attention_hijacking.json against paper Table 3 qualitative values.
+
+    Paper Section 5.5 reports compression-mass / BOS-mass / correlation for a
+    different model size (SmolLM2-1.7B). We use it as a qualitative reference:
+    the experiment passes if (a) compression_mass >= 30% (clear hijacking) and
+    (b) correlation >= 0.5 (per-layer profile shape matches BOS pattern).
+    """
+    json_path = Path(output_dir) / "attention_hijacking.json"
+    if not json_path.exists():
+        raise FileNotFoundError(f"{json_path} not found. Run scripts/thesis_reproduction/run_attention_hijacking.py first.")
+    with open(json_path) as f:
+        result = json.load(f)
+    summary = result["summary"]
+    expected_summary = spec["expected"]
+
+    print(f"\nExperiment: {experiment_name}")
+    print(f"Paper:      {spec['paper_section']}")
+    print(f"Model:      {spec['model']}")
+    print(f"Samples:    {summary['num_samples']}  (paper: {spec['num_samples']})")
+    print(f"Note:       paper reference row is {spec.get('reference_model', spec['model'])} — qualitative comparison only.")
+
+    print()
+    print("Table-3 statistics (qualitative paper comparison):")
+    _print_header()
+
+    def _row(metric_name: str, ours: dict, paper: dict) -> None:
+        ours_str = f"{ours['mean']:.3f} ± {ours['std']:.3f}"
+        paper_str = f"{paper['mean']:.3f} ± {paper['std']:.3f}"
+        z = _zscore(ours["mean"], paper["mean"], paper["std"])
+        verdict = _verdict(z)
+        _print_row(metric_name, ours_str, paper_str, f"z={z:.2f}", verdict)
+
+    _row(
+        "compression_mass_pct",
+        summary["compression_mass"],
+        expected_summary["compression_mass"],
+    )
+    _row("bos_mass_pct", summary["bos_mass"], expected_summary["bos_mass"])
+    _row("correlation", summary["correlation"], expected_summary["correlation"])
+
+    qual = spec.get("qualitative", {"min_compression_mass": 30.0, "min_correlation": 0.5})
+    min_mass = float(qual["min_compression_mass"])
+    min_corr = float(qual["min_correlation"])
+    mass_ok = summary["compression_mass"]["mean"] >= min_mass
+    corr_ok = summary["correlation"]["mean"] >= min_corr
+    print()
+    print(
+        f"Qualitative gate: compression_mass ≥ {min_mass:.1f}% "
+        f"({'OK' if mass_ok else 'FAIL'} — got {summary['compression_mass']['mean']:.2f}%) "
+        f"AND correlation ≥ {min_corr:.2f} "
+        f"({'OK' if corr_ok else 'FAIL'} — got {summary['correlation']['mean']:.4f})"
+    )
+    passed = mass_ok and corr_ok
+    print()
+    print(
+        "Summary:",
+        ("attention-hijacking pattern confirmed" if passed else "attention-hijacking pattern NOT confirmed"),
+    )
+    return passed
+
+
 def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
     """Print paper-vs-ours comparison for one experiment. Returns True iff every measured metric is OK."""
     spec = _load_expected(experiment_name)
     output_dir = output_dir or os.path.join("artifacts", "thesis_reproduction", experiment_name)
+
+    if spec.get("analyzer") == "attention_hijacking":
+        return _analyze_attention_hijacking(experiment_name, spec, output_dir)
 
     ds = _load_dataset(output_dir, spec["trainer_type"])
     rows = _aggregate_rows_per_sample(list(ds), spec["trainer_type"])
@@ -176,17 +241,24 @@ def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
         all_ok = all_ok and ok
 
     print()
-    print("Summary:", "all measured metrics OK" if all_ok else "some metrics drifted — investigate")
+    print(
+        "Summary:",
+        "all measured metrics OK" if all_ok else "some metrics drifted — investigate",
+    )
     return all_ok
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare a saved cramming run against paper-expected values.")
     parser.add_argument(
-        "--experiment", required=True, help="Experiment key from expected.json (e.g. full_cramming/pythia_160m)."
+        "--experiment",
+        required=True,
+        help="Experiment key from expected.json (e.g. full_cramming/pythia_160m).",
     )
     parser.add_argument(
-        "--output_dir", default=None, help="Override output directory (default: artifacts/thesis_reproduction/<experiment>)."
+        "--output_dir",
+        default=None,
+        help="Override output directory (default: artifacts/thesis_reproduction/<experiment>).",
     )
     args = parser.parse_args()
     analyze(args.experiment, args.output_dir)
