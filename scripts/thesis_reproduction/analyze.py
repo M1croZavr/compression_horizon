@@ -242,6 +242,94 @@ def _analyze_trajectory(experiment_name: str, spec: dict, output_dir: str) -> bo
     return all_ok
 
 
+def _analyze_attention_knockout(experiment_name: str, spec: dict, output_dir: str) -> bool:
+    """Qualitative early-vs-late asymmetry gate for attention_knockout.json.
+
+    Paper Reviewer 1 W2: early-layer KO degrades reconstruction; late-layer KO
+    does not. The pass criteria (configurable per experiment) are:
+        - baseline reconstruction accuracy is high (>= min_baseline);
+        - early-layers (first ``num_edge`` layers) mean per-layer KO accuracy
+          drops by at least ``min_early_drop`` relative to baseline;
+        - late-layers (last ``num_edge`` layers) mean per-layer KO accuracy
+          drops by at most ``max_late_drop`` relative to baseline.
+    """
+    json_path = Path(output_dir) / "attention_knockout.json"
+    if not json_path.exists():
+        raise FileNotFoundError(f"{json_path} not found. Run scripts/thesis_reproduction/run_attention_knockout.py first.")
+    with open(json_path) as f:
+        result = json.load(f)
+    summary = result["summary"]
+
+    print(f"\nExperiment: {experiment_name}")
+    print(f"Paper:      {spec['paper_section']}")
+    print(f"Model:      {spec['model']}")
+    print(f"Samples:    {summary['num_samples']}  (paper: {spec['num_samples']})")
+    print(f"Note:       qualitative causality probe — paper has no per-model knockout table for {spec['model']}.")
+
+    baseline_acc = summary["baseline"]["mean"]
+    num_layers = summary["num_layers"]
+    per_layer_means = summary["per_layer"]["mean"]
+
+    qual = spec.get(
+        "qualitative",
+        {
+            "min_baseline": 0.9,
+            "min_early_drop": 0.3,
+            "max_late_drop": 0.1,
+            "num_edge": 4,
+        },
+    )
+    num_edge = int(qual["num_edge"])
+    early_acc = sum(per_layer_means[:num_edge]) / num_edge
+    late_acc = sum(per_layer_means[-num_edge:]) / num_edge
+    early_drop = baseline_acc - early_acc
+    late_drop = baseline_acc - late_acc
+
+    print()
+    print("Reconstruction accuracy under per-layer attention knockout:")
+    print(f"  baseline (no KO)             : {baseline_acc:.4f}")
+    print(f"  layer 0                      : {per_layer_means[0]:.4f}")
+    print(f"  layer {num_layers - 1:<22}: {per_layer_means[-1]:.4f}")
+    print(f"  first {num_edge} layers (mean)        : {early_acc:.4f}  (drop {early_drop:+.4f})")
+    print(f"  last  {num_edge} layers (mean)        : {late_acc:.4f}  (drop {late_drop:+.4f})")
+
+    if summary.get("cumulative") is not None:
+        cumulative_means = summary["cumulative"]["mean"]
+        print()
+        print("Forward cumulative KO (mask layers 0..l):")
+        print(f"  l=0                          : {cumulative_means[0]:.4f}")
+        print(f"  l={num_layers - 1:<26}: {cumulative_means[-1]:.4f}  (should approach 0)")
+    if summary.get("reverse_cumulative") is not None:
+        reverse_means = summary["reverse_cumulative"]["mean"]
+        print()
+        print("Reverse cumulative KO (mask layers l..L-1):")
+        print(f"  l=0                          : {reverse_means[0]:.4f}  (should approach 0)")
+        print(f"  l={num_layers - 1:<26}: {reverse_means[-1]:.4f}")
+
+    min_baseline = float(qual["min_baseline"])
+    min_early_drop = float(qual["min_early_drop"])
+    max_late_drop = float(qual["max_late_drop"])
+    baseline_ok = baseline_acc >= min_baseline
+    early_ok = early_drop >= min_early_drop
+    late_ok = late_drop <= max_late_drop
+    print()
+    print(
+        f"Qualitative gate: baseline ≥ {min_baseline:.2f} "
+        f"({'OK' if baseline_ok else 'FAIL'} — got {baseline_acc:.4f}), "
+        f"early drop ≥ {min_early_drop:.2f} "
+        f"({'OK' if early_ok else 'FAIL'} — got {early_drop:+.4f}), "
+        f"late drop ≤ {max_late_drop:.2f} "
+        f"({'OK' if late_ok else 'FAIL'} — got {late_drop:+.4f})"
+    )
+    passed = baseline_ok and early_ok and late_ok
+    print()
+    print(
+        "Summary:",
+        ("early-layer attention causally drives reconstruction" if passed else "causality pattern NOT confirmed — investigate"),
+    )
+    return passed
+
+
 def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
     """Print paper-vs-ours comparison for one experiment. Returns True iff every measured metric is OK."""
     spec = _load_expected(experiment_name)
@@ -251,6 +339,8 @@ def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
         return _analyze_attention_hijacking(experiment_name, spec, output_dir)
     if spec.get("analyzer") == "trajectory":
         return _analyze_trajectory(experiment_name, spec, output_dir)
+    if spec.get("analyzer") == "attention_knockout":
+        return _analyze_attention_knockout(experiment_name, spec, output_dir)
 
     ds = _load_dataset(output_dir, spec["trainer_type"])
     rows = _aggregate_rows_per_sample(list(ds), spec["trainer_type"])

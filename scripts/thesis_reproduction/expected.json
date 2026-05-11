@@ -53,6 +53,21 @@
     },
     "notes": "Post-hoc trajectory analysis over the saved progressive_prefixes/ — no re-train. Trajectory Length = Σ ||e^(k+1) - e^(k)||_2 (paper eq. 3); PCA 99% = min number of PCA components reaching 99% cumulative explained variance, computed per sample and then averaged. Verdict uses the standard 2σ z-score gate from analyze.py."
   },
+  "attention_knockout/smollm2_135m_progressive": {
+    "paper_section": "Section 4.4 (Reviewer 1 W2 response)",
+    "model": "HuggingFaceTB/SmolLM2-135M",
+    "trainer_type": "progressive",
+    "dataset": "LarryLovestein/pg19_1k",
+    "num_samples": 50,
+    "analyzer": "attention_knockout",
+    "qualitative": {
+      "min_baseline": 0.9,
+      "min_early_drop": 0.3,
+      "max_late_drop": 0.1,
+      "num_edge": 4
+    },
+    "notes": "Causal probe of attention hijacking: mask attention to the compression-token columns at chosen layers, measure teacher-forced reconstruction accuracy. Pass criteria: (a) baseline accuracy ≥ 0.9 (Progressive converged samples should be near-perfect); (b) per-layer KO at the first 4 layers drops mean accuracy by ≥0.30 absolute; (c) per-layer KO at the last 4 layers drops mean accuracy by ≤0.10 absolute. Demonstrates that early layers causally drive reconstruction (Reviewer 1's central counter-argument)."
+  },
   "attention_hijacking/smollm2_135m_progressive": {
     "paper_section": "Table 3 (Section 5.5)",
     "model": "HuggingFaceTB/SmolLM2-135M",
