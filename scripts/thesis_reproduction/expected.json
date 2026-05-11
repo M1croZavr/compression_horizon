@@ -40,6 +40,19 @@
     },
     "notes": "Progressive cramming SmolLM2-135M baseline (lr=0.1, no alignment, no low-dim). compressed_tokens here is a MEASURED outcome — the largest stage_seq_len at which the trainer reaches 100% teacher-forced accuracy. analyze.py aggregates per-stage rows into one final-converged-stage row per sample before computing statistics. Trajectory Length (178 ± 40) and PCA 99% (12.2 ± 2.96) from Table 13 require post-hoc analysis over the saved stage trajectory and are added as a separate analyzer in a follow-up."
   },
+  "trajectory/smollm2_135m_progressive": {
+    "paper_section": "Table 13 (Appendix F), columns Trajectory Length + PCA 99%",
+    "model": "HuggingFaceTB/SmolLM2-135M",
+    "trainer_type": "progressive",
+    "dataset": "LarryLovestein/pg19_1k",
+    "num_samples": 50,
+    "analyzer": "trajectory",
+    "expected": {
+      "trajectory_length": {"mean": 178.0, "std": 40.0},
+      "pca_99":            {"mean": 12.2,  "std": 2.96}
+    },
+    "notes": "Post-hoc trajectory analysis over the saved progressive_prefixes/ — no re-train. Trajectory Length = Σ ||e^(k+1) - e^(k)||_2 (paper eq. 3); PCA 99% = min number of PCA components reaching 99% cumulative explained variance, computed per sample and then averaged. Verdict uses the standard 2σ z-score gate from analyze.py."
+  },
   "attention_hijacking/smollm2_135m_progressive": {
     "paper_section": "Table 3 (Section 5.5)",
     "model": "HuggingFaceTB/SmolLM2-135M",

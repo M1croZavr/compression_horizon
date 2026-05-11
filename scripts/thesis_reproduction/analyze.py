@@ -197,6 +197,51 @@ def _analyze_attention_hijacking(experiment_name: str, spec: dict, output_dir: s
     return passed
 
 
+def _analyze_trajectory(experiment_name: str, spec: dict, output_dir: str) -> bool:
+    """Compare a saved trajectory.json against paper Table 13 (trajectory_length, PCA 99%)."""
+    json_path = Path(output_dir) / "trajectory.json"
+    if not json_path.exists():
+        raise FileNotFoundError(f"{json_path} not found. Run scripts/thesis_reproduction/run_trajectory.py first.")
+    with open(json_path) as f:
+        result = json.load(f)
+    summary = result["summary"]
+    expected_summary = spec["expected"]
+
+    print(f"\nExperiment: {experiment_name}")
+    print(f"Paper:      {spec['paper_section']}")
+    print(f"Model:      {spec['model']}")
+    print(f"Samples:    {summary['num_samples']}  (paper: {spec['num_samples']})")
+    if summary.get("num_pca_excluded", 0):
+        print(f"Note:       {summary['num_pca_excluded']} sample(s) excluded from PCA aggregate (<2 stages)")
+
+    print()
+    print("Table-13 statistics:")
+    _print_header()
+
+    def _row(metric_name: str, ours: dict, paper: dict) -> bool:
+        ours_str = f"{ours['mean']:.3f} ± {ours['std']:.3f}"
+        paper_str = f"{paper['mean']:.3f} ± {paper['std']:.3f}"
+        z = _zscore(ours["mean"], paper["mean"], paper["std"])
+        verdict = _verdict(z)
+        _print_row(metric_name, ours_str, paper_str, f"z={z:.2f}", verdict)
+        return verdict == "OK"
+
+    length_ok = _row(
+        "trajectory_length",
+        summary["trajectory_length"],
+        expected_summary["trajectory_length"],
+    )
+    pca_ok = _row("pca_99", summary["pca_99"], expected_summary["pca_99"])
+
+    print()
+    all_ok = length_ok and pca_ok
+    print(
+        "Summary:",
+        "all measured metrics OK" if all_ok else "some metrics drifted — investigate",
+    )
+    return all_ok
+
+
 def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
     """Print paper-vs-ours comparison for one experiment. Returns True iff every measured metric is OK."""
     spec = _load_expected(experiment_name)
@@ -204,6 +249,8 @@ def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
 
     if spec.get("analyzer") == "attention_hijacking":
         return _analyze_attention_hijacking(experiment_name, spec, output_dir)
+    if spec.get("analyzer") == "trajectory":
+        return _analyze_trajectory(experiment_name, spec, output_dir)
 
     ds = _load_dataset(output_dir, spec["trainer_type"])
     rows = _aggregate_rows_per_sample(list(ds), spec["trainer_type"])

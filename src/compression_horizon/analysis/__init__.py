@@ -16,6 +16,11 @@ from compression_horizon.analysis.convergence import (
     ProgressiveSampleStateMachine,
 )
 from compression_horizon.analysis.information_gain import compute_information_gain
+from compression_horizon.analysis.trajectory import (
+    compute_pca_99,
+    compute_trajectory_length,
+    summarize_trajectory,
+)
 
 __all__ = [
     "compute_information_gain",
@@ -26,4 +31,7 @@ __all__ = [
     "compute_sample_profiles",
     "pearson_correlation",
     "summarize_hijacking",
+    "compute_pca_99",
+    "compute_trajectory_length",
+    "summarize_trajectory",
 ]
