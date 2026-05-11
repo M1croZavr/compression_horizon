@@ -96,9 +96,32 @@ def _build_metric_extractors(trainer_type: str):
         # In full cramming compressed_tokens equals the fixed budget (= max_sequence_length).
         extractors["compressed_tokens"] = lambda r: r["num_input_tokens"]
     elif trainer_type == "progressive":
-        # In progressive cramming compressed_tokens is the achieved length per sample.
+        # In progressive cramming compressed_tokens is the achieved prefix length per sample.
         extractors["compressed_tokens"] = lambda r: r["stage_seq_len"]
     return extractors
+
+
+def _aggregate_rows_per_sample(rows: list[dict], trainer_type: str) -> list[dict]:
+    """Reduce per-stage rows to one row per sample (no-op for full cramming).
+
+    Full cramming saves one row per sample already. Progressive cramming saves
+    one row per (sample, stage) — we collapse to the row of the *final converged
+    stage* per sample (i.e. the largest stage_seq_len with final_convergence == 1.0).
+    Samples that never converge contribute the row with the largest reached
+    stage_seq_len (kept for diagnostic visibility).
+    """
+    if trainer_type != "progressive":
+        return rows
+    by_sample: dict[int, list[dict]] = {}
+    for row in rows:
+        by_sample.setdefault(int(row["sample_id"]), []).append(row)
+    aggregated: list[dict] = []
+    for sample_id in sorted(by_sample):
+        sample_rows = by_sample[sample_id]
+        converged = [r for r in sample_rows if r.get("final_convergence") == 1.0]
+        candidates = converged if converged else sample_rows
+        aggregated.append(max(candidates, key=lambda r: r["stage_seq_len"]))
+    return aggregated
 
 
 def _split_metrics(spec: dict) -> tuple[dict, dict]:
@@ -118,7 +141,7 @@ def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
     output_dir = output_dir or os.path.join("artifacts", "thesis_reproduction", experiment_name)
 
     ds = _load_dataset(output_dir, spec["trainer_type"])
-    rows = list(ds)
+    rows = _aggregate_rows_per_sample(list(ds), spec["trainer_type"])
     extractors = _build_metric_extractors(spec["trainer_type"])
     configuration_metrics, measured_metrics = _split_metrics(spec)
 

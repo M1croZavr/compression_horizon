@@ -351,13 +351,13 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                         orig_comp_tokens_gpu = comp_tokens_gpu
                         orig_comp_tokens_cpu = orig_comp_tokens_gpu.detach().cpu()
                     else:
-                        compression_tokens = torch.cat(per_sample_params, dim=0)
+                        compression_token_embeddings = torch.cat(per_sample_params, dim=0)
                         if self.args.low_dim_projection:
-                            comp_tokens_gpu = low_dim_prjoection(compression_tokens)
+                            comp_tokens_gpu = low_dim_prjoection(compression_token_embeddings)
                         else:
-                            comp_tokens_gpu = compression_tokens
+                            comp_tokens_gpu = compression_token_embeddings
                         comp_tokens_cpu = comp_tokens_gpu.detach().cpu()
-                        orig_comp_tokens_gpu = compression_tokens
+                        orig_comp_tokens_gpu = compression_token_embeddings
                         orig_comp_tokens_cpu = orig_comp_tokens_gpu.detach().cpu()
 
                     if init_method == "pretrained_pca":
@@ -365,7 +365,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                             torch.matmul(pca_coefficients, pca_components_device) + pca_mean_device.unsqueeze(0)
                         ).reshape(batch_size, num_compression_tokens, hidden_size)
                     else:
-                        final_compression_tokens_for_ig = compression_tokens
+                        final_compression_tokens_for_ig = compression_token_embeddings
                     if self.args.low_dim_projection:
                         final_compression_tokens_for_ig = low_dim_prjoection(final_compression_tokens_for_ig)
 

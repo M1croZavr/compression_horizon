@@ -59,6 +59,7 @@ Output of `analyze.py` is a `OUR | PAPER | DELTA | VERDICT` table where
 |---|---|---|---|---|
 | `full_cramming/pythia_160m` | Table 11 (Appendix C) | 50 | ~5-10 min | 32 tokens, IG 105 ± 20, acc 0.684 ± 0.175 |
 | `full_cramming/llama_3_2_1b` | Table 11 (Appendix C) | 10 | ~15-25 min | 512 tokens, IG 1965 ± 244, **acc 0.998 ± 0** |
+| `progressive/smollm2_135m` | Table 13 (Appendix F) | 50 | ~15-30 min | **38.5 ± 14.1 tokens, IG 168 ± 66** |
 
 Llama-3.2-1B is the strongest single-experiment correctness check: paper expects
 accuracy 0.998 with zero std (essentially perfect reconstruction). If our refactor
