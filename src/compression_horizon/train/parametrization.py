@@ -99,3 +99,100 @@ def build_parametrization(
         )
     else:
         return DirectParametrization(init_embedding=init_helper(), device=device)
+
+
+class PerSampleDirectParametrization:
+    """Per-sample compression embeddings as separate [1, compression, hidden] Parameters."""
+
+    def __init__(self, init_embedding: torch.Tensor, device: torch.device):
+        """init_embedding: [batch, compression, hidden] on CPU."""
+        batch_size = init_embedding.size(0)
+        self._params = [torch.nn.Parameter(init_embedding.data[j : j + 1].clone().to(device)) for j in range(batch_size)]
+        self._initialization_snapshot = init_embedding.detach().clone().cpu()
+
+    @property
+    def parameters(self) -> list[torch.nn.Parameter]:
+        return list(self._params)
+
+    def materialize(self) -> torch.Tensor:
+        """[batch, compression, hidden] — concatenation across samples."""
+        return torch.cat(self._params, dim=0)
+
+    def initialization_snapshot(self) -> torch.Tensor:
+        return self._initialization_snapshot
+
+    def serialize_extras(self) -> list | None:
+        return None
+
+
+class PerSamplePretrainedPCAParametrization:
+    """Per-sample low-rank coefficients backed by a frozen PCA basis: e_j = z_j @ W + mu."""
+
+    def __init__(
+        self,
+        batch_size: int,
+        num_compression_tokens: int,
+        hidden_size: int,
+        pca_components: torch.Tensor,
+        pca_mean: torch.Tensor,
+        device: torch.device,
+    ):
+        flattened = pca_mean.shape[0]
+        expected = num_compression_tokens * hidden_size
+        if flattened != expected:
+            raise ValueError(
+                f"PCA dim mismatch: pretrained has {flattened}, expected {expected} "
+                f"(num_tokens={num_compression_tokens}, hidden_size={hidden_size})!"
+            )
+        self._components = pca_components.to(device)
+        self._mean = pca_mean.to(device)
+        self._batch_size = batch_size
+        self._num_compression_tokens = num_compression_tokens
+        self._hidden_size = hidden_size
+        n_components = self._components.shape[0]
+        self._coefficients = [
+            torch.nn.Parameter(torch.randn([1, n_components], dtype=torch.float32, device=device) * 0.1)
+            for _ in range(batch_size)
+        ]
+        self._initialization_snapshot = self.materialize().detach().cpu()
+
+    @property
+    def parameters(self) -> list[torch.nn.Parameter]:
+        return list(self._coefficients)
+
+    def materialize(self) -> torch.Tensor:
+        """[batch, compression, hidden] — reconstruct from per-sample coefficients."""
+        coefficients = torch.cat(self._coefficients, dim=0)
+        flat = torch.matmul(coefficients, self._components) + self._mean.unsqueeze(0)
+        return flat.reshape(self._batch_size, self._num_compression_tokens, self._hidden_size)
+
+    def initialization_snapshot(self) -> torch.Tensor:
+        return self._initialization_snapshot
+
+    def serialize_extras(self) -> list:
+        return [c.clone().detach().to(torch.float32).cpu().numpy().tolist() for c in self._coefficients]
+
+
+def build_per_sample_parametrization(
+    *,
+    init_method: str,
+    batch_size: int,
+    num_compression_tokens: int,
+    hidden_size: int,
+    device: torch.device,
+    init_helper,
+    pca_components: torch.Tensor | None,
+    pca_mean: torch.Tensor | None,
+):
+    """Per-sample variant of build_parametrization, used by progressive cramming."""
+    if init_method == "pretrained_pca":
+        assert pca_components is not None and pca_mean is not None
+        return PerSamplePretrainedPCAParametrization(
+            batch_size=batch_size,
+            num_compression_tokens=num_compression_tokens,
+            hidden_size=hidden_size,
+            pca_components=pca_components,
+            pca_mean=pca_mean,
+            device=device,
+        )
+    return PerSampleDirectParametrization(init_embedding=init_helper(), device=device)

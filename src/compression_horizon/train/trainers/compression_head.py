@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from compression_horizon.train.base import BaseTrainer
+from compression_horizon.train.trainers.base import BaseTrainer
 from compression_horizon.utils.launch import freeze_model_parameters
 
 

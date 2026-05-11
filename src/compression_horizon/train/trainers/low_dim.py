@@ -5,7 +5,7 @@ import os
 import torch
 from tqdm.auto import tqdm
 
-from compression_horizon.train.base import BaseTrainer
+from compression_horizon.train.trainers.base import BaseTrainer
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 

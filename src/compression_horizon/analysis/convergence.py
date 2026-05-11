@@ -48,3 +48,44 @@ class ConvergedSamplesGuard:
             return
         with torch.no_grad():
             self.parameters[converged_mask] = self._snapshot[converged_mask]
+
+
+class ProgressiveSampleStateMachine:
+    """Per-sample state for progressive cramming: active / converged-in-stage / permanently skipped."""
+
+    def __init__(self, batch_size: int, threshold: float):
+        self.batch_size = batch_size
+        self.threshold = threshold
+        self.skipped: list[bool] = [False] * batch_size
+        self.converged_in_stage: list[bool] = [False] * batch_size
+        self.steps_taken: list[int] = [0] * batch_size
+
+    def reset_stage(self) -> None:
+        """Start of a new stage; permanently skipped samples remain frozen."""
+        self.converged_in_stage = [self.skipped[j] for j in range(self.batch_size)]
+
+    def is_active(self, j: int) -> bool:
+        """Sample j is still being optimized in the current stage."""
+        return not self.skipped[j] and not self.converged_in_stage[j]
+
+    def update(self, convergence_per_sample: torch.Tensor) -> bool:
+        """Mark active samples that crossed the threshold. Returns True iff all samples done."""
+        for j in range(self.batch_size):
+            if self.is_active(j) and convergence_per_sample[j].item() >= self.threshold:
+                self.converged_in_stage[j] = True
+        return all(self.converged_in_stage[j] or self.skipped[j] for j in range(self.batch_size))
+
+    def increment_steps(self, j: int) -> None:
+        """Bump the per-sample optimizer step counter for active sample j."""
+        self.steps_taken[j] += 1
+
+    def mark_skipped_if_not_converged(self, seq_len: int) -> None:
+        """End of stage: permanently skip samples that never reached the threshold this stage."""
+        for j in range(self.batch_size):
+            if self.is_active(j):
+                self.skipped[j] = True
+                print(f"Sample {j} failed to converge at seq_len={seq_len}, marking as skipped.")
+
+    @property
+    def all_skipped(self) -> bool:
+        return all(self.skipped)

@@ -5,12 +5,11 @@ from tqdm.auto import tqdm
 
 from compression_horizon.analysis import ConvergedSamplesGuard, ConvergenceTracker
 from compression_horizon.analysis.information_gain import compute_information_gain
-from compression_horizon.train.base import BaseTrainer
-from compression_horizon.train.embedding_init import create_compression_embedding, prepare_embedding_init
+from compression_horizon.train.embedding_init import create_compression_embedding
 from compression_horizon.train.inputs import build_compression_attention_mask, build_united_input
 from compression_horizon.train.optimization import build_optimizer_and_scheduler
 from compression_horizon.train.parametrization import build_parametrization
-from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
+from compression_horizon.train.trainers.base import BaseTrainer
 
 
 @dataclass
@@ -88,11 +87,7 @@ class FullCrammingTrainer(BaseTrainer):
 
     def _build_run_context(self) -> _RunContext:
         """Seed RNG, freeze model, prepare embedding-init helpers and constants."""
-        set_launch_seed(self.args.random_seed)
-        device = get_device()
-        model = self.model.to(device)
-        freeze_model_parameters(model)
-        init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = prepare_embedding_init(self.args, model)
+        model, device, init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = self._initialize_run()
         num_compression_tokens = self.args.number_of_mem_tokens
         hidden_size = model.config.hidden_size
         single_compression_token_init = self._init_single_compressed(

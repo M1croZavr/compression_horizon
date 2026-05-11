@@ -17,6 +17,7 @@ from compression_horizon.train.loss import (
     token_argmax_match_rate_with_prefix,
 )
 from compression_horizon.train.optimization import build_low_dim_projection, build_optimizer_and_scheduler
+from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 
 class BaseTrainer:
@@ -54,6 +55,15 @@ class BaseTrainer:
     def train(self) -> str | None:
         """Run training. Subclasses must override. Returns artifact path or output_dir or None."""
         raise NotImplementedError("Subclasses must implement train()!")
+
+    def _initialize_run(self):
+        """Seed RNG, move model to device, freeze its parameters, prepare embedding-init helpers."""
+        set_launch_seed(self.args.random_seed)
+        device = get_device()
+        model = self.model.to(device)
+        freeze_model_parameters(model)
+        init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = self._prepare_embedding_init(model)
+        return model, device, init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings
 
     def compute_loss(
         self,

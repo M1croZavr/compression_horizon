@@ -4,11 +4,11 @@ import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 
-from compression_horizon.train.base import BaseTrainer
 from compression_horizon.train.loss import (
     compute_hybrid_cross_entropy_and_alignment_loss_no_prefix,
     token_argmax_match_rate,
 )
+from compression_horizon.train.trainers.base import BaseTrainer
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 

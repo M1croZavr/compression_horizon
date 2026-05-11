@@ -28,8 +28,8 @@ from datasets import Dataset
 from torch.utils.data import Dataset as TorchDataset
 from transformers import GPT2Config, GPT2LMHeadModel
 
+from compression_horizon.train import FullCrammingTrainer
 from compression_horizon.train.arguments import MyTrainingArguments
-from compression_horizon.train.full_cramming_trainer import FullCrammingTrainer
 
 # ---------------------------------------------------------------------------
 # Deterministic CPU dataset and collate (no CUDA dependency).
