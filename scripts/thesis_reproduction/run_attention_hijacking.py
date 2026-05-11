@@ -130,6 +130,7 @@ def main() -> None:
     sample_records: list[dict] = []
     comp_profiles: list[list[float]] = []
     bos_profiles: list[list[float]] = []
+    skipped: list[tuple[int, str]] = []
     for row in tqdm(rows, desc="hijacking"):
         embedding_tensor = torch.tensor(row["embedding"], dtype=torch.float32)
         # Tolerate [H] vs [num_compression_tokens, H]: progressive stores [num_compression_tokens, H].
@@ -142,15 +143,21 @@ def main() -> None:
                 f"overriding --num_compression_tokens={args.num_compression_tokens}."
             )
         text = row["text"]
-        comp_profile, bos_profile, used_lengths = compute_sample_profiles(
-            model=model,
-            tokenizer=tokenizer,
-            compression_token_embedding=embedding_tensor.to(device),
-            context=text,
-            num_compression_tokens=num_compression_tokens,
-            target_prefix_lengths=target_prefix_lengths,
-            device=device,
-        )
+        try:
+            comp_profile, bos_profile, used_lengths = compute_sample_profiles(
+                model=model,
+                tokenizer=tokenizer,
+                compression_token_embedding=embedding_tensor.to(device),
+                context=text,
+                num_compression_tokens=num_compression_tokens,
+                target_prefix_lengths=target_prefix_lengths,
+                device=device,
+            )
+        except ValueError as exc:
+            # Typically: sample too short for the default geometric schedule.
+            # We log and skip rather than silently rescale, so the metric stays paper-canonical.
+            skipped.append((int(row.get("sample_id", -1)), str(exc)))
+            continue
         corr = pearson_correlation(comp_profile, bos_profile)
         sample_records.append(
             {
@@ -167,6 +174,11 @@ def main() -> None:
         comp_profiles.append(comp_profile)
         bos_profiles.append(bos_profile)
 
+    if skipped:
+        print(f"\nSkipped {len(skipped)} sample(s) too short for the suffix schedule:")
+        for sample_id, reason in skipped:
+            print(f"  sample_id={sample_id}: {reason}")
+
     summary = summarize_hijacking(comp_profiles, bos_profiles)
 
     output = {
@@ -174,6 +186,8 @@ def main() -> None:
             "model_checkpoint": args.model_checkpoint,
             "source_dir": args.source_dir,
             "num_samples": len(sample_records),
+            "num_skipped": len(skipped),
+            "skipped_sample_ids": [sample_id for sample_id, _ in skipped],
             "target_prefix_lengths": target_prefix_lengths,
         },
         "summary": summary,
