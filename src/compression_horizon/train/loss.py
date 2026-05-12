@@ -196,8 +196,13 @@ def token_argmax_match_rate_with_prefix(
         raise ValueError(f"num_compression_tokens must be >= 1, got {num_compression_tokens}!")
 
     prediction_ids = logits[:, num_compression_tokens - 1 : -1].argmax(dim=-1)  # [batch, sequence]
-    matches = (prediction_ids == input_ids).sum(dim=-1)
-    ratio = matches / attention_mask.sum(dim=-1)
+    # Mask out padding positions: otherwise a model that learns to predict the pad
+    # token on padded input positions inflates the numerator and the ratio can
+    # exceed 1.0. We divide by the count of valid tokens, so the numerator must
+    # also be restricted to valid tokens.
+    valid = attention_mask == 1
+    matches = ((prediction_ids == input_ids) & valid).sum(dim=-1)
+    ratio = matches / attention_mask.sum(dim=-1).clamp_min(1)
     return ratio
 
 
