@@ -15,6 +15,15 @@ from compression_horizon.analysis.convergence import (
     ConvergenceTracker,
     ProgressiveSampleStateMachine,
 )
+from compression_horizon.analysis.downstream_eval import (
+    PPL_VARIANT_KEYS,
+    aggregate_variant_accuracy,
+    compute_continuation_nll,
+    compute_ppl_baseline_batch,
+    compute_ppl_compression_batch,
+    predict_best_continuation,
+    summarize_downstream,
+)
 from compression_horizon.analysis.information_gain import compute_information_gain
 from compression_horizon.analysis.trajectory import (
     compute_pca_99,
@@ -34,4 +43,11 @@ __all__ = [
     "compute_pca_99",
     "compute_trajectory_length",
     "summarize_trajectory",
+    "compute_continuation_nll",
+    "compute_ppl_baseline_batch",
+    "compute_ppl_compression_batch",
+    "predict_best_continuation",
+    "summarize_downstream",
+    "aggregate_variant_accuracy",
+    "PPL_VARIANT_KEYS",
 ]

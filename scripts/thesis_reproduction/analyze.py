@@ -243,15 +243,18 @@ def _analyze_trajectory(experiment_name: str, spec: dict, output_dir: str) -> bo
 
 
 def _analyze_attention_knockout(experiment_name: str, spec: dict, output_dir: str) -> bool:
-    """Qualitative early-vs-late asymmetry gate for attention_knockout.json.
+    """Asymmetry-ratio gate for attention_knockout.json.
 
     Paper Reviewer 1 W2: early-layer KO degrades reconstruction; late-layer KO
     does not. The pass criteria (configurable per experiment) are:
         - baseline reconstruction accuracy is high (>= min_baseline);
-        - early-layers (first ``num_edge`` layers) mean per-layer KO accuracy
-          drops by at least ``min_early_drop`` relative to baseline;
-        - late-layers (last ``num_edge`` layers) mean per-layer KO accuracy
-          drops by at most ``max_late_drop`` relative to baseline.
+        - early-layers (first ``num_edge`` layers) mean per-layer KO drops
+          accuracy by at least ``min_early_drop`` (absolute floor);
+        - the early-vs-late asymmetry ratio is at least ``min_asymmetry``,
+          i.e. early_drop / max(late_drop, eps) >= min_asymmetry.
+    The ratio criterion replaces an absolute ``max_late_drop`` so the gate
+    stays meaningful when secondary-attention bumps near the model tail
+    inflate the late-window mean (common at small scales).
     """
     json_path = Path(output_dir) / "attention_knockout.json"
     if not json_path.exists():
@@ -275,7 +278,7 @@ def _analyze_attention_knockout(experiment_name: str, spec: dict, output_dir: st
         {
             "min_baseline": 0.9,
             "min_early_drop": 0.3,
-            "max_late_drop": 0.1,
+            "min_asymmetry": 3.0,
             "num_edge": 4,
         },
     )
@@ -284,6 +287,8 @@ def _analyze_attention_knockout(experiment_name: str, spec: dict, output_dir: st
     late_acc = sum(per_layer_means[-num_edge:]) / num_edge
     early_drop = baseline_acc - early_acc
     late_drop = baseline_acc - late_acc
+    eps = 0.01
+    asymmetry = early_drop / max(late_drop, eps)
 
     print()
     print("Reconstruction accuracy under per-layer attention knockout:")
@@ -292,40 +297,137 @@ def _analyze_attention_knockout(experiment_name: str, spec: dict, output_dir: st
     print(f"  layer {num_layers - 1:<22}: {per_layer_means[-1]:.4f}")
     print(f"  first {num_edge} layers (mean)        : {early_acc:.4f}  (drop {early_drop:+.4f})")
     print(f"  last  {num_edge} layers (mean)        : {late_acc:.4f}  (drop {late_drop:+.4f})")
+    print(f"  asymmetry ratio (early/late) : {asymmetry:.2f}×")
 
     if summary.get("cumulative") is not None:
         cumulative_means = summary["cumulative"]["mean"]
         print()
         print("Forward cumulative KO (mask layers 0..l):")
         print(f"  l=0                          : {cumulative_means[0]:.4f}")
-        print(f"  l={num_layers - 1:<26}: {cumulative_means[-1]:.4f}  (should approach 0)")
+        print(f"  l={num_layers - 1:<26}: {cumulative_means[-1]:.4f}  (no-compression-context floor)")
     if summary.get("reverse_cumulative") is not None:
         reverse_means = summary["reverse_cumulative"]["mean"]
         print()
         print("Reverse cumulative KO (mask layers l..L-1):")
-        print(f"  l=0                          : {reverse_means[0]:.4f}  (should approach 0)")
+        print(f"  l=0                          : {reverse_means[0]:.4f}  (no-compression-context floor)")
         print(f"  l={num_layers - 1:<26}: {reverse_means[-1]:.4f}")
 
     min_baseline = float(qual["min_baseline"])
     min_early_drop = float(qual["min_early_drop"])
-    max_late_drop = float(qual["max_late_drop"])
+    min_asymmetry = float(qual["min_asymmetry"])
     baseline_ok = baseline_acc >= min_baseline
     early_ok = early_drop >= min_early_drop
-    late_ok = late_drop <= max_late_drop
+    asymmetry_ok = asymmetry >= min_asymmetry
     print()
     print(
         f"Qualitative gate: baseline ≥ {min_baseline:.2f} "
         f"({'OK' if baseline_ok else 'FAIL'} — got {baseline_acc:.4f}), "
         f"early drop ≥ {min_early_drop:.2f} "
         f"({'OK' if early_ok else 'FAIL'} — got {early_drop:+.4f}), "
-        f"late drop ≤ {max_late_drop:.2f} "
-        f"({'OK' if late_ok else 'FAIL'} — got {late_drop:+.4f})"
+        f"asymmetry ≥ {min_asymmetry:.1f}× "
+        f"({'OK' if asymmetry_ok else 'FAIL'} — got {asymmetry:.2f}×)"
     )
-    passed = baseline_ok and early_ok and late_ok
+    passed = baseline_ok and early_ok and asymmetry_ok
     print()
     print(
         "Summary:",
         ("early-layer attention causally drives reconstruction" if passed else "causality pattern NOT confirmed — investigate"),
+    )
+    return passed
+
+
+_DOWNSTREAM_VARIANTS: tuple[str, ...] = (
+    "baseline",
+    "baseline_endings",
+    "compression",
+    "compression_edge",
+    "compression_endings",
+    "compression_only",
+    "compression_only_edge",
+    "compression_only_endings",
+)
+
+
+def _analyze_downstream_eval(experiment_name: str, spec: dict, output_dir: str) -> bool:
+    """Compare a saved downstream_eval.json against paper Table 10 (or Table 5).
+
+    The eval JSON now contains 8 PPL variants per sample. We print every
+    variant alongside the paper-expected value (if present) and apply a
+    qualitative gate on the two canonical variants:
+        - ``baseline_endings`` (Table 5 "Base") must clear random + a margin;
+        - ``compression_endings`` (Table 5 "Cram") must be ``min_drop`` below.
+    """
+    json_path = Path(output_dir) / "downstream_eval.json"
+    if not json_path.exists():
+        raise FileNotFoundError(f"{json_path} not found. Run scripts/thesis_reproduction/run_downstream_eval.py first.")
+    with open(json_path) as f:
+        result = json.load(f)
+    # `subset` field in expected.json picks which summary view to compare against:
+    #   "summary"                          — legacy primary view (matches CLI --only_full_convergence)
+    #   "summary_all_samples"              — Table-5 view (paper §5.6 main column)
+    #   "summary_perfectly_reconstructed"  — Table-10 view (perfectly-reconstructed subset)
+    subset_key = spec.get("subset", "summary")
+    if subset_key not in result:
+        # Backwards-compat fallback for JSONs produced before dual-summary was added.
+        subset_key = "summary"
+    summary = result[subset_key]
+    expected = spec.get("expected", {})
+
+    print(f"\nExperiment: {experiment_name}")
+    print(f"Paper:      {spec['paper_section']}")
+    print(f"Model:      {spec['model']}")
+    print(f"Subset:     {subset_key}")
+    print(
+        f"Samples:    {summary['num_samples_total']}  (paper: {spec['num_samples']}; "
+        f"fully converged: {summary['num_full_convergence']}/{summary['num_samples_total']})"
+    )
+    print(f"Note:       paper reference is {spec.get('reference_model', spec['model'])} — " f"qualitative comparison.")
+
+    print()
+    print("PPL variants (Table 10 of the paper):")
+    _print_header()
+    for variant in _DOWNSTREAM_VARIANTS:
+        stats = summary[variant]
+        ours = stats["accuracy"]
+        ours_str = f"{ours:.4f}"
+        paper_spec = expected.get(variant)
+        if paper_spec is None:
+            _print_row(variant, ours_str, "-", "-", "INFO")
+            continue
+        paper_mean = float(paper_spec["mean"])
+        paper_std = float(paper_spec.get("std", 0.0))
+        z = _zscore(ours, paper_mean, paper_std) if paper_std > 0 else float("nan")
+        verdict = _verdict(z) if not np.isnan(z) else "INFO"
+        delta = ours - paper_mean
+        _print_row(variant, ours_str, f"{paper_mean:.4f}", f"{delta:+.4f}", verdict)
+
+    base_acc = summary["baseline_endings"]["accuracy"]
+    cram_acc = summary["compression_endings"]["accuracy"]
+    drop = base_acc - cram_acc
+
+    qual = spec.get("qualitative", {"min_base": 0.28, "min_drop": 0.10})
+    min_base = float(qual["min_base"])
+    min_drop = float(qual["min_drop"])
+    base_ok = base_acc >= min_base
+    drop_ok = drop >= min_drop
+
+    print()
+    print(
+        f"Qualitative gate (baseline_endings vs compression_endings): "
+        f"base ≥ {min_base:.2f} "
+        f"({'OK' if base_ok else 'FAIL'} — got {base_acc:.4f}), "
+        f"drop ≥ {min_drop:.2f} "
+        f"({'OK' if drop_ok else 'FAIL'} — got {drop:+.4f})"
+    )
+    passed = base_ok and drop_ok
+    print()
+    print(
+        "Summary:",
+        (
+            "downstream capability collapses under compression — paper claim confirmed"
+            if passed
+            else "downstream-collapse pattern NOT confirmed — investigate"
+        ),
     )
     return passed
 
@@ -341,6 +443,8 @@ def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
         return _analyze_trajectory(experiment_name, spec, output_dir)
     if spec.get("analyzer") == "attention_knockout":
         return _analyze_attention_knockout(experiment_name, spec, output_dir)
+    if spec.get("analyzer") == "downstream_eval":
+        return _analyze_downstream_eval(experiment_name, spec, output_dir)
 
     ds = _load_dataset(output_dir, spec["trainer_type"])
     rows = _aggregate_rows_per_sample(list(ds), spec["trainer_type"])
