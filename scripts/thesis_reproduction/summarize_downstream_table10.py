@@ -204,7 +204,13 @@ def main() -> None:
 
     def _row_cell(row: str, bench: str) -> str:
         s = _pick_summary(loaded[bench])
-        ours_pct = s[row]["accuracy"] * 100 if s is not None else None
+        # Paper Table 10 reports token-normalized accuracy. Fall back to raw
+        # accuracy for older JSONs that don't store the token-norm field.
+        if s is None:
+            ours_pct = None
+        else:
+            entry = s[row]
+            ours_pct = entry.get("token_normalized_accuracy", entry["accuracy"]) * 100
         paper_pct = PAPER_TABLE_10.get(bench, {}).get(row) if show_paper else None
         return _fmt_cell(ours_pct, paper_pct, show_paper=show_paper)
 

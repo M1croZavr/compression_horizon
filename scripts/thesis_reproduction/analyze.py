@@ -388,7 +388,9 @@ def _analyze_downstream_eval(experiment_name: str, spec: dict, output_dir: str) 
     _print_header()
     for variant in _DOWNSTREAM_VARIANTS:
         stats = summary[variant]
-        ours = stats["accuracy"]
+        # Paper Table 10 reports *token-normalized* accuracy (caption: "Token-normalized
+        # accuracy (%) ..."), not the raw sample-count accuracy. Match the right field.
+        ours = stats.get("token_normalized_accuracy", stats["accuracy"])
         ours_str = f"{ours:.4f}"
         paper_spec = expected.get(variant)
         if paper_spec is None:
@@ -401,8 +403,10 @@ def _analyze_downstream_eval(experiment_name: str, spec: dict, output_dir: str) 
         delta = ours - paper_mean
         _print_row(variant, ours_str, f"{paper_mean:.4f}", f"{delta:+.4f}", verdict)
 
-    base_acc = summary["baseline_endings"]["accuracy"]
-    cram_acc = summary["compression_endings"]["accuracy"]
+    # Use token-normalized accuracy to stay consistent with the paper Table 10
+    # comparison above (and with the gate thresholds tuned for that scale).
+    base_acc = summary["baseline_endings"].get("token_normalized_accuracy", summary["baseline_endings"]["accuracy"])
+    cram_acc = summary["compression_endings"].get("token_normalized_accuracy", summary["compression_endings"]["accuracy"])
     drop = base_acc - cram_acc
 
     qual = spec.get("qualitative", {"min_base": 0.28, "min_drop": 0.10})
