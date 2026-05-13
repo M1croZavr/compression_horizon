@@ -351,15 +351,42 @@ def main() -> None:
     instances = _load_benchmark(args.benchmark, args.num_samples)
     print(f"Loaded {len(instances)} instances from {args.benchmark}")
 
-    # Cramming (cached)
+    # Cramming (cached). We prefer the concatenated .pt tensor; if its row count
+    # does not match (older runs only saved the last batch), fall back to
+    # reconstructing the full tensor from the per-sample compressed_prefixes/ HF
+    # Dataset so we don't have to re-cram.
     embeddings_path = os.path.join(cramming_dir, "compression_embeddings.pt")
-    if os.path.exists(embeddings_path) and not args.rerun_cramming:
-        print(f"Loading cached compression embeddings from {embeddings_path}")
-        embeddings = torch.load(embeddings_path, map_location="cpu")
-    else:
-        # FullCrammingTrainer will toggle requires_grad on the compression parameters itself,
-        # but expects model parameters to be frozen (we already froze them).
+    dataset_path = os.path.join(cramming_dir, "compressed_prefixes")
+
+    def _load_embeddings_from_dataset(path: str) -> torch.Tensor:
+        ds = Dataset.load_from_disk(path)
+        rows = sorted(list(ds), key=lambda r: int(r["sample_id"]))
+        tensors = [torch.tensor(r["embedding"], dtype=torch.float32) for r in rows]
+        if tensors[0].dim() == 1:
+            tensors = [t.unsqueeze(0) for t in tensors]
+        return torch.stack(tensors, dim=0)
+
+    embeddings: torch.Tensor | None = None
+    if args.rerun_cramming or not (os.path.exists(embeddings_path) or os.path.exists(dataset_path)):
         embeddings = _run_cramming(model, tokenizer, instances, args, cramming_dir, add_special_tokens)
+    else:
+        if os.path.exists(embeddings_path):
+            cached = torch.load(embeddings_path, map_location="cpu")
+            if cached.shape[0] == len(instances):
+                print(f"Loading cached compression embeddings from {embeddings_path}")
+                embeddings = cached
+            else:
+                print(
+                    f"Cached {embeddings_path} has {cached.shape[0]} rows "
+                    f"(expected {len(instances)}); falling back to {dataset_path}/."
+                )
+        if embeddings is None and os.path.exists(dataset_path):
+            print(f"Reconstructing full embedding tensor from {dataset_path}/")
+            embeddings = _load_embeddings_from_dataset(dataset_path)
+            # Re-save the concatenated tensor so subsequent runs use the fast path.
+            torch.save(embeddings, embeddings_path)
+        if embeddings is None:
+            embeddings = _run_cramming(model, tokenizer, instances, args, cramming_dir, add_special_tokens)
     if embeddings.shape[0] != len(instances):
         raise ValueError(f"Embedding tensor has {embeddings.shape[0]} rows but expected {len(instances)} instances")
 

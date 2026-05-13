@@ -6,7 +6,10 @@ from tqdm.auto import tqdm
 from compression_horizon.analysis import ConvergedSamplesGuard, ConvergenceTracker
 from compression_horizon.analysis.information_gain import compute_information_gain
 from compression_horizon.train.embedding_init import create_compression_embedding
-from compression_horizon.train.inputs import build_compression_attention_mask, build_united_input
+from compression_horizon.train.inputs import (
+    build_compression_attention_mask,
+    build_united_input,
+)
 from compression_horizon.train.optimization import build_optimizer_and_scheduler
 from compression_horizon.train.parametrization import build_parametrization
 from compression_horizon.train.trainers.base import BaseTrainer
@@ -60,12 +63,15 @@ class FullCrammingTrainer(BaseTrainer):
 
         collected_rows: list[dict] = []
         sample_id_counter = 0
-        final_compression_cpu: torch.Tensor | None = None
+        # Each batch produces its own compression-embedding tensor; we concatenate
+        # them along the sample dim so the saved tensor has one row per instance
+        # (otherwise multi-batch runs would only persist the last batch).
+        per_batch_compression: list[torch.Tensor] = []
 
         for batch in tqdm(self._create_dataloader()):
             inputs = self._prepare_batch_inputs(batch, ctx)
             result = self._optimize_compression(inputs, ctx)
-            rows, final_compression_cpu = self._collect_batch_rows(
+            rows, batch_compression_cpu = self._collect_batch_rows(
                 inputs=inputs,
                 result=result,
                 ctx=ctx,
@@ -73,10 +79,14 @@ class FullCrammingTrainer(BaseTrainer):
             )
             collected_rows.extend(rows)
             sample_id_counter += len(rows)
+            if batch_compression_cpu is not None:
+                per_batch_compression.append(batch_compression_cpu)
 
         if self.writer is not None:
             self.writer.flush()
             self.writer.close()
+
+        final_compression_cpu = torch.cat(per_batch_compression, dim=0) if per_batch_compression else None
 
         return self._save_artifacts(
             collected_rows,
@@ -87,7 +97,15 @@ class FullCrammingTrainer(BaseTrainer):
 
     def _build_run_context(self) -> _RunContext:
         """Seed RNG, freeze model, prepare embedding-init helpers and constants."""
-        model, device, init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = self._initialize_run()
+        (
+            model,
+            device,
+            init_method,
+            mvn_dist,
+            pca_components,
+            pca_mean,
+            loaded_embeddings,
+        ) = self._initialize_run()
         num_compression_tokens = self.args.number_of_mem_tokens
         hidden_size = model.config.hidden_size
         single_compression_token_init = self._init_single_compressed(
@@ -180,7 +198,10 @@ class FullCrammingTrainer(BaseTrainer):
             pca_mean=ctx.pca_mean,
         )
         optimizer, lr_scheduler = build_optimizer_and_scheduler(
-            self.args, parametrization.parameters, self.args.max_optimization_steps_per_sample, 1
+            self.args,
+            parametrization.parameters,
+            self.args.max_optimization_steps_per_sample,
+            1,
         )
         guard = ConvergedSamplesGuard(parametrization.optimizable_tensor)
         tracker = ConvergenceTracker(
@@ -290,7 +311,10 @@ class FullCrammingTrainer(BaseTrainer):
 
             # Generate diagnostics
             generated_text, ground_truth_text = self.generate_diagnostics(
-                ctx.model, inputs.input_ids, united_token_embeddings, ctx.num_compression_tokens
+                ctx.model,
+                inputs.input_ids,
+                united_token_embeddings,
+                ctx.num_compression_tokens,
             )
 
             # Back propagation and parameters update
@@ -340,7 +364,7 @@ class FullCrammingTrainer(BaseTrainer):
         progress_bar.update(1)
         progress_bar.set_postfix(
             loss=loss.item(),
-            loss_alignment=alignment_loss.item() if alignment_loss is not None else None,
+            loss_alignment=(alignment_loss.item() if alignment_loss is not None else None),
             convergece_per_sample=convergence_per_sample.mean().item(),
             lr=lr_scheduler.get_last_lr()[0],
         )
