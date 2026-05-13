@@ -436,6 +436,90 @@ def _analyze_downstream_eval(experiment_name: str, spec: dict, output_dir: str) 
     return passed
 
 
+def _analyze_pca_reconstruction(experiment_name: str, spec: dict, output_dir: str) -> bool:
+    """Qualitative gate on the PCA reconstruction accuracy curve (paper §5.3 / Figure 5).
+
+    Paper claim: PCA 99 % of trajectory *variance* (Table 13 column) is NOT
+    sufficient for near-perfect teacher-forced *accuracy*; one needs more
+    components. Pass criteria (configurable per experiment):
+        - max_k_accuracy ≥ ``min_max_k_accuracy``: at the largest k, reach
+          ~baseline reconstruction accuracy.
+        - pca99_accuracy ≤ ``max_pca99_accuracy``: at k = paper's PCA-99
+          component count, accuracy is still below near-perfect (paper claim).
+        - monotone-ish: each k-step should not drop accuracy by more than
+          ``monotone_tolerance`` (allows small fluctuations from bf16 noise).
+    """
+    json_path = Path(output_dir) / "pca_reconstruction.json"
+    if not json_path.exists():
+        raise FileNotFoundError(f"{json_path} not found. Run scripts/thesis_reproduction/run_pca_reconstruction.py first.")
+    with open(json_path) as f:
+        result = json.load(f)
+    summary = result["summary"]
+    curve = summary["curve"]
+
+    print(f"\nExperiment: {experiment_name}")
+    print(f"Paper:      {spec['paper_section']}")
+    print(f"Model:      {spec['model']}")
+    print(f"Samples:    {summary['num_samples']}  (paper: {spec['num_samples']})")
+    print(f"Note:       paper reference is {spec.get('reference_model', spec['model'])} — qualitative comparison.")
+
+    print()
+    print("PCA reconstruction curve (k → mean accuracy ± std, n_samples):")
+    for point in curve:
+        print(f"  k={point['k']:>4}  acc={point['mean']:.4f} ± {point['std']:.4f}  (n={point['n_samples']})")
+
+    qual = spec.get(
+        "qualitative",
+        {
+            "min_max_k_accuracy": 0.9,
+            "max_pca99_accuracy": 0.95,
+            "pca99_k": 11,
+            "monotone_tolerance": 0.05,
+        },
+    )
+    min_max_k = float(qual["min_max_k_accuracy"])
+    max_pca99 = float(qual["max_pca99_accuracy"])
+    pca99_k = int(qual["pca99_k"])
+    monotone_tol = float(qual.get("monotone_tolerance", 0.05))
+
+    max_k_point = max(curve, key=lambda p: p["k"])
+    max_k_acc = max_k_point["mean"]
+    max_k_ok = max_k_acc >= min_max_k
+
+    pca99_acc = next((p["mean"] for p in curve if p["k"] == pca99_k), None)
+    if pca99_acc is None:
+        # Fallback: the closest k <= pca99_k (paper's claim is about "PCA 99 %").
+        candidates = [p for p in curve if p["k"] <= pca99_k]
+        pca99_acc = max(candidates, key=lambda p: p["k"])["mean"] if candidates else None
+    pca99_ok = pca99_acc is not None and pca99_acc <= max_pca99
+
+    means = [p["mean"] for p in curve]
+    max_drop = 0.0 if len(means) < 2 else max(means[i] - means[i + 1] for i in range(len(means) - 1))
+    monotone_ok = max_drop <= monotone_tol
+
+    print()
+    print(
+        f"Qualitative gate:\n"
+        f"  max-k accuracy ≥ {min_max_k:.2f} "
+        f"({'OK' if max_k_ok else 'FAIL'} — got {max_k_acc:.4f} at k={max_k_point['k']})\n"
+        f"  accuracy@PCA99 (k={pca99_k}) ≤ {max_pca99:.2f}, i.e. PCA-99 is insufficient "
+        f"({'OK' if pca99_ok else 'FAIL'} — got {pca99_acc if pca99_acc is None else f'{pca99_acc:.4f}'})\n"
+        f"  monotone non-decreasing (tolerance {monotone_tol:.2f}) "
+        f"({'OK' if monotone_ok else 'FAIL'} — max drop {max_drop:+.4f})"
+    )
+    passed = max_k_ok and pca99_ok and monotone_ok
+    print()
+    print(
+        "Summary:",
+        (
+            "PCA 99 % variance is NOT sufficient for full reconstruction — paper claim confirmed"
+            if passed
+            else "PCA reconstruction pattern NOT confirmed — investigate"
+        ),
+    )
+    return passed
+
+
 def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
     """Print paper-vs-ours comparison for one experiment. Returns True iff every measured metric is OK."""
     spec = _load_expected(experiment_name)
@@ -449,6 +533,8 @@ def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
         return _analyze_attention_knockout(experiment_name, spec, output_dir)
     if spec.get("analyzer") == "downstream_eval":
         return _analyze_downstream_eval(experiment_name, spec, output_dir)
+    if spec.get("analyzer") == "pca_reconstruction":
+        return _analyze_pca_reconstruction(experiment_name, spec, output_dir)
 
     ds = _load_dataset(output_dir, spec["trainer_type"])
     rows = _aggregate_rows_per_sample(list(ds), spec["trainer_type"])

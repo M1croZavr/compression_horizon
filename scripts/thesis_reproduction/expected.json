@@ -40,6 +40,22 @@
     },
     "notes": "Progressive cramming SmolLM2-135M baseline (lr=0.1, no alignment, no low-dim). compressed_tokens here is a MEASURED outcome — the largest stage_seq_len at which the trainer reaches 100% teacher-forced accuracy. analyze.py aggregates per-stage rows into one final-converged-stage row per sample before computing statistics. Trajectory Length (178 ± 40) and PCA 99% (12.2 ± 2.96) from Table 13 require post-hoc analysis over the saved stage trajectory and are added as a separate analyzer in a follow-up."
   },
+  "pca_reconstruction/smollm2_135m_progressive": {
+    "paper_section": "Section 5.3, Figure 5",
+    "model": "HuggingFaceTB/SmolLM2-135M",
+    "reference_model": "Llama-3.1-8B (paper Figure 5 curve)",
+    "trainer_type": "progressive",
+    "dataset": "LarryLovestein/pg19_1k",
+    "num_samples": 50,
+    "analyzer": "pca_reconstruction",
+    "qualitative": {
+      "min_max_k_accuracy": 0.90,
+      "max_pca99_accuracy": 0.95,
+      "pca99_k": 11,
+      "monotone_tolerance": 0.05
+    },
+    "notes": "Post-hoc PCA-reconstruction ablation on the saved Progressive trajectory. Paper claim (page 6): although PCA 99% of trajectory variance requires only ~12 components on SmolLM2-135M (from Table 13, our trajectory analyzer also gives ~10.88), reaching near-perfect teacher-forced accuracy requires substantially more components. Gate: at k = PCA-99 (= 11) accuracy must still be below near-perfect (≤ 0.95), at max-k accuracy must reach ~baseline (≥ 0.90), and the curve must be monotone non-decreasing within bf16 noise (≤ 0.05 max-drop tolerance)."
+  },
   "trajectory/smollm2_135m_progressive": {
     "paper_section": "Table 13 (Appendix F), columns Trajectory Length + PCA 99%",
     "model": "HuggingFaceTB/SmolLM2-135M",

@@ -25,6 +25,11 @@ from compression_horizon.analysis.downstream_eval import (
     summarize_downstream,
 )
 from compression_horizon.analysis.information_gain import compute_information_gain
+from compression_horizon.analysis.pca_reconstruction import (
+    fit_per_sample_pca,
+    project_top_k,
+    summarize_pca_curve,
+)
 from compression_horizon.analysis.trajectory import (
     compute_pca_99,
     compute_trajectory_length,
@@ -50,4 +55,7 @@ __all__ = [
     "summarize_downstream",
     "aggregate_variant_accuracy",
     "PPL_VARIANT_KEYS",
+    "fit_per_sample_pca",
+    "project_top_k",
+    "summarize_pca_curve",
 ]
