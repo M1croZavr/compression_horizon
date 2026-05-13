@@ -181,6 +181,10 @@ def _build_cramming_args(args, cramming_dir: str, batch_size: int) -> MyTraining
         ddp_find_unused_parameters=False,
         load_best_model_at_end=False,
         no_bos_token=not args.bos_token,
+        # Paper-faithful: don't drop the last (incomplete) batch. ARC-Challenge
+        # has 299 / 64 = 4 full batches + 43 leftover; with the default
+        # (drop_last=True) those 43 would silently disappear from cramming.
+        dataloader_drop_last=False,
     )
 
 
