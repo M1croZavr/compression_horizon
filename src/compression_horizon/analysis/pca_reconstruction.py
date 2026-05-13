@@ -19,15 +19,17 @@ import torch
 
 def fit_per_sample_pca(
     stage_embeddings: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fit PCA on a single sample's trajectory.
 
     ``stage_embeddings``: [n_stages, ...] (trailing shape preserved through flatten).
 
-    Returns ``(mean, components)`` where:
-        - ``mean`` has shape [flat_dim] (mean of flattened stage embeddings),
+    Returns ``(mean, components, singular_values)`` where:
+        - ``mean`` has shape [flat_dim] (mean of flattened stage embeddings);
         - ``components`` has shape [r, flat_dim] with ``r = min(n_stages-1, flat_dim)``;
-          each row is one principal direction (in descending variance order).
+          each row is one principal direction (in descending variance order);
+        - ``singular_values`` has shape [r] — singular values of the centered
+          matrix; squared values divided by their sum give variance ratios.
     """
     if stage_embeddings.dim() < 2:
         raise ValueError(f"Expected stage_embeddings of shape [n_stages, ...], got {tuple(stage_embeddings.shape)}")
@@ -37,8 +39,17 @@ def fit_per_sample_pca(
     flat = stage_embeddings.reshape(n_stages, -1).to(torch.float64)
     mean = flat.mean(dim=0)
     centered = flat - mean
-    _, _, vt = torch.linalg.svd(centered, full_matrices=False)
-    return mean, vt  # vt is [r, flat_dim]; rows are principal directions
+    _, singular, vt = torch.linalg.svd(centered, full_matrices=False)
+    return mean, vt, singular
+
+
+def cumulative_variance_ratio(singular_values: torch.Tensor) -> torch.Tensor:
+    """Per-component cumulative explained variance ratio (so element i = variance covered by top-(i+1))."""
+    variance = singular_values.to(torch.float64) ** 2
+    total = float(variance.sum().item())
+    if total <= 0.0:
+        return torch.zeros_like(variance)
+    return torch.cumsum(variance, dim=0) / total
 
 
 def project_top_k(
@@ -71,29 +82,37 @@ def project_top_k(
 
 
 def summarize_pca_curve(per_sample_curves: list[dict]) -> dict:
-    """Aggregate per-sample (k, accuracy) points into mean ± std per k.
+    """Aggregate per-sample (k, accuracy, variance_ratio) points into mean ± std per k.
 
-    Each per-sample entry must contain ``curve`` — a list of ``{"k": int, "accuracy": float}``.
+    Each per-sample entry must contain ``curve`` — a list of dicts with at
+    least ``{"k": int, "accuracy": float}`` and optionally ``"variance_ratio"``.
     Different samples may have different k-grids (e.g., the per-sample ``max_k``
     rank limit varies with n_stages); we aggregate every k that appears in at
     least one sample's curve.
     """
-    points_by_k: dict[int, list[float]] = {}
+    accuracy_by_k: dict[int, list[float]] = {}
+    variance_by_k: dict[int, list[float]] = {}
     for sample in per_sample_curves:
         for point in sample.get("curve", []):
-            points_by_k.setdefault(int(point["k"]), []).append(float(point["accuracy"]))
+            k = int(point["k"])
+            accuracy_by_k.setdefault(k, []).append(float(point["accuracy"]))
+            if "variance_ratio" in point and point["variance_ratio"] is not None:
+                variance_by_k.setdefault(k, []).append(float(point["variance_ratio"]))
 
     curve = []
-    for k in sorted(points_by_k.keys()):
-        values = torch.tensor(points_by_k[k], dtype=torch.float64)
-        curve.append(
-            {
-                "k": k,
-                "mean": float(values.mean().item()),
-                "std": float(values.std(unbiased=False).item()),
-                "n_samples": int(values.numel()),
-            }
-        )
+    for k in sorted(accuracy_by_k.keys()):
+        acc_values = torch.tensor(accuracy_by_k[k], dtype=torch.float64)
+        entry = {
+            "k": k,
+            "mean": float(acc_values.mean().item()),
+            "std": float(acc_values.std(unbiased=False).item()),
+            "n_samples": int(acc_values.numel()),
+        }
+        if k in variance_by_k:
+            var_values = torch.tensor(variance_by_k[k], dtype=torch.float64)
+            entry["variance_ratio_mean"] = float(var_values.mean().item())
+            entry["variance_ratio_std"] = float(var_values.std(unbiased=False).item())
+        curve.append(entry)
 
     return {
         "curve": curve,

@@ -26,6 +26,7 @@ from compression_horizon.analysis.downstream_eval import (
 )
 from compression_horizon.analysis.information_gain import compute_information_gain
 from compression_horizon.analysis.pca_reconstruction import (
+    cumulative_variance_ratio,
     fit_per_sample_pca,
     project_top_k,
     summarize_pca_curve,
@@ -58,4 +59,5 @@ __all__ = [
     "fit_per_sample_pca",
     "project_top_k",
     "summarize_pca_curve",
+    "cumulative_variance_ratio",
 ]

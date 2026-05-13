@@ -23,6 +23,7 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from compression_horizon.analysis import (
+    cumulative_variance_ratio,
     fit_per_sample_pca,
     project_top_k,
     summarize_pca_curve,
@@ -167,7 +168,8 @@ def main() -> None:
         if e_star.dim() == 1:
             e_star = e_star.unsqueeze(0)
 
-        mean, components = fit_per_sample_pca(trajectory)
+        mean, components, singular = fit_per_sample_pca(trajectory)
+        cum_variance = cumulative_variance_ratio(singular)  # [r], cum_variance[i] = variance covered by top-(i+1)
 
         # Evaluate at each k from the user grid (clipped by max_k) plus max_k itself.
         k_values: list[int] = []
@@ -182,7 +184,9 @@ def main() -> None:
             e_k = project_top_k(e_star, mean, components, k)
             e_k_tensor = e_k.to(dtype).to(device)
             acc = _teacher_forced_accuracy(model, tokenizer, e_k_tensor, final_row["text"], device, dtype)
-            curve.append({"k": int(k), "accuracy": acc})
+            # variance_ratio at k = cum_variance[k-1] (1-indexed → 0-indexed).
+            var_ratio = float(cum_variance[k - 1].item()) if 1 <= k <= cum_variance.numel() else None
+            curve.append({"k": int(k), "accuracy": acc, "variance_ratio": var_ratio})
 
         per_sample_curves.append(
             {
@@ -212,9 +216,14 @@ def main() -> None:
     print(f"Wrote {output_path}")
 
     print()
-    print("Curve (k → mean accuracy ± std, n_samples):")
+    print("Curve (k → mean accuracy ± std | cum.variance ratio | n_samples):")
     for point in summary["curve"]:
-        print(f"  k={point['k']:>3}  acc={point['mean']:.4f} ± {point['std']:.4f}  " f"(n={point['n_samples']})")
+        var_str = (
+            f"{point['variance_ratio_mean']:.4f} ± {point['variance_ratio_std']:.4f}"
+            if "variance_ratio_mean" in point
+            else "          -          "
+        )
+        print(f"  k={point['k']:>3}  acc={point['mean']:.4f} ± {point['std']:.4f}  " f"var={var_str}  (n={point['n_samples']})")
 
 
 if __name__ == "__main__":

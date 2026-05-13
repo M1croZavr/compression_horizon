@@ -464,9 +464,14 @@ def _analyze_pca_reconstruction(experiment_name: str, spec: dict, output_dir: st
     print(f"Note:       paper reference is {spec.get('reference_model', spec['model'])} — qualitative comparison.")
 
     print()
-    print("PCA reconstruction curve (k → mean accuracy ± std, n_samples):")
+    print("PCA reconstruction curve (k → mean accuracy ± std | cum. variance ratio | n_samples):")
     for point in curve:
-        print(f"  k={point['k']:>4}  acc={point['mean']:.4f} ± {point['std']:.4f}  (n={point['n_samples']})")
+        var_str = (
+            f"{point['variance_ratio_mean']:.4f} ± {point['variance_ratio_std']:.4f}"
+            if "variance_ratio_mean" in point
+            else "          -          "
+        )
+        print(f"  k={point['k']:>4}  acc={point['mean']:.4f} ± {point['std']:.4f}  " f"var={var_str}  (n={point['n_samples']})")
 
     qual = spec.get(
         "qualitative",
