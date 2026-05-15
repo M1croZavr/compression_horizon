@@ -68,8 +68,13 @@ def _compare_configuration(metric_name: str, ours_values: np.ndarray, expected_s
     return verdict == "OK"
 
 
-def _compare_measured(metric_name: str, ours_values: np.ndarray, expected_spec: dict) -> bool:
-    """Compare a measured metric (mean ± std vs paper). Returns True iff within ±2σ."""
+def _compare_measured(metric_name: str, ours_values: np.ndarray, expected_spec: dict) -> tuple[bool, dict]:
+    """Compare a measured metric (mean ± std vs paper).
+
+    Returns ``(ok, record)`` where ``ok`` is True iff verdict is within ±2σ
+    and ``record`` is a JSON-serializable dict of the comparison — used by
+    :func:`analyze` to persist a machine-readable summary alongside stdout.
+    """
     paper_mean = expected_spec["mean"]
     paper_std = expected_spec["std"]
     ours_mean = float(ours_values.mean())
@@ -83,7 +88,17 @@ def _compare_measured(metric_name: str, ours_values: np.ndarray, expected_spec: 
         f"z={z:.2f}",
         verdict,
     )
-    return verdict == "OK"
+    record = {
+        "metric": metric_name,
+        "ours_mean": ours_mean,
+        "ours_std": ours_std,
+        "paper_mean": paper_mean,
+        "paper_std": paper_std,
+        "z_score": None if np.isnan(z) else float(z),
+        "verdict": verdict,
+        "n_samples": int(ours_values.size),
+    }
+    return verdict == "OK", record
 
 
 def _build_metric_extractors(trainer_type: str):
@@ -567,13 +582,15 @@ def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
     print("Measured metrics (real outputs of the optimization):")
     _print_header()
     all_ok = True
+    measured_records: list[dict] = []
     for metric_name, expected_spec in measured_metrics.items():
         extractor = extractors.get(metric_name)
         if extractor is None:
             print(f"  {metric_name:<32}  [no extractor]")
             continue
         values = np.array([extractor(r) for r in rows], dtype=np.float64)
-        ok = _compare_measured(metric_name, values, expected_spec)
+        ok, record = _compare_measured(metric_name, values, expected_spec)
+        measured_records.append(record)
         all_ok = all_ok and ok
 
     print()
@@ -581,6 +598,32 @@ def analyze(experiment_name: str, output_dir: str | None = None) -> bool:
         "Summary:",
         "all measured metrics OK" if all_ok else "some metrics drifted — investigate",
     )
+
+    # Persist a machine-readable copy of the comparison so the numbers
+    # survive after the terminal scrolls / closes — useful for thesis tables
+    # and later writeup. Saved as ``analysis_summary.json`` in output_dir.
+    summary_path = os.path.join(output_dir, "analysis_summary.json")
+    try:
+        with open(summary_path, "w") as f:
+            json.dump(
+                {
+                    "experiment": experiment_name,
+                    "paper_section": spec.get("paper_section"),
+                    "model": spec.get("model"),
+                    "trainer_type": spec.get("trainer_type"),
+                    "num_samples_ours": len(rows),
+                    "num_samples_paper": spec.get("num_samples"),
+                    "measured": measured_records,
+                    "all_ok": all_ok,
+                },
+                f,
+                indent=2,
+            )
+        print(f"Saved JSON summary to {summary_path}")
+    except OSError as e:
+        # Don't fail the verdict just because the disk is read-only.
+        print(f"(Failed to save analysis summary to {summary_path}: {e})")
+
     return all_ok
 
 

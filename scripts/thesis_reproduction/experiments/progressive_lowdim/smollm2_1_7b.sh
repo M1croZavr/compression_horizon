@@ -44,30 +44,37 @@ cd "$(git rev-parse --show-toplevel)"
 
 EXPERIMENT="progressive_lowdim/smollm2_1_7b"
 OUTPUT_DIR="artifacts/thesis_reproduction/${EXPERIMENT}"
+mkdir -p "$OUTPUT_DIR"
 
-uv run python scripts/thesis_reproduction/train.py \
-  --model_checkpoint HuggingFaceTB/SmolLM2-1.7B \
-  --dataset_name LarryLovestein/pg19_1k \
-  --max_sequence_length 4096 \
-  --limit_dataset_items 50 \
-  --per_device_train_batch_size 1 \
-  --max_optimization_steps_per_sample 10000 \
-  --max_optimization_steps_per_token 1000 \
-  --learning_rate 0.1 \
-  --warmup_steps 100 \
-  --embedding_init_method random0.02 \
-  --loss_type cross_entropy \
-  --low_dim_projection \
-  --low_dim_size 256 \
-  --progressive_train \
-  --progressive_min_seq_len 1 \
-  --progressive_step 1 \
-  --progressive_convergence_threshold 1.0 \
-  --dtype bf16 \
-  --output_dir "$OUTPUT_DIR"
+# tee duplicates stdout+stderr to a log file so the terminal-output is
+# preserved alongside ``progressive_prefixes/`` and ``analysis_summary.json``
+# — handy if the terminal closes mid-run or you come back to numbers months
+# later for the thesis writeup.
+{
+  uv run python scripts/thesis_reproduction/train.py \
+    --model_checkpoint HuggingFaceTB/SmolLM2-1.7B \
+    --dataset_name LarryLovestein/pg19_1k \
+    --max_sequence_length 4096 \
+    --limit_dataset_items 50 \
+    --per_device_train_batch_size 1 \
+    --max_optimization_steps_per_sample 10000 \
+    --max_optimization_steps_per_token 1000 \
+    --learning_rate 0.1 \
+    --warmup_steps 100 \
+    --embedding_init_method random0.02 \
+    --loss_type cross_entropy \
+    --low_dim_projection \
+    --low_dim_size 256 \
+    --progressive_train \
+    --progressive_min_seq_len 1 \
+    --progressive_step 1 \
+    --progressive_convergence_threshold 1.0 \
+    --dtype bf16 \
+    --output_dir "$OUTPUT_DIR"
 
-echo
-echo "==============================================================================="
-echo "Training finished. Comparing with paper Table 6 (SmolLM2-1.7B, dim=256)..."
-echo "==============================================================================="
-uv run python scripts/thesis_reproduction/analyze.py --experiment "$EXPERIMENT"
+  echo
+  echo "==============================================================================="
+  echo "Training finished. Comparing with paper Table 6 (SmolLM2-1.7B, dim=256)..."
+  echo "==============================================================================="
+  uv run python scripts/thesis_reproduction/analyze.py --experiment "$EXPERIMENT"
+} 2>&1 | tee "${OUTPUT_DIR}/train.log"

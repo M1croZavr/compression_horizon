@@ -53,6 +53,32 @@
     },
     "notes": "Progressive cramming on SmolLM2-1.7B (lr=0.1, no alignment, no low-dim, cross-entropy loss only). Direct same-model reproduction of paper Table 6 baseline row. Trajectory length (1056 ± 153) and PCA 99% (33.16 ± 2.76) are paper-reported and can be verified post-hoc via the trajectory analyzer."
   },
+  "progressive_lowdim/smollm2_1_7b": {
+    "paper_section": "Table 6 (Reviewer 1 W1 response, identical to Table 2 in main text), row 'SmolLM2-1.7B lr=0.1 dim=256'",
+    "model": "HuggingFaceTB/SmolLM2-1.7B",
+    "trainer_type": "progressive",
+    "dataset": "LarryLovestein/pg19_1k",
+    "num_samples": 50,
+    "max_sequence_length": 4096,
+    "expected": {
+      "compressed_tokens":      {"kind": "measured", "mean": 957.4,  "std": 142.5},
+      "information_gain_bits":  {"kind": "measured", "mean": 3271.0, "std": 309.0}
+    },
+    "notes": "Progressive cramming + low-dim projection (dim=256) on SmolLM2-1.7B (lr=0.1, cross-entropy loss). Direct same-model reproduction of paper Table 6 low-dim row. The same setup matches the original code paths: --per_device_train_batch_size 1 + --low_dim_projection (global=False default), which de-facto means a fresh nn.Linear(256, hidden) per sample because each batch is one sample (see scripts/jobs/run_jobs_progressive.py:230 in commit a0d39f6). The compatible no-low-dim baseline (same row family, dim=hidden) is 338.3 ± 69.1 cram tokens and 1213 ± 166 IG (see progressive/smollm2_1_7b entry) — low-dim should produce ~3x larger values, demonstrating that constraining the search to a 256-dim subspace acts as a strong regularizer (Section 5.2). The trained Linear weights are saved to ${OUTPUT_DIR}/low_dim_projection.pt (note: in this non-global mode it's the last sample's basis, not a shared one)."
+  },
+  "progressive_lowdim_global/smollm2_1_7b": {
+    "paper_section": "Not directly in paper Table 6 — additional experiment testing the manifold hypothesis from Section 4.3 + Section 5.2. Expected targets are reused from the per-sample-basis row as a proxy: if a SHARED 256-dim basis suffices for all texts, numbers should land in the same ballpark.",
+    "model": "HuggingFaceTB/SmolLM2-1.7B",
+    "trainer_type": "progressive",
+    "dataset": "LarryLovestein/pg19_1k",
+    "num_samples": 50,
+    "max_sequence_length": 4096,
+    "expected": {
+      "compressed_tokens":      {"kind": "measured", "mean": 957.4,  "std": 142.5},
+      "information_gain_bits":  {"kind": "measured", "mean": 3271.0, "std": 309.0}
+    },
+    "notes": "Same setup as progressive_lowdim/smollm2_1_7b but with --low_dim_projection_global, meaning ONE nn.Linear(256, hidden) lives through the entire 50-sample run; its AdamW state and cosine LR-scheduler accumulate continuously. The trained Linear at ${OUTPUT_DIR}/low_dim_projection.pt is the *common compression basis* learned across all 50 PG19 texts — directly testable for transfer by loading it as --low_dim_projection_checkpoint into a downstream run. Verdicts here treat the per-sample-basis numbers as a proxy: if cram_tokens / IG come out within ±2σ of (957.4, 3271), that's evidence the manifold hypothesis (Section 4.3) holds — the same 256-dim basis can compress all texts in the corpus. A significantly worse result would say the basis has to be sample-specialized to reach paper-faithful numbers."
+  },
   "progressive/smollm2_135m": {
     "paper_section": "Table 13 (Appendix F)",
     "model": "HuggingFaceTB/SmolLM2-135M",
