@@ -1,3 +1,28 @@
+"""Parametrizations of the compression embedding owned by trainers.
+
+All parametrization classes expose a unified interface used by both
+:class:`FullCrammingTrainer` (one batch-level Parameter group) and
+:class:`ProgressiveCrammingTrainer` (per-sample Parameter groups):
+
+    parameters        list[Parameter] — per-sample / batch-level optimizable tensors;
+                                         one Parameter per sample in the per-sample
+                                         variants, a single batch Parameter in the
+                                         full-cramming variants.
+    shared_parameters list[Parameter] — Parameters shared across all samples (e.g.
+                                         low-dim projection weights). Empty list when
+                                         there are none.
+    materialize()     -> Tensor       — [batch, num_compression_tokens, hidden_size].
+    initialization_snapshot() -> Tensor — embedding values *before* optimization started.
+    serialize_extras() -> object|None — auxiliary per-sample state for the saved row
+                                         (e.g. PCA / low-dim coefficients).
+    shared_state_dict() -> dict|None  — state_dict of shared modules (e.g. projection).
+                                         ``None`` when there are no shared modules.
+    optimizable_tensor -> Tensor      — batch-stacked optimizable tensor (only on
+                                         full-cramming variants; used by
+                                         ``ConvergedSamplesGuard`` to freeze converged
+                                         samples per index).
+"""
+
 import torch
 
 
@@ -13,6 +38,10 @@ class DirectParametrization:
         return [self.embedding]
 
     @property
+    def shared_parameters(self) -> list[torch.nn.Parameter]:
+        return []
+
+    @property
     def optimizable_tensor(self) -> torch.Tensor:
         return self.embedding
 
@@ -23,7 +52,10 @@ class DirectParametrization:
         return self._initialization_snapshot
 
     def serialize_extras(self) -> list | None:
-        pass
+        return None
+
+    def shared_state_dict(self) -> dict | None:
+        return None
 
 
 class PretrainedPCAParametrization:
@@ -61,6 +93,10 @@ class PretrainedPCAParametrization:
         return [self.coefficients]
 
     @property
+    def shared_parameters(self) -> list[torch.nn.Parameter]:
+        return []
+
+    @property
     def optimizable_tensor(self) -> torch.Tensor:
         return self.coefficients
 
@@ -74,6 +110,88 @@ class PretrainedPCAParametrization:
     def serialize_extras(self) -> list:
         return self.coefficients.clone().detach().to(torch.float32).cpu().numpy().tolist()
 
+    def shared_state_dict(self) -> dict | None:
+        return None
+
+
+class LowDimProjectedParametrization:
+    """Compression embedding in a rank-k subspace: ``e = projection(z)``.
+
+    Coefficients live in ``R^{batch×num_compression_tokens×low_dim_size}`` and a
+    shared ``torch.nn.Linear(low_dim_size, hidden_size)`` lifts them to the
+    model's hidden dimension. The projection weights are part of
+    ``shared_parameters`` (so trainers can route them to a separate optimizer
+    or, in the full-cramming case, into the same optimizer as the coefficients).
+
+    The projection can either be **owned** (the parametrization creates its own
+    ``nn.Linear`` and optionally warm-starts it from ``projection_state_dict``),
+    or **provided** by the caller via ``projection_module`` — used by
+    progressive cramming in ``--low_dim_projection_global`` mode, where a single
+    Linear lives through the entire run and is reused across batches together
+    with its AdamW state and LR scheduler.
+    """
+
+    def __init__(
+        self,
+        *,
+        init_coefficients: torch.Tensor,  # [batch, num_compression_tokens, low_dim_size]
+        low_dim_size: int,
+        hidden_size: int,
+        device: torch.device,
+        projection_state_dict: dict | None = None,
+        train_projection: bool = True,
+        projection_module: torch.nn.Linear | None = None,
+    ):
+        if init_coefficients.dim() != 3 or init_coefficients.shape[-1] != low_dim_size:
+            raise ValueError(
+                f"init_coefficients must have shape [batch, num_compression_tokens, {low_dim_size}], "
+                f"got {tuple(init_coefficients.shape)}"
+            )
+        self._low_dim_size = low_dim_size
+        self._hidden_size = hidden_size
+        self.coefficients = torch.nn.Parameter(init_coefficients.data.to(device))
+        if projection_module is not None:
+            # Caller-owned Linear (checkpoint loading + requires_grad are
+            # assumed to be configured by the caller).
+            self.projection = projection_module
+        else:
+            self.projection = torch.nn.Linear(low_dim_size, hidden_size).to(device)
+            if projection_state_dict is not None:
+                self.projection.load_state_dict(projection_state_dict)
+            if not train_projection:
+                for p in self.projection.parameters():
+                    p.requires_grad = False
+        self._initialization_snapshot = self.materialize().detach().cpu()
+
+    @property
+    def parameters(self) -> list[torch.nn.Parameter]:
+        # Only the batch-level coefficients here — projection lives in
+        # `shared_parameters` so per-sample-aware trainers (Progressive) can
+        # route it through a dedicated optimizer.
+        return [self.coefficients]
+
+    @property
+    def shared_parameters(self) -> list[torch.nn.Parameter]:
+        return [p for p in self.projection.parameters() if p.requires_grad]
+
+    @property
+    def optimizable_tensor(self) -> torch.Tensor:
+        # ConvergedSamplesGuard freezes converged samples' coefficients only;
+        # the projection is shared and is updated batch-wide.
+        return self.coefficients
+
+    def materialize(self) -> torch.Tensor:
+        return self.projection(self.coefficients)
+
+    def initialization_snapshot(self) -> torch.Tensor:
+        return self._initialization_snapshot
+
+    def serialize_extras(self) -> list:
+        return self.coefficients.clone().detach().to(torch.float32).cpu().numpy().tolist()
+
+    def shared_state_dict(self) -> dict:
+        return self.projection.state_dict()
+
 
 def build_parametrization(
     *,
@@ -85,8 +203,37 @@ def build_parametrization(
     init_helper,
     pca_components: torch.Tensor | None,
     pca_mean: torch.Tensor | None,
+    low_dim_train: bool = False,
+    low_dim_size: int | None = None,
+    projection_state_dict: dict | None = None,
+    train_projection: bool = True,
+    projection_module: torch.nn.Linear | None = None,
 ):
-    """Create the parametrization owning the optimizable parameters of the compression embedding."""
+    """Create the parametrization owning the optimizable parameters of the compression embedding.
+
+    Dispatch order:
+        1. ``low_dim_train=True`` → :class:`LowDimProjectedParametrization`
+           (rank-k subspace; ``init_helper`` must yield a coefficient tensor of
+           shape ``[batch, num_compression_tokens, low_dim_size]``).
+        2. ``init_method == "pretrained_pca"`` → :class:`PretrainedPCAParametrization`.
+        3. Otherwise → :class:`DirectParametrization`.
+
+    ``projection_module`` (low-dim only) lets the caller pass a pre-built
+    ``nn.Linear`` to be reused — used by progressive cramming in
+    ``--low_dim_projection_global`` mode.
+    """
+    if low_dim_train:
+        if low_dim_size is None:
+            raise ValueError("low_dim_size is required when low_dim_train=True")
+        return LowDimProjectedParametrization(
+            init_coefficients=init_helper(),
+            low_dim_size=low_dim_size,
+            hidden_size=hidden_size,
+            device=device,
+            projection_state_dict=projection_state_dict,
+            train_projection=train_projection,
+            projection_module=projection_module,
+        )
     if init_method == "pretrained_pca":
         assert pca_components is not None and pca_mean is not None
         return PretrainedPCAParametrization(
@@ -97,8 +244,7 @@ def build_parametrization(
             pca_mean=pca_mean,
             device=device,
         )
-    else:
-        return DirectParametrization(init_embedding=init_helper(), device=device)
+    return DirectParametrization(init_embedding=init_helper(), device=device)
 
 
 class PerSampleDirectParametrization:
@@ -114,6 +260,10 @@ class PerSampleDirectParametrization:
     def parameters(self) -> list[torch.nn.Parameter]:
         return list(self._params)
 
+    @property
+    def shared_parameters(self) -> list[torch.nn.Parameter]:
+        return []
+
     def materialize(self) -> torch.Tensor:
         """[batch, compression, hidden] — concatenation across samples."""
         return torch.cat(self._params, dim=0)
@@ -122,6 +272,9 @@ class PerSampleDirectParametrization:
         return self._initialization_snapshot
 
     def serialize_extras(self) -> list | None:
+        return None
+
+    def shared_state_dict(self) -> dict | None:
         return None
 
 
@@ -160,6 +313,10 @@ class PerSamplePretrainedPCAParametrization:
     def parameters(self) -> list[torch.nn.Parameter]:
         return list(self._coefficients)
 
+    @property
+    def shared_parameters(self) -> list[torch.nn.Parameter]:
+        return []
+
     def materialize(self) -> torch.Tensor:
         """[batch, compression, hidden] — reconstruct from per-sample coefficients."""
         coefficients = torch.cat(self._coefficients, dim=0)
@@ -172,6 +329,82 @@ class PerSamplePretrainedPCAParametrization:
     def serialize_extras(self) -> list:
         return [c.clone().detach().to(torch.float32).cpu().numpy().tolist() for c in self._coefficients]
 
+    def shared_state_dict(self) -> dict | None:
+        return None
+
+
+class PerSampleLowDimProjectedParametrization:
+    """Per-sample low-rank coefficients with a shared trainable Linear projection.
+
+    Coefficients live per-sample in ``R^{low_dim_size}``; a single
+    ``torch.nn.Linear(low_dim_size, hidden_size)`` is shared across the batch
+    and lifts them to the model's hidden dimension.  This is the per-sample
+    analogue of :class:`LowDimProjectedParametrization`, used by Progressive
+    cramming where each sample has its own optimizer.
+
+    The projection can either be **owned** (the parametrization creates its own
+    ``nn.Linear`` and optionally warm-starts it from ``projection_state_dict``),
+    or **provided** by the caller via ``projection_module`` — the latter is how
+    ``--low_dim_projection_global`` is implemented: one Linear is created
+    before the data loop, kept alive across batches together with its
+    AdamW state + LR scheduler, and passed in here on every batch.
+    """
+
+    def __init__(
+        self,
+        *,
+        init_coefficients: torch.Tensor,  # [batch, num_compression_tokens, low_dim_size]
+        low_dim_size: int,
+        hidden_size: int,
+        device: torch.device,
+        projection_state_dict: dict | None = None,
+        train_projection: bool = True,
+        projection_module: torch.nn.Linear | None = None,
+    ):
+        if init_coefficients.dim() != 3 or init_coefficients.shape[-1] != low_dim_size:
+            raise ValueError(
+                f"init_coefficients must have shape [batch, num_compression_tokens, {low_dim_size}], "
+                f"got {tuple(init_coefficients.shape)}"
+            )
+        batch_size = init_coefficients.size(0)
+        self._low_dim_size = low_dim_size
+        self._hidden_size = hidden_size
+        self._params = [torch.nn.Parameter(init_coefficients.data[j : j + 1].clone().to(device)) for j in range(batch_size)]
+        if projection_module is not None:
+            # Caller-owned Linear (checkpoint loading + requires_grad are
+            # assumed to be configured by the caller).
+            self.projection = projection_module
+        else:
+            self.projection = torch.nn.Linear(low_dim_size, hidden_size).to(device)
+            if projection_state_dict is not None:
+                self.projection.load_state_dict(projection_state_dict)
+            if not train_projection:
+                for p in self.projection.parameters():
+                    p.requires_grad = False
+        self._initialization_snapshot = self.materialize().detach().cpu()
+
+    @property
+    def parameters(self) -> list[torch.nn.Parameter]:
+        return list(self._params)
+
+    @property
+    def shared_parameters(self) -> list[torch.nn.Parameter]:
+        return [p for p in self.projection.parameters() if p.requires_grad]
+
+    def materialize(self) -> torch.Tensor:
+        """[batch, num_compression_tokens, hidden_size] — concat per-sample coefficients then project."""
+        coefficients = torch.cat(self._params, dim=0)  # [batch, num_comp, low_dim]
+        return self.projection(coefficients)
+
+    def initialization_snapshot(self) -> torch.Tensor:
+        return self._initialization_snapshot
+
+    def serialize_extras(self) -> list:
+        return [c.clone().detach().to(torch.float32).cpu().numpy().tolist() for c in self._params]
+
+    def shared_state_dict(self) -> dict:
+        return self.projection.state_dict()
+
 
 def build_per_sample_parametrization(
     *,
@@ -183,8 +416,35 @@ def build_per_sample_parametrization(
     init_helper,
     pca_components: torch.Tensor | None,
     pca_mean: torch.Tensor | None,
+    low_dim_train: bool = False,
+    low_dim_size: int | None = None,
+    projection_state_dict: dict | None = None,
+    train_projection: bool = True,
+    projection_module: torch.nn.Linear | None = None,
 ):
-    """Per-sample variant of build_parametrization, used by progressive cramming."""
+    """Per-sample variant of :func:`build_parametrization`, used by progressive cramming.
+
+    Dispatch order mirrors :func:`build_parametrization` exactly (low-dim,
+    pretrained PCA, direct), so trainers can branch on
+    ``args.low_dim_projection`` / ``args.embedding_init_method`` symmetrically
+    in both code paths.
+
+    ``projection_module`` (low-dim only) lets the caller pass a pre-built
+    ``nn.Linear`` to be reused — used in ``--low_dim_projection_global`` mode
+    where a single Linear lives through the entire run.
+    """
+    if low_dim_train:
+        if low_dim_size is None:
+            raise ValueError("low_dim_size is required when low_dim_train=True")
+        return PerSampleLowDimProjectedParametrization(
+            init_coefficients=init_helper(),
+            low_dim_size=low_dim_size,
+            hidden_size=hidden_size,
+            device=device,
+            projection_state_dict=projection_state_dict,
+            train_projection=train_projection,
+            projection_module=projection_module,
+        )
     if init_method == "pretrained_pca":
         assert pca_components is not None and pca_mean is not None
         return PerSamplePretrainedPCAParametrization(

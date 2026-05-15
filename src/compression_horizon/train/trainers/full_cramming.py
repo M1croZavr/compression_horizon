@@ -67,6 +67,9 @@ class FullCrammingTrainer(BaseTrainer):
         # them along the sample dim so the saved tensor has one row per instance
         # (otherwise multi-batch runs would only persist the last batch).
         per_batch_compression: list[torch.Tensor] = []
+        # Last batch's parametrization — exposed to subclasses via
+        # `_on_training_complete` (e.g. LowDim saves its projection weights here).
+        final_parametrization = None
 
         for batch in tqdm(self._create_dataloader()):
             inputs = self._prepare_batch_inputs(batch, ctx)
@@ -81,10 +84,13 @@ class FullCrammingTrainer(BaseTrainer):
             sample_id_counter += len(rows)
             if batch_compression_cpu is not None:
                 per_batch_compression.append(batch_compression_cpu)
+            final_parametrization = result.parametrization
 
         if self.writer is not None:
             self.writer.flush()
             self.writer.close()
+
+        self._on_training_complete(final_parametrization, ctx)
 
         final_compression_cpu = torch.cat(per_batch_compression, dim=0) if per_batch_compression else None
 
@@ -94,6 +100,30 @@ class FullCrammingTrainer(BaseTrainer):
             tensor_filename="compression_embeddings.pt",
             subdir_name="compressed_prefixes",
         )
+
+    # ------------------------------------------------------------------
+    # Subclass extension points.
+    # ------------------------------------------------------------------
+
+    def _extra_parametrization_kwargs(self, ctx: "_RunContext") -> dict:
+        """Hook for subclasses to inject extra ``build_parametrization`` kwargs.
+
+        ``LowDimTrainer`` uses this to enable the low-dim projection branch
+        without copy-pasting the entire optimization loop. ``ctx`` is passed
+        so subclasses can read ``hidden_size`` / ``device`` etc. without
+        having to reach into ``self.model``.
+        """
+        return {}
+
+    def _on_training_complete(self, parametrization, ctx: "_RunContext") -> None:
+        """Hook called once after all batches finish training.
+
+        ``parametrization`` is the parametrization object produced by the
+        *last* batch (or ``None`` if no batches were processed). Subclasses
+        override this to persist auxiliary state (e.g. low-dim projection
+        weights).
+        """
+        pass
 
     def _build_run_context(self) -> _RunContext:
         """Seed RNG, freeze model, prepare embedding-init helpers and constants."""
@@ -196,10 +226,13 @@ class FullCrammingTrainer(BaseTrainer):
             init_helper=lambda: self._init_compression_token_embeddings(inputs, ctx),
             pca_components=ctx.pca_components,
             pca_mean=ctx.pca_mean,
+            **self._extra_parametrization_kwargs(ctx),
         )
         optimizer, lr_scheduler = build_optimizer_and_scheduler(
             self.args,
-            parametrization.parameters,
+            # Single optimizer covers both the batch-level parameters and any
+            # parametrization-shared modules (e.g. a low-dim Linear projection).
+            list(parametrization.parameters) + list(parametrization.shared_parameters),
             self.args.max_optimization_steps_per_sample,
             1,
         )

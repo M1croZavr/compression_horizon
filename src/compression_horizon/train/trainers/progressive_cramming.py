@@ -29,9 +29,16 @@ class _RunContext:
     step_increment: int
     min_len: int
     max_stages_cap: int
-    global_low_dim_projection: torch.nn.Module | None
-    global_low_dim_optimizer: object
-    global_low_dim_scheduler: object
+    # In ``--low_dim_projection_global`` mode the projection's ``nn.Linear``,
+    # its AdamW state, and its LR scheduler all live for the entire run (as
+    # in the pre-refactor implementation in commit a0d39f6). The same
+    # ``nn.Linear`` object is handed to every batch's parametrization via
+    # ``projection_module`` so that gradient steps and momentum/variance
+    # accumulate continuously. All three fields are ``None`` when the
+    # projection is per-batch (the default).
+    shared_projection: torch.nn.Linear | None = None
+    shared_optimizer: object = None
+    shared_scheduler: object = None
 
 
 @dataclass
@@ -44,15 +51,18 @@ class _BatchContext:
     target_hidden_states_full: tuple[torch.Tensor, ...]
     compression_attention_mask: torch.Tensor  # [batch, compression]
     batch_size: int
-    hidden_size: int
+    hidden_size: int  # Always the model's hidden size; the parametrization
+    # handles low-dim coefficient space internally.
     max_len: int
     parametrization: object
     per_sample_optimizers: list
     per_sample_schedulers: list
     initialization_embeddings: torch.Tensor
-    low_dim_projection: torch.nn.Module | None
-    low_dim_optimizer: object
-    low_dim_scheduler: object
+    # Optimizer for parametrization-shared parameters (e.g. low-dim Linear
+    # projection weights). ``None`` when the parametrization has no shared
+    # parameters (Direct / pretrained-PCA mode).
+    shared_optimizer: object
+    shared_scheduler: object
 
 
 @dataclass
@@ -75,15 +85,22 @@ class ProgressiveCrammingTrainer(BaseTrainer):
         ctx = self._build_run_context()
         collected_rows: list[dict] = []
         sample_id_counter = 0
+        # The last batch's parametrization is exposed to ``_on_training_complete``
+        # so the projection weights can be persisted in non-global mode (in
+        # global mode we save ``ctx.shared_projection`` directly).
+        final_parametrization = None
 
         for batch in tqdm(self._create_dataloader()):
             batch_ctx = self._setup_batch(batch, ctx)
             collected_rows.extend(self._run_progressive_stages(batch_ctx, ctx, sample_id_counter))
             sample_id_counter += batch_ctx.batch_size
+            final_parametrization = batch_ctx.parametrization
 
         if self.writer is not None:
             self.writer.flush()
             self.writer.close()
+
+        self._on_training_complete(final_parametrization, ctx)
 
         return self._save_artifacts(
             collected_rows,
@@ -92,20 +109,70 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             subdir_name="progressive_prefixes",
         )
 
+    def _on_training_complete(self, parametrization, ctx: _RunContext) -> None:
+        """Hook called once after all batches finish. Persists low-dim projection if any.
+
+        Two cases:
+        * ``--low_dim_projection_global``: ``ctx.shared_projection`` is the one
+          ``nn.Linear`` that lived through the run — save its state_dict.
+        * non-global: ``parametrization`` is the *last* batch's parametrization
+          (per-batch projection), so its ``shared_state_dict()`` is the most
+          recently trained weights.
+        """
+        if not self.args.low_dim_projection or not self.args.low_dim_projection_train:
+            return
+        if ctx.shared_projection is not None:
+            shared_state = ctx.shared_projection.state_dict()
+        elif parametrization is not None:
+            shared_state = parametrization.shared_state_dict()
+        else:
+            return
+        if shared_state is None:
+            return
+        output_dir = self.args.output_dir
+        if not output_dir:
+            return
+        os.makedirs(output_dir, exist_ok=True)
+        save_path = os.path.join(output_dir, "low_dim_projection.pt")
+        torch.save(
+            {
+                "low_dim_projection": shared_state,
+                "low_dim_size": self.args.low_dim_size,
+                "hidden_size": ctx.model.config.hidden_size,
+            },
+            save_path,
+        )
+        print(f"Saved low-dimensional projection weights to {save_path}")
+
     # ------------------------------------------------------------------
     # Run-level setup (once per train()).
     # ------------------------------------------------------------------
 
     def _build_run_context(self) -> _RunContext:
-        """Seed RNG, freeze model, prepare embedding-init helpers, build global low-dim projection if any."""
+        """Seed RNG, freeze model, prepare embedding-init helpers.
+
+        In ``--low_dim_projection_global`` mode we additionally construct the
+        run-shared ``nn.Linear`` projection, its AdamW optimizer, and its LR
+        scheduler — exactly once, before the data loop — so that they live
+        across all batches (matching the pre-refactor implementation in
+        a0d39f6, where global mode created these three objects above
+        ``for batch in dataloader:``).
+        """
         model, device, init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings = self._initialize_run()
 
-        global_low_dim_projection, global_low_dim_optimizer, global_low_dim_scheduler = None, None, None
+        shared_projection: torch.nn.Linear | None = None
+        shared_optimizer = None
+        shared_scheduler = None
         if self.args.low_dim_projection and self.args.low_dim_projection_global:
-            global_low_dim_projection, global_low_dim_optimizer, global_low_dim_scheduler = self._prepare_low_dim_proj(
-                embedding_dim=model.get_input_embeddings().embedding_dim
+            shared_projection = self._build_low_dim_projection_module(
+                hidden_size=model.config.hidden_size,
+                device=device,
             )
-            global_low_dim_projection = global_low_dim_projection.to(device)
+            if self.args.low_dim_projection_train:
+                shared_optimizer, shared_scheduler = self._build_optimizer_and_scheduler(
+                    list(shared_projection.parameters()),
+                    num_training_steps=self.args.max_optimization_steps_per_sample,
+                )
 
         return _RunContext(
             model=model,
@@ -120,9 +187,9 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             step_increment=self.args.progressive_step,
             min_len=self.args.progressive_min_seq_len,
             max_stages_cap=self.args.progressive_max_stages,
-            global_low_dim_projection=global_low_dim_projection,
-            global_low_dim_optimizer=global_low_dim_optimizer,
-            global_low_dim_scheduler=global_low_dim_scheduler,
+            shared_projection=shared_projection,
+            shared_optimizer=shared_optimizer,
+            shared_scheduler=shared_scheduler,
         )
 
     # ------------------------------------------------------------------
@@ -137,12 +204,17 @@ class ProgressiveCrammingTrainer(BaseTrainer):
         with torch.no_grad():
             full_token_embeddings = ctx.model.get_input_embeddings()(input_ids)  # [batch, sequence, hidden]
         target_hidden_states_full = self.compute_hidden_states(ctx.model, full_token_embeddings, attention_mask)
-        hidden_size = self.args.low_dim_size if self.args.low_dim_projection else full_token_embeddings.shape[-1]
+        hidden_size = full_token_embeddings.shape[-1]  # Always model's hidden size now.
 
-        low_dim_projection, low_dim_optimizer, low_dim_scheduler = self._resolve_low_dim_projection(ctx)
-
-        parametrization = self._build_parametrization(ctx, batch_size, hidden_size, full_token_embeddings)
+        parametrization = self._build_parametrization(ctx, batch_size, hidden_size)
         per_sample_optimizers, per_sample_schedulers = self._build_per_sample_optimizers(parametrization, ctx)
+        # Global mode: reuse the run-level optimizer/scheduler — they own the
+        # AdamW state and LR-curve position accumulated across all previous
+        # batches. Non-global mode: create a fresh per-batch pair.
+        if ctx.shared_projection is not None:
+            shared_optimizer, shared_scheduler = ctx.shared_optimizer, ctx.shared_scheduler
+        else:
+            shared_optimizer, shared_scheduler = self._build_shared_optimizer(parametrization)
         compression_attention_mask = build_compression_attention_mask(
             batch_size,
             ctx.num_compression_tokens,
@@ -166,35 +238,45 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             per_sample_optimizers=per_sample_optimizers,
             per_sample_schedulers=per_sample_schedulers,
             initialization_embeddings=parametrization.initialization_snapshot(),
-            low_dim_projection=low_dim_projection,
-            low_dim_optimizer=low_dim_optimizer,
-            low_dim_scheduler=low_dim_scheduler,
+            shared_optimizer=shared_optimizer,
+            shared_scheduler=shared_scheduler,
         )
 
-    def _resolve_low_dim_projection(self, ctx: _RunContext):
-        """Return the low-dim projection for this batch (global one if `--low_dim_projection_global`, else fresh per-batch)."""
-        if not self.args.low_dim_projection:
-            return None, None, None
-        if self.args.low_dim_projection_global:
-            return ctx.global_low_dim_projection, ctx.global_low_dim_optimizer, ctx.global_low_dim_scheduler
-        projection, optimizer, scheduler = self._prepare_low_dim_proj(
-            embedding_dim=ctx.model.get_input_embeddings().embedding_dim
-        )
-        return projection.to(ctx.device), optimizer, scheduler
+    def _build_parametrization(self, ctx: _RunContext, batch_size: int, hidden_size: int):
+        """Construct the per-sample parametrization (Direct, PretrainedPCA, or low-dim projected).
 
-    def _build_parametrization(self, ctx: _RunContext, batch_size: int, hidden_size: int, full_token_embeddings: torch.Tensor):
-        """Construct the per-sample parametrization (Direct or PretrainedPCA)."""
+        Low-dim semantics — the trainer always builds the ``nn.Linear`` itself
+        and hands it to the parametrization via ``projection_module``:
+        * ``--low_dim_projection_global``: reuse ``ctx.shared_projection`` (one
+          Linear for the whole run; AdamW/scheduler in ``ctx`` accumulate
+          state across batches).
+        * ``--low_dim_projection`` alone: build a **fresh** Linear here per
+          batch (warm-started from ``--low_dim_projection_checkpoint`` if
+          given, frozen when ``--low_dim_projection_train`` is False). This
+          matches the pre-refactor behaviour where ``_prepare_low_dim_proj``
+          was invoked inside the data loop.
+        """
+        # Coefficient init lives in low-dim space when low-dim is on; otherwise
+        # in model hidden space.
+        init_dim = self.args.low_dim_size if self.args.low_dim_projection else hidden_size
 
         def _init_helper():
             return self._init_compression_tokens(
                 batch_size,
                 ctx.num_compression_tokens,
-                hidden_size,
+                init_dim,
                 ctx.init_method,
                 ctx.mvn_dist,
                 pca_components=ctx.pca_components,
                 pca_mean=ctx.pca_mean,
                 loaded_embeddings=ctx.loaded_embeddings,
+            )
+
+        projection_module = None
+        if self.args.low_dim_projection:
+            projection_module = ctx.shared_projection or self._build_low_dim_projection_module(
+                hidden_size=hidden_size,
+                device=ctx.device,
             )
 
         return build_per_sample_parametrization(
@@ -206,6 +288,19 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             init_helper=_init_helper,
             pca_components=ctx.pca_components,
             pca_mean=ctx.pca_mean,
+            low_dim_train=self.args.low_dim_projection,
+            low_dim_size=self.args.low_dim_size,
+            train_projection=self.args.low_dim_projection_train,
+            projection_module=projection_module,
+        )
+
+    def _build_shared_optimizer(self, parametrization):
+        """One optimizer for ``parametrization.shared_parameters`` (e.g. low-dim projection)."""
+        if not parametrization.shared_parameters:
+            return None, None
+        return self._build_optimizer_and_scheduler(
+            list(parametrization.shared_parameters),
+            num_training_steps=self.args.max_optimization_steps_per_sample,
         )
 
     def _build_per_sample_optimizers(self, parametrization, ctx: _RunContext):
@@ -322,10 +417,9 @@ class ProgressiveCrammingTrainer(BaseTrainer):
         last_loss, last_convergence = None, None
 
         for _ in progress_bar:
-            compression_token_embeddings = batch_ctx.parametrization.materialize()
-            compression_token_embeddings = compression_token_embeddings.clone()
-            if batch_ctx.low_dim_projection is not None:
-                compression_token_embeddings = batch_ctx.low_dim_projection(compression_token_embeddings)
+            # `materialize()` returns the hidden-size embedding already projected
+            # through the parametrization (low-dim Linear if applicable).
+            compression_token_embeddings = batch_ctx.parametrization.materialize().clone()
 
             united_token_embeddings, united_attention_mask = build_united_input(
                 compression_token_embeddings,
@@ -364,7 +458,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             )
 
             self._step_per_sample_optimizers(batch_ctx, state)
-            self._step_low_dim_optimizer(batch_ctx)
+            self._step_shared_optimizer(batch_ctx)
 
             last_loss = float(loss.item())
             last_convergence = convergence_per_sample.detach().cpu()
@@ -384,16 +478,14 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                 state.increment_steps(j)
             batch_ctx.per_sample_optimizers[j].zero_grad(set_to_none=True)
 
-    def _step_low_dim_optimizer(self, batch_ctx: _BatchContext) -> None:
-        """Step the low-dim projection optimizer (global or per-batch) if it's trainable."""
-        if not (self.args.low_dim_projection and self.args.low_dim_projection_train):
+    def _step_shared_optimizer(self, batch_ctx: _BatchContext) -> None:
+        """Step the optimizer for parametrization-shared parameters (e.g. low-dim Linear)."""
+        if batch_ctx.shared_optimizer is None:
             return
-        if batch_ctx.low_dim_optimizer is None:
-            return
-        batch_ctx.low_dim_optimizer.step()
-        batch_ctx.low_dim_optimizer.zero_grad()
-        if batch_ctx.low_dim_scheduler is not None:
-            batch_ctx.low_dim_scheduler.step()
+        batch_ctx.shared_optimizer.step()
+        batch_ctx.shared_optimizer.zero_grad(set_to_none=True)
+        if batch_ctx.shared_scheduler is not None:
+            batch_ctx.shared_scheduler.step()
 
     def _log_progress(
         self,
@@ -457,13 +549,13 @@ class ProgressiveCrammingTrainer(BaseTrainer):
     ) -> list[dict]:
         """Compute Information Gain for the stage and assemble per-sample row dicts."""
         with torch.no_grad():
-            orig_compression_token_embeddings = batch_ctx.parametrization.materialize()  # [batch, compression, hidden]
-            if batch_ctx.low_dim_projection is not None:
-                compression_token_embeddings = batch_ctx.low_dim_projection(orig_compression_token_embeddings)
-            else:
-                compression_token_embeddings = orig_compression_token_embeddings
+            # `materialize()` already lifts coefficients to hidden_size when a
+            # projection is in use, so there is no separate "after projection"
+            # tensor to keep track of in this trainer anymore.
+            compression_token_embeddings = batch_ctx.parametrization.materialize()  # [batch, compression, hidden]
             comp_tokens_cpu = compression_token_embeddings.detach().cpu()
-            orig_comp_tokens_cpu = orig_compression_token_embeddings.detach().cpu()
+            # Per-sample parametrization extras: PCA / low-dim coefficients
+            # (None for vanilla Direct parametrization).
             pca_coefficients_to_save = batch_ctx.parametrization.serialize_extras()
 
             per_sample_info_gain = compute_information_gain(
@@ -490,8 +582,6 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                         tokenizer=tokenizer,
                         comp_tokens_cpu=comp_tokens_cpu,
                         comp_tokens_gpu=compression_token_embeddings,
-                        orig_comp_tokens_cpu=orig_comp_tokens_cpu,
-                        orig_comp_tokens_gpu=orig_compression_token_embeddings,
                         pca_coefficients_to_save=pca_coefficients_to_save,
                         last_loss=last_loss,
                         last_convergence=last_convergence,
@@ -521,15 +611,22 @@ class ProgressiveCrammingTrainer(BaseTrainer):
         tokenizer,
         comp_tokens_cpu: torch.Tensor,
         comp_tokens_gpu: torch.Tensor,
-        orig_comp_tokens_cpu: torch.Tensor,
-        orig_comp_tokens_gpu: torch.Tensor,
         pca_coefficients_to_save,
         last_loss,
         last_convergence,
         per_sample_info_gain: list[float],
         embeddings_dir: str | None,
     ) -> dict:
-        """One sample's row dict for this stage. Schema preserved for downstream eval scripts."""
+        """One sample's row dict for this stage. Schema preserved for downstream eval scripts.
+
+        Note: ``orig_embedding`` used to refer to the pre-projection low-dim
+        coefficient tensor in the legacy implementation. Now the parametrization
+        encapsulates the projection inside ``materialize()`` and ``serialize_extras()``
+        already returns the low-dim coefficients via ``pca_coefficients_to_save``.
+        We keep ``orig_embedding`` in the schema (set equal to ``embedding``) so
+        downstream eval scripts that ``remove_columns([..., "orig_embedding"])``
+        continue to work without modification.
+        """
         sample_attention_mask = stage_ctx.attention_mask[sample_index].bool()
         sample_input_ids = stage_ctx.input_ids[sample_index][sample_attention_mask]
         sample_text = tokenizer.decode(sample_input_ids.tolist(), skip_special_tokens=True) if tokenizer is not None else ""
@@ -540,19 +637,22 @@ class ProgressiveCrammingTrainer(BaseTrainer):
                 sample_id=sample_id,
                 stage_index=stage_ctx.stage_index,
                 comp_tokens=comp_tokens_gpu[sample_index],
-                orig_comp_tokens=orig_comp_tokens_gpu[sample_index],
                 initialization_embedding=batch_ctx.initialization_embeddings[sample_index],
-                low_dim_projection=batch_ctx.low_dim_projection,
+                shared_state=batch_ctx.parametrization.shared_state_dict(),
             )
 
         sample_pca_coefficients = pca_coefficients_to_save[sample_index] if pca_coefficients_to_save is not None else None
+        embedding_as_list = comp_tokens_cpu[sample_index].to(torch.float32).numpy().tolist()
         return {
             "sample_id": int(sample_id),
             "stage_index": int(stage_ctx.stage_index),
             "stage_seq_len": int(stage_ctx.seq_len),
             "text": sample_text,
-            "embedding": comp_tokens_cpu[sample_index].to(torch.float32).numpy().tolist(),
-            "orig_embedding": orig_comp_tokens_cpu[sample_index].to(torch.float32).numpy().tolist(),
+            "embedding": embedding_as_list,
+            # Back-compat with legacy schema: kept identical to ``embedding`` —
+            # the low-dim coefficients (the only meaningful "pre-projection"
+            # tensor) now live under ``pca_coefficients_to_save``.
+            "orig_embedding": embedding_as_list,
             "pca_coefficients_to_save": sample_pca_coefficients,
             "initialization_embedding": batch_ctx.initialization_embeddings[sample_index].to(torch.float32).numpy().tolist(),
             "final_loss": float(last_loss) if last_loss is not None else None,
@@ -576,20 +676,17 @@ class ProgressiveCrammingTrainer(BaseTrainer):
         sample_id: int,
         stage_index: int,
         comp_tokens: torch.Tensor,
-        orig_comp_tokens: torch.Tensor,
         initialization_embedding: torch.Tensor,
-        low_dim_projection: torch.nn.Module | None,
+        shared_state: dict | None,
     ) -> None:
-        """Persist bf16 snapshots of compression / orig / init embeddings for the current stage."""
+        """Persist bf16 snapshots of compression / init embeddings (+ shared low-dim projection state) for the current stage."""
         embedding_path = os.path.join(embeddings_dir, f"embedding_sample_{sample_id}_stage_{stage_index}.pt")
-        orig_embedding_path = os.path.join(embeddings_dir, f"orig_embedding_sample_{sample_id}_stage_{stage_index}.pt")
         init_embedding_path = os.path.join(
             embeddings_dir, f"initialization_embedding_sample_{sample_id}_stage_{stage_index}.pt"
         )
-        low_dim_proj_path = os.path.join(embeddings_dir, f"low_dim_proj_sample_{sample_id}_stage_{stage_index}.pt")
 
         torch.save(comp_tokens.to(torch.bfloat16).detach().cpu(), embedding_path)
-        torch.save(orig_comp_tokens.to(torch.bfloat16).detach().cpu(), orig_embedding_path)
         torch.save(initialization_embedding.to(torch.bfloat16), init_embedding_path)
-        if low_dim_projection is not None:
-            torch.save(low_dim_projection.state_dict(), low_dim_proj_path)
+        if shared_state is not None:
+            low_dim_proj_path = os.path.join(embeddings_dir, f"low_dim_proj_sample_{sample_id}_stage_{stage_index}.pt")
+            torch.save(shared_state, low_dim_proj_path)

@@ -16,7 +16,7 @@ from compression_horizon.train.loss import (
     compute_hybrid_cross_entropy_and_alignment_loss,
     token_argmax_match_rate_with_prefix,
 )
-from compression_horizon.train.optimization import build_low_dim_projection, build_optimizer_and_scheduler
+from compression_horizon.train.optimization import build_optimizer_and_scheduler
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, set_launch_seed
 
 
@@ -183,9 +183,38 @@ class BaseTrainer:
         """Wrapper around train.optimization.build_optimizer_and_scheduler."""
         return build_optimizer_and_scheduler(self.args, parameters, num_training_steps, num_processes)
 
-    def _prepare_low_dim_proj(self, embedding_dim: int):
-        """Wrapper around train.optimization.build_low_dim_projection."""
-        return build_low_dim_projection(self.args, embedding_dim)
+    def _build_low_dim_projection_module(self, hidden_size: int, device: torch.device) -> torch.nn.Linear:
+        """Construct ``nn.Linear(low_dim_size -> hidden_size)`` for the low-dim projection.
+
+        Handles two extras consistently with the pre-refactor code path:
+        * warm-start from ``--low_dim_projection_checkpoint`` (accepts the
+          ``{"low_dim_projection": ...}`` / ``{"state_dict": ...}`` / raw
+          state_dict envelopes used historically);
+        * freeze parameters when ``--low_dim_projection_train`` is False.
+
+        Centralizing this here means progressive (global mode) and
+        ``LowDimTrainer`` (full cramming) cannot drift apart on the
+        checkpoint-loading convention.
+        """
+        projection = torch.nn.Linear(self.args.low_dim_size, hidden_size).to(device)
+
+        checkpoint_path = self.args.low_dim_projection_checkpoint
+        if checkpoint_path is not None:
+            if not os.path.exists(checkpoint_path):
+                raise ValueError(f"low_dim_projection_checkpoint does not exist: {checkpoint_path}!")
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+            if isinstance(checkpoint, dict):
+                state = checkpoint.get("low_dim_projection") or checkpoint.get("state_dict") or checkpoint
+            else:
+                state = checkpoint
+            projection.load_state_dict(state)
+            print(f"Loaded low-dim projection state from {checkpoint_path} (low_dim_size={self.args.low_dim_size})")
+
+        if not self.args.low_dim_projection_train:
+            for p in projection.parameters():
+                p.requires_grad = False
+
+        return projection
 
     def forward_and_compute_loss(
         self,
