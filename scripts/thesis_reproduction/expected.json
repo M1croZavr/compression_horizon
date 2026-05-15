@@ -79,6 +79,19 @@
     },
     "notes": "Same setup as progressive_lowdim/smollm2_1_7b but with --low_dim_projection_global, meaning ONE nn.Linear(256, hidden) lives through the entire 50-sample run; its AdamW state and cosine LR-scheduler accumulate continuously. The trained Linear at ${OUTPUT_DIR}/low_dim_projection.pt is the *common compression basis* learned across all 50 PG19 texts — directly testable for transfer by loading it as --low_dim_projection_checkpoint into a downstream run. Verdicts here treat the per-sample-basis numbers as a proxy: if cram_tokens / IG come out within ±2σ of (957.4, 3271), that's evidence the manifold hypothesis (Section 4.3) holds — the same 256-dim basis can compress all texts in the corpus. A significantly worse result would say the basis has to be sample-specialized to reach paper-faithful numbers."
   },
+  "progressive_lowdim_transfer/smollm2_1_7b": {
+    "paper_section": "Not in paper Table 6 — transfer test of the shared basis from progressive_lowdim_global/smollm2_1_7b. Loads its low_dim_projection.pt with requires_grad=False on W, b (only z_j is optimized) and evaluates on a DISJOINT slice of PG19 (indices [50, 100) vs source's [0, 50), guaranteed by --offset_dataset_items 50 and tokenization.py's deterministic Dataset.select(range(...))). Expected targets are reused from the per-sample-basis row as a proxy.",
+    "model": "HuggingFaceTB/SmolLM2-1.7B",
+    "trainer_type": "progressive",
+    "dataset": "LarryLovestein/pg19_1k",
+    "num_samples": 50,
+    "max_sequence_length": 4096,
+    "expected": {
+      "compressed_tokens":      {"kind": "measured", "mean": 957.4,  "std": 142.5},
+      "information_gain_bits":  {"kind": "measured", "mean": 3271.0, "std": 309.0}
+    },
+    "notes": "Transfer experiment. Loads the shared 256-dim basis trained on PG19 [0, 50) (artifacts/thesis_reproduction/progressive_lowdim_global/smollm2_1_7b/low_dim_projection.pt) into a frozen Linear(256, 2048), then optimizes only the per-sample coefficients z_j on the disjoint slice PG19 [50, 100). W and b never move. Interpretation: cram_tokens / IG ≈ source-run numbers → the 256-dim basis is corpus-universal (manifold hypothesis confirmed empirically); cram_tokens / IG << source-run numbers → the basis is text-conditional and must be trained per-sample to reach paper-faithful capacity. The 2σ verdict against the per-sample row is the empirical bound for the former case."
+  },
   "progressive/smollm2_135m": {
     "paper_section": "Table 13 (Appendix F)",
     "model": "HuggingFaceTB/SmolLM2-135M",

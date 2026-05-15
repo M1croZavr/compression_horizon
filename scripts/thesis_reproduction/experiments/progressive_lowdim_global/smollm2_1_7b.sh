@@ -22,17 +22,36 @@
 #      to test how many cram tokens a *frozen* basis (--no_low_dim_projection_train)
 #      buys on a held-out text set.  Real "compression-basis transfer learning".
 #
-# Why batch_size still = 1 (matching a0d39f6:run_jobs_progressive.py:230):
-#   With bs=1 each "batch" is one sample, but unlike global=False the same W
-#   is reused — z stays per-sample (each text gets its own optimal coefficients),
-#   while W is global.  This is the cleanest way to study the basis itself,
-#   isolating the per-sample variation into z alone.
+# Why --per_device_train_batch_size 50 here (vs bs=1 in non-global script):
+#   With global=True the optimization target is "find a 256-dim subspace
+#   simultaneously good for ALL 50 texts". The right way to learn that is
+#   mini-batch gradient averaging: ∂L/∂W = (1/N) Σ_j ∂L_j/∂W, which moves
+#   W toward the compromise basis at every step. With bs=1 we'd instead
+#   get sequential per-sample fitting — catastrophic forgetting in pure
+#   form: sample 0 trains W for 10k steps on text #0, then sample 1
+#   pushes W away from that optimum to fit text #1, and so on. Sample 49
+#   would see a much more "trained" W than sample 0, and the metric
+#   becomes a mix of "W after 0 of 49 prior updates" through "W after 49
+#   of 49 prior updates" — uninterpretable as a single number.
 #
-# All other paper-fidelity parameters (Appendix A) identical to the non-global
-# script: lr=0.1, max_seq_len=4096, 10k steps/sample, 1k steps/token, random0.02
-# init, single compression token, cross-entropy loss, cosine_with_min_lr.
+#   With bs=50 (whole dataset in one batch): every sample inside the
+#   batch sees the SAME W in forward, all per-sample numbers are on
+#   equal footing, the lr_scheduler runs one continuous cosine curve
+#   through all max_optimization_steps_per_sample steps with no
+#   batch-boundary resets, and we get a clean test of the manifold
+#   hypothesis. Memory-wise this should fit on A100 80GB — baseline
+#   progressive/smollm2_1_7b already uses bs=25 on the same model +
+#   max_seq_len=4096; the 256x2048 W gradient adds only ~524k params
+#   (negligible). If OOM, drop to bs=25 — two-batch averaging is still
+#   dramatically better than bs=1.
 #
-# Time on a single A100 80GB: ~6-10 h, similar to the non-global variant.
+# All other paper-fidelity parameters (Appendix A) identical to the
+# non-global script: lr=0.1, max_seq_len=4096, 10k steps/sample, 1k steps/
+# token, random0.02 init, single compression token, cross-entropy loss,
+# cosine_with_min_lr.
+#
+# Time on a single A100 80GB: ~1.5-3 h with bs=50 (vs 6-10 h had we kept
+# bs=1, which we don't — see the bs reasoning above).
 #
 # For closest-possible match to paper, install flash-attn first:
 #   uv pip install flash-attn --no-build-isolation
@@ -58,7 +77,7 @@ mkdir -p "$OUTPUT_DIR"
     --dataset_name LarryLovestein/pg19_1k \
     --max_sequence_length 4096 \
     --limit_dataset_items 50 \
-    --per_device_train_batch_size 1 \
+    --per_device_train_batch_size 50 \
     --max_optimization_steps_per_sample 10000 \
     --max_optimization_steps_per_token 1000 \
     --learning_rate 0.1 \
