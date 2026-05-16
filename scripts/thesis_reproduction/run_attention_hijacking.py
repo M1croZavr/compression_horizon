@@ -32,7 +32,7 @@ from compression_horizon.analysis import (
     pearson_correlation,
     summarize_hijacking,
 )
-from compression_horizon.utils.launch import get_device, resolve_torch_dtype
+from compression_horizon.utils.launch import freeze_model_parameters, get_device, resolve_torch_dtype
 
 
 def _resolve_attn_implementation() -> str:
@@ -110,17 +110,18 @@ def main() -> None:
     torch_dtype = resolve_torch_dtype(args.dtype)
     print(f"Device: {device}; dtype: {torch_dtype}")
 
-    attn_impl = _resolve_attn_implementation()
-    model = AutoModelForCausalLM.from_pretrained(args.model_checkpoint, dtype=torch_dtype, attn_implementation=attn_impl)
-    for p in model.parameters():
-        p.requires_grad = False
+    attn_implementation = _resolve_attn_implementation()
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_checkpoint, dtype=torch_dtype, attn_implementation=attn_implementation
+    )
+    freeze_model_parameters(model)
     model = model.to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    ds = _load_source_dataset(args.source_dir)
-    rows = _select_one_row_per_sample(ds)
+    dataset = _load_source_dataset(args.source_dir)
+    rows = _select_one_row_per_sample(dataset)
     if args.num_samples is not None:
         rows = rows[: args.num_samples]
     print(f"Evaluating attention hijacking on {len(rows)} samples")

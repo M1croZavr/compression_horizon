@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Callable
 
 import numpy as np
 import torch
@@ -17,9 +18,9 @@ def _get_input_embedding_weight(model) -> torch.Tensor | None:
     state_dict = model.state_dict()
     if "transformer.wte.weight" in state_dict:
         return state_dict["transformer.wte.weight"]
-    for name, param in state_dict.items():
+    for name, parameters in state_dict.items():
         if name.endswith("embed_tokens.weight") or name.endswith("wte.weight"):
-            return param
+            return parameters
     return None
 
 
@@ -39,8 +40,8 @@ def _fit_mvnormal_from_model(model) -> torch.distributions.MultivariateNormal:
     try:
         return torch.distributions.MultivariateNormal(mu, covariance_matrix=covariance)
     except Exception:
-        diag_cov = torch.clamp(torch.diag(covariance), min=1e-8)
-        return torch.distributions.MultivariateNormal(mu, covariance_matrix=torch.diag(diag_cov))
+        covariance_matrix = torch.clamp(torch.diag(covariance), min=1e-8)
+        return torch.distributions.MultivariateNormal(mu, covariance_matrix=torch.diag(covariance_matrix))
 
 
 def _fit_pca_from_dataset_path(path: str, n_components_target: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -50,10 +51,10 @@ def _fit_pca_from_dataset_path(path: str, n_components_target: int) -> tuple[tor
     if not os.path.exists(path):
         raise ValueError(f"pretrained_pca_path does not exist: {path}!")
 
-    progressive_ds = Dataset.load_from_disk(path)
+    progressive_dataset = Dataset.load_from_disk(path)
     flat_embeddings: list[np.ndarray] = []
-    for i in range(len(progressive_ds)):
-        embedding = progressive_ds[i].get("embedding")
+    for i in range(len(progressive_dataset)):
+        embedding = progressive_dataset[i].get("embedding")
         if embedding is None:
             continue
         flat_embeddings.append(np.asarray(embedding, dtype=np.float32).reshape(-1))
@@ -67,9 +68,7 @@ def _fit_pca_from_dataset_path(path: str, n_components_target: int) -> tuple[tor
 
     pca = PCA(n_components=n_components, random_state=42)
     pca.fit(X)
-    print(
-        f"Loaded PCA from {path}: {n_components} components, " f"explained variance: {pca.explained_variance_ratio_.sum():.4f}"
-    )
+    print(f"Fitted PCA from {path}: {n_components} components, explained variance: {pca.explained_variance_ratio_.sum():.4f}")
     return (
         torch.tensor(pca.components_, dtype=torch.float32),
         torch.tensor(pca.mean_, dtype=torch.float32),
@@ -88,13 +87,26 @@ def _load_embeddings_from_disk(path: str) -> torch.Tensor:
                     loaded = loaded["state_dict"][key]
                     break
             else:
-                raise ValueError(f"Could not find compression embeddings in state_dict at {path}")
+                raise ValueError(f"Could not find compression embeddings in state_dict at {path}!")
         else:
             loaded = next(iter(loaded.values()))
     if not isinstance(loaded, torch.Tensor):
         loaded = torch.tensor(loaded, dtype=torch.float32)
     print(f"Loaded embeddings from {path}: shape {tuple(loaded.shape)}")
     return loaded.to(torch.float32)
+
+
+def _resolve_load_from_disk_save_path(path: str, output_dir: str) -> str:
+    """Decide where to persist a freshly generated load_from_disk seed."""
+    if path:
+        save_dir = os.path.dirname(path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+        return path
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        return os.path.join(output_dir, "generated_compression_embeddings.pt")
+    return "generated_compression_embeddings.pt"
 
 
 def prepare_embedding_init(args, model):
@@ -115,7 +127,7 @@ def prepare_embedding_init(args, model):
             loaded_embeddings = _load_embeddings_from_disk(args.embedding_init_path)
         else:
             # Generate a fresh seed using the secondary init method, persist, and load.
-            save_path = _resolve_load_from_disk_save_path(args)
+            save_path = _resolve_load_from_disk_save_path(args.embedding_init_method, args.output_dir)
             gen_method = args.load_from_disk_embedding_init_method
             gen_mvn_dist = None
             gen_pca_components = None
@@ -146,19 +158,6 @@ def prepare_embedding_init(args, model):
     return init_method, mvn_dist, pca_components, pca_mean, loaded_embeddings
 
 
-def _resolve_load_from_disk_save_path(args) -> str:
-    """Decide where to persist a freshly generated load_from_disk seed."""
-    if args.embedding_init_path:
-        save_dir = os.path.dirname(args.embedding_init_path)
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-        return args.embedding_init_path
-    if args.output_dir:
-        os.makedirs(args.output_dir, exist_ok=True)
-        return os.path.join(args.output_dir, "generated_compression_embeddings.pt")
-    return "generated_compression_embeddings.pt"
-
-
 def _uniform(shape: tuple, scale: float = 1.0) -> torch.Tensor:
     return torch.rand(list(shape), dtype=torch.float32) * scale
 
@@ -168,12 +167,11 @@ def _normal(shape: tuple, scale: float = 1.0) -> torch.Tensor:
 
 
 def _signed_uniform(shape: tuple, scale: float = 1.0) -> torch.Tensor:
-    """Uniform in [-scale, +scale]."""
     return (torch.rand(list(shape), dtype=torch.float32) * 2 - 1) * scale
 
 
 # Direct-init strategies: name -> sampler producing tensor of shape ``shape`` directly.
-_DIRECT_INIT_STRATEGIES: dict[str, callable] = {
+_DIRECT_INIT_STRATEGIES: dict[str, Callable] = {
     "zeros": lambda shape: torch.zeros(list(shape), dtype=torch.float32),
     "random": lambda shape: _uniform(shape, 1.0),
     "random0.2": lambda shape: _uniform(shape, 0.2),
@@ -256,25 +254,27 @@ def create_compression_embedding(
 
 
 def _broadcast_loaded_embeddings(
-    loaded: torch.Tensor, batch_size: int, num_compression_tokens: int, hidden_size: int
+    loaded_embeddings: torch.Tensor, batch_size: int, num_compression_tokens: int, hidden_size: int
 ) -> torch.Tensor:
     """Validate shape and broadcast ``loaded`` to ``[batch, compression, hidden]``."""
-    if loaded.ndim == 2:
-        if loaded.shape != (num_compression_tokens, hidden_size):
+    if loaded_embeddings.ndim == 2:
+        if loaded_embeddings.shape != (num_compression_tokens, hidden_size):
             raise ValueError(
-                f"Loaded embeddings shape mismatch: got {tuple(loaded.shape)}, "
+                f"Loaded embeddings shape mismatch: got {tuple(loaded_embeddings.shape)}, "
                 f"expected ({num_compression_tokens}, {hidden_size})!"
             )
-        return loaded.unsqueeze(0).repeat(batch_size, 1, 1)
-    if loaded.ndim == 3:
-        if loaded.shape[1] != num_compression_tokens or loaded.shape[2] != hidden_size:
+        return loaded_embeddings.unsqueeze(0).repeat(batch_size, 1, 1)
+    if loaded_embeddings.ndim == 3:
+        if loaded_embeddings.shape[1] != num_compression_tokens or loaded_embeddings.shape[2] != hidden_size:
             raise ValueError(
-                f"Loaded embeddings shape mismatch: got {tuple(loaded.shape)}, "
+                f"Loaded embeddings shape mismatch: got {tuple(loaded_embeddings.shape)}, "
                 f"expected (1 or {batch_size}, {num_compression_tokens}, {hidden_size})!"
             )
-        if loaded.shape[0] == 1:
-            return loaded.repeat(batch_size, 1, 1)
-        if loaded.shape[0] == batch_size:
-            return loaded
-        raise ValueError(f"Loaded embeddings batch size mismatch: got {loaded.shape[0]}, expected 1 or {batch_size}!")
-    raise ValueError(f"Loaded embeddings must be 2D or 3D tensor, got shape {tuple(loaded.shape)}!")
+        if loaded_embeddings.shape[0] == 1:
+            return loaded_embeddings.repeat(batch_size, 1, 1)
+        if loaded_embeddings.shape[0] == batch_size:
+            return loaded_embeddings
+        raise ValueError(
+            f"Loaded embeddings batch size mismatch: got {loaded_embeddings.shape[0]}, expected 1 or {batch_size}!"
+        )
+    raise ValueError(f"Loaded embeddings must be 2D or 3D tensor, got shape {tuple(loaded_embeddings.shape)}!")

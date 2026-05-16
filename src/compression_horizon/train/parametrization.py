@@ -1,27 +1,4 @@
-"""Parametrizations of the compression embedding owned by trainers.
-
-All parametrization classes expose a unified interface used by both
-:class:`FullCrammingTrainer` (one batch-level Parameter group) and
-:class:`ProgressiveCrammingTrainer` (per-sample Parameter groups):
-
-    parameters        list[Parameter] — per-sample / batch-level optimizable tensors;
-                                         one Parameter per sample in the per-sample
-                                         variants, a single batch Parameter in the
-                                         full-cramming variants.
-    shared_parameters list[Parameter] — Parameters shared across all samples (e.g.
-                                         low-dim projection weights). Empty list when
-                                         there are none.
-    materialize()     -> Tensor       — [batch, num_compression_tokens, hidden_size].
-    initialization_snapshot() -> Tensor — embedding values *before* optimization started.
-    serialize_extras() -> object|None — auxiliary per-sample state for the saved row
-                                         (e.g. PCA / low-dim coefficients).
-    shared_state_dict() -> dict|None  — state_dict of shared modules (e.g. projection).
-                                         ``None`` when there are no shared modules.
-    optimizable_tensor -> Tensor      — batch-stacked optimizable tensor (only on
-                                         full-cramming variants; used by
-                                         ``ConvergedSamplesGuard`` to freeze converged
-                                         samples per index).
-"""
+"""Parametrizations of the compression embedding owned by trainers."""
 
 import torch
 
@@ -115,21 +92,7 @@ class PretrainedPCAParametrization:
 
 
 class LowDimProjectedParametrization:
-    """Compression embedding in a rank-k subspace: ``e = projection(z)``.
-
-    Coefficients live in ``R^{batch×num_compression_tokens×low_dim_size}`` and a
-    shared ``torch.nn.Linear(low_dim_size, hidden_size)`` lifts them to the
-    model's hidden dimension. The projection weights are part of
-    ``shared_parameters`` (so trainers can route them to a separate optimizer
-    or, in the full-cramming case, into the same optimizer as the coefficients).
-
-    The projection can either be **owned** (the parametrization creates its own
-    ``nn.Linear`` and optionally warm-starts it from ``projection_state_dict``),
-    or **provided** by the caller via ``projection_module`` — used by
-    progressive cramming in ``--low_dim_projection_global`` mode, where a single
-    Linear lives through the entire run and is reused across batches together
-    with its AdamW state and LR scheduler.
-    """
+    """Compression embedding in a rank-k subspace: ``e = projection(z)``."""
 
     def __init__(
         self,
@@ -172,7 +135,7 @@ class LowDimProjectedParametrization:
 
     @property
     def shared_parameters(self) -> list[torch.nn.Parameter]:
-        return [p for p in self.projection.parameters() if p.requires_grad]
+        return [parameter for parameter in self.projection.parameters() if parameter.requires_grad]
 
     @property
     def optimizable_tensor(self) -> torch.Tensor:
@@ -209,22 +172,10 @@ def build_parametrization(
     train_projection: bool = True,
     projection_module: torch.nn.Linear | None = None,
 ):
-    """Create the parametrization owning the optimizable parameters of the compression embedding.
-
-    Dispatch order:
-        1. ``low_dim_train=True`` → :class:`LowDimProjectedParametrization`
-           (rank-k subspace; ``init_helper`` must yield a coefficient tensor of
-           shape ``[batch, num_compression_tokens, low_dim_size]``).
-        2. ``init_method == "pretrained_pca"`` → :class:`PretrainedPCAParametrization`.
-        3. Otherwise → :class:`DirectParametrization`.
-
-    ``projection_module`` (low-dim only) lets the caller pass a pre-built
-    ``nn.Linear`` to be reused — used by progressive cramming in
-    ``--low_dim_projection_global`` mode.
-    """
+    """Create the parametrization owning the optimizable parameters of the compression embedding."""
     if low_dim_train:
         if low_dim_size is None:
-            raise ValueError("low_dim_size is required when low_dim_train=True")
+            raise ValueError("low_dim_size is required when low_dim_train=True!")
         return LowDimProjectedParametrization(
             init_coefficients=init_helper(),
             low_dim_size=low_dim_size,

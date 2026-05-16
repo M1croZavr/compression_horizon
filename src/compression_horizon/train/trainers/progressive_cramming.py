@@ -90,7 +90,8 @@ class ProgressiveCrammingTrainer(BaseTrainer):
         # global mode we save ``ctx.shared_projection`` directly).
         final_parametrization = None
 
-        for batch in tqdm(self._create_dataloader()):
+        dataloader = self._create_dataloader()
+        for batch in tqdm(dataloader):
             batch_ctx = self._setup_batch(batch, ctx)
             collected_rows.extend(self._run_progressive_stages(batch_ctx, ctx, sample_id_counter))
             sample_id_counter += batch_ctx.batch_size

@@ -1,32 +1,4 @@
-"""Downstream multiple-choice evaluation under compression (paper Section 5.6, Tables 5 & 10).
-
-This module produces the 8 PPL variants reported in Table 10 of the paper.
-For each benchmark instance (prefix + 4 candidate endings) and an optional
-trained compression embedding, we compute per-variant negative log-likelihood
-of each ending, then pick the argmin-PPL ending as the prediction.
-
-The 8 variants (from Table 10, plus the "edge" variants which differ in whether
-the compression→first-prefix-token logit is included in the scored window):
-
-    Baselines (no compression embedding):
-        1. baseline               — full PPL over [prefix + ending]
-        2. baseline_endings       — PPL over ending tokens only
-
-    Compression with prefix in context:
-        3. compression            — full PPL over [prefix + ending] (compression positions excluded)
-        4. compression_edge       — same + include the comp→first-prefix logit
-        5. compression_endings    — PPL over ending tokens only
-
-    Compression without prefix in context (replaces prefix):
-        6. compression_only           — full PPL over [ending] after [comp]
-        7. compression_only_edge      — same + include comp→first-ending logit
-        8. compression_only_endings   — PPL over ending tokens only
-
-For each ending we always evaluate teacher-forced (no generation). The model
-output picks the continuation with the lowest PPL; accuracy is fraction of
-correct predictions over the chosen subset (all samples, or only those with
-``convergence == 1.0`` if ``--only_full_convergence`` is set).
-"""
+"""Downstream multiple-choice evaluation under compression (paper Section 5.6, Tables 5 & 10)."""
 
 from __future__ import annotations
 
@@ -34,12 +6,13 @@ import math
 from typing import Optional
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from compression_horizon.analysis.perplexity import (
     estimate_token_perplexity,
     estimate_token_perplexity_full_labels,
 )
+from compression_horizon.train.inputs import build_united_input
 
 PPL_VARIANT_KEYS: tuple[str, ...] = (
     "baseline",
@@ -67,18 +40,14 @@ _COMPRESSION_VARIANTS: tuple[str, ...] = (
 
 @torch.no_grad()
 def compute_ppl_baseline_batch(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
     context: str,
     endings: list[str],
     device: torch.device,
     add_special_tokens: bool = True,
 ) -> tuple[list[float], list[float]]:
-    """Return ``(full_ppls, endings_only_ppls)`` for the four candidate endings.
-
-    No compression embedding involved. Mirrors the legacy
-    ``compute_ppl_baseline_batch`` (variants 1 and 2 of Table 10).
-    """
+    """Return ``(full_ppls, endings_only_ppls)`` for the four candidate endings."""
     model = model.to(device)
     model.eval()
 
@@ -105,8 +74,8 @@ def compute_ppl_baseline_batch(
     endings_ppls: list[float] = []
     for i in range(len(full_texts)):
         seq_len = int(attention_mask[i].sum().item())
-        sample_logits = outputs.logits[i : i + 1, :seq_len]
-        sample_input_ids = input_ids[i : i + 1, :seq_len]
+        sample_logits = outputs.logits[i : i + 1, :seq_len]  # [1, sequence, vocabulary]
+        sample_input_ids = input_ids[i : i + 1, :seq_len]  # [1, sequence]
 
         ppl = estimate_token_perplexity(sample_logits, sample_input_ids)
         full_ppls.append(ppl if not math.isnan(ppl) else float("inf"))
@@ -120,8 +89,8 @@ def compute_ppl_baseline_batch(
 
 @torch.no_grad()
 def compute_ppl_compression_batch(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
     compression_token_embeddings: torch.Tensor,
     context: str,
     endings: list[str],
@@ -130,14 +99,11 @@ def compute_ppl_compression_batch(
 ) -> tuple[list[float], list[float], list[float]]:
     """Return ``(full_ppls, edge_ppls, endings_ppls)`` under compression.
 
-    Tokenizes ``f"{context}{ending}"`` (the context can be empty for the
-    "compression only" variants), prepends the compression embedding, runs a
-    single batched forward, and slices logits per variant:
-
-    - ``full_ppls``    : PPL over [prefix + ending] excluding the comp→first-token logit
-    - ``edge_ppls``    : same but including the comp→first-token logit
-                          (off-by-one fix from paper erratum)
-    - ``endings_ppls`` : PPL over ending tokens only
+    Caller-owned separator: ``context`` is concatenated with each ``ending``
+    verbatim (no space inserted). Pass ``context + " "`` for the natural-text
+    case and ``context=""`` for compression-only (no prefix re-text). This
+    keeps a single function usable for both Section 5.6 regimes without a
+    leading space appearing in compression-only mode.
     """
     model = model.to(device)
     model.eval()
@@ -161,47 +127,19 @@ def compute_ppl_compression_batch(
 
     token_embeddings = model.get_input_embeddings()(input_ids)
     num_compression_tokens = compression_token_embeddings.shape[0]
+    batch_size = len(full_texts)
 
-    # Per-sample concat with compression embedding, then right-pad to batch max length.
-    united_emb_list: list[torch.Tensor] = []
-    united_mask_list: list[torch.Tensor] = []
-    for i in range(len(full_texts)):
-        seq_len = int(attention_mask[i].sum().item())
-        sample_emb = token_embeddings[i : i + 1, :seq_len]
-        sample_mask = attention_mask[i : i + 1, :seq_len]
-        comp_emb = compression_token_embeddings.unsqueeze(0).to(token_embeddings.dtype)
-        united_emb = torch.cat([comp_emb, sample_emb], dim=1)
-        united_mask = torch.cat(
-            [
-                torch.ones((1, num_compression_tokens), dtype=sample_mask.dtype, device=device),
-                sample_mask,
-            ],
-            dim=1,
-        )
-        united_emb_list.append(united_emb)
-        united_mask_list.append(united_mask)
+    # The same compression embedding is shared across all 4 candidate endings.
+    # Broadcast it across the batch, then concat with the (already padded) text
+    # token embeddings — equivalent to per-sample concat + re-pad to max-len,
+    # because padding lives at the tail of token_embeddings already.
+    batched_compression = compression_token_embeddings.unsqueeze(0).expand(batch_size, -1, -1).to(token_embeddings.dtype)
+    compression_attention_mask = torch.ones((batch_size, num_compression_tokens), dtype=attention_mask.dtype, device=device)
+    batch_token_embeddings, batch_attention_mask = build_united_input(
+        batched_compression, compression_attention_mask, token_embeddings, attention_mask
+    )
 
-    max_len = max(item.shape[1] for item in united_emb_list)
-    hidden_size = united_emb_list[0].shape[2]
-    batch_emb_list: list[torch.Tensor] = []
-    batch_mask_list: list[torch.Tensor] = []
-    for emb, mask in zip(united_emb_list, united_mask_list):
-        pad_len = max_len - emb.shape[1]
-        if pad_len > 0:
-            emb = torch.cat(
-                [
-                    emb,
-                    torch.zeros(1, pad_len, hidden_size, dtype=emb.dtype, device=device),
-                ],
-                dim=1,
-            )
-            mask = torch.cat([mask, torch.zeros(1, pad_len, dtype=mask.dtype, device=device)], dim=1)
-        batch_emb_list.append(emb)
-        batch_mask_list.append(mask)
-    batch_emb = torch.cat(batch_emb_list, dim=0)
-    batch_mask = torch.cat(batch_mask_list, dim=0)
-
-    outputs = model(inputs_embeds=batch_emb, attention_mask=batch_mask)
+    outputs = model(inputs_embeds=batch_token_embeddings, attention_mask=batch_attention_mask)
 
     full_ppls: list[float] = []
     edge_ppls: list[float] = []
@@ -311,8 +249,8 @@ def summarize_downstream(
 
 @torch.no_grad()
 def compute_continuation_nll(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
     prefix: str,
     continuation: str,
     compression_embedding: Optional[torch.Tensor] = None,
@@ -329,27 +267,27 @@ def compute_continuation_nll(
     model.eval()
 
     prefix_ids = tokenizer(prefix, add_special_tokens=True, return_tensors="pt")["input_ids"].to(device)
-    cont_ids = tokenizer(continuation, add_special_tokens=False, return_tensors="pt")["input_ids"].to(device)
-    if cont_ids.shape[1] == 0:
+    continuation_ids = tokenizer(continuation, add_special_tokens=False, return_tensors="pt")["input_ids"].to(device)
+    if continuation_ids.shape[1] == 0:
         return float("nan")
 
-    full_ids = torch.cat([prefix_ids, cont_ids], dim=1)
-    inputs_embeds = model.get_input_embeddings()(full_ids)
+    full_ids = torch.cat([prefix_ids, continuation_ids], dim=1)
+    token_embeddings = model.get_input_embeddings()(full_ids)
     if compression_embedding is not None:
-        comp = compression_embedding.unsqueeze(0).to(inputs_embeds.dtype).to(device)
-        inputs_embeds = torch.cat([comp, inputs_embeds], dim=1)
-        num_comp = compression_embedding.shape[0]
+        compression_token_embeddings = compression_embedding.unsqueeze(0).to(token_embeddings.dtype).to(device)
+        token_embeddings = torch.cat([compression_token_embeddings, token_embeddings], dim=1)
+        num_compression_tokens = compression_embedding.shape[0]
     else:
-        num_comp = 0
+        num_compression_tokens = 0
 
-    attention_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=device)
-    outputs = model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+    attention_mask = torch.ones(token_embeddings.shape[:2], dtype=torch.long, device=device)
+    outputs = model(inputs_embeds=token_embeddings, attention_mask=attention_mask)
 
     prefix_len = prefix_ids.shape[1]
-    cont_len = cont_ids.shape[1]
-    start = num_comp + prefix_len - 1
-    end = num_comp + prefix_len + cont_len - 1
-    cont_logits = outputs.logits[0, start:end]
-    log_probs = torch.log_softmax(cont_logits.float(), dim=-1)
-    nll_per_token = -log_probs.gather(1, cont_ids[0].unsqueeze(1)).squeeze(1)
+    continuation_len = continuation_ids.shape[1]
+    start = num_compression_tokens + prefix_len - 1
+    end = num_compression_tokens + prefix_len + continuation_len - 1
+    continuation_logits = outputs.logits[0, start:end]
+    log_probs = torch.log_softmax(continuation_logits.float(), dim=-1)
+    nll_per_token = -log_probs.gather(1, continuation_ids[0].unsqueeze(1)).squeeze(1)
     return float(nll_per_token.mean().item())

@@ -10,7 +10,6 @@ from compression_horizon.train.inputs import (
     build_compression_attention_mask,
     build_united_input,
 )
-from compression_horizon.train.optimization import build_optimizer_and_scheduler
 from compression_horizon.train.parametrization import build_parametrization
 from compression_horizon.train.trainers.base import BaseTrainer
 
@@ -71,7 +70,8 @@ class FullCrammingTrainer(BaseTrainer):
         # `_on_training_complete` (e.g. LowDim saves its projection weights here).
         final_parametrization = None
 
-        for batch in tqdm(self._create_dataloader()):
+        dataloader = self._create_dataloader()
+        for batch in tqdm(dataloader):
             inputs = self._prepare_batch_inputs(batch, ctx)
             result = self._optimize_compression(inputs, ctx)
             rows, batch_compression_cpu = self._collect_batch_rows(
@@ -228,8 +228,7 @@ class FullCrammingTrainer(BaseTrainer):
             pca_mean=ctx.pca_mean,
             **self._extra_parametrization_kwargs(ctx),
         )
-        optimizer, lr_scheduler = build_optimizer_and_scheduler(
-            self.args,
+        optimizer, lr_scheduler = self._build_optimizer_and_scheduler(
             # Single optimizer covers both the batch-level parameters and any
             # parametrization-shared modules (e.g. a low-dim Linear projection).
             list(parametrization.parameters) + list(parametrization.shared_parameters),
@@ -352,7 +351,6 @@ class FullCrammingTrainer(BaseTrainer):
 
             # Back propagation and parameters update
             loss.backward()
-
             guard.before_step(tracker.fully_converged)
             optimizer.step()
             guard.after_step(tracker.fully_converged)

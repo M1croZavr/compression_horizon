@@ -133,14 +133,14 @@ def compute_hybrid_cross_entropy_and_alignment_loss(
         num_alignment_layers=num_alignment_layers,
         inverted_alignment=inverted_alignment,
     )
-    align_loss = activation_alignment_loss_with_prefix(
+    alignment_loss = activation_alignment_loss_with_prefix(
         compression_hidden_states=compression_hidden_states,
         target_hidden_states=target_hidden_states,
         num_compression_tokens=num_compression_tokens,
         alignment_layer_indices=alignment_layer_indices,
         loss_type=loss_type,
     )
-    return ce_loss + float(hybrid_alpha) * align_loss, align_loss
+    return ce_loss + float(hybrid_alpha) * alignment_loss, alignment_loss
 
 
 def compute_hybrid_cross_entropy_and_alignment_loss_no_prefix(
@@ -174,14 +174,14 @@ def compute_hybrid_cross_entropy_and_alignment_loss_no_prefix(
         num_alignment_layers=num_alignment_layers,
         inverted_alignment=inverted_alignment,
     )
-    align_loss = activation_alignment_loss_with_prefix(
+    alignment_loss = activation_alignment_loss_with_prefix(
         compression_hidden_states=compression_hidden_states,
         target_hidden_states=target_hidden_states,
         num_compression_tokens=0,
         alignment_layer_indices=alignment_layer_indices,
         loss_type=loss_type,
     )
-    return ce_loss + float(hybrid_alpha) * align_loss, align_loss
+    return ce_loss + float(hybrid_alpha) * alignment_loss, alignment_loss
 
 
 @torch.no_grad()
@@ -200,8 +200,7 @@ def token_argmax_match_rate_with_prefix(
     # token on padded input positions inflates the numerator and the ratio can
     # exceed 1.0. We divide by the count of valid tokens, so the numerator must
     # also be restricted to valid tokens.
-    valid = attention_mask == 1
-    matches = ((prediction_ids == input_ids) & valid).sum(dim=-1)
+    matches = ((prediction_ids == input_ids) & (attention_mask == 1)).sum(dim=-1)
     ratio = matches / attention_mask.sum(dim=-1).clamp_min(1)
     return ratio
 
@@ -213,7 +212,7 @@ def token_argmax_match_rate(
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
     """Per-sample token-level argmax match rate (no prefix tokens in logits)."""
-    prediction_ids = logits[:, :-1].argmax(dim=-1)
+    prediction_ids = logits[:, :-1].argmax(dim=-1)  # [batch, sequence]
     matches = ((prediction_ids == input_ids[:, 1:]) & (attention_mask[:, 1:] == 1)).sum(dim=-1)
     ratio = matches / attention_mask[:, 1:].sum(dim=-1).clamp_min(1)
     return ratio

@@ -21,7 +21,7 @@ from compression_horizon.utils.launch import freeze_model_parameters, get_device
 
 
 class BaseTrainer:
-    """Base class for compression trainers. Subclasses implement train()."""
+    """Base class for compression trainers. Subclasses must implement train method."""
 
     def __init__(
         self,
@@ -31,7 +31,7 @@ class BaseTrainer:
         train_dataset=None,
         eval_dataset=None,
         data_collator=None,
-    ):
+    ) -> None:
         self.model = model
         self.processing_class = processing_class
         self.args = args
@@ -39,6 +39,7 @@ class BaseTrainer:
         self.eval_dataset = eval_dataset
         self.data_collator = data_collator
 
+        # Acceleration
         ddp_kwargs = None
         if args.ddp_find_unused_parameters:
             ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=bool(args.ddp_find_unused_parameters))
@@ -48,13 +49,14 @@ class BaseTrainer:
             kwargs_handlers=[ddp_kwargs] if ddp_kwargs is not None else None,
         )
 
+        # Tensorboard logging
         log_dir = self.args.logging_dir
         self.writer = SummaryWriter(log_dir=log_dir) if log_dir and self.accelerator.is_main_process else None
         self.global_step = 0
 
     def train(self) -> str | None:
         """Run training. Subclasses must override. Returns artifact path or output_dir or None."""
-        raise NotImplementedError("Subclasses must implement train()!")
+        raise NotImplementedError("Subclasses must implement 'train' method!")
 
     def _initialize_run(self):
         """Seed RNG, move model to device, freeze its parameters, prepare embedding-init helpers."""
@@ -74,7 +76,7 @@ class BaseTrainer:
         compression_hidden_states: tuple[torch.Tensor, ...] | None = None,
         target_hidden_states: tuple[torch.Tensor, ...] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Compute hybrid CE + activation-alignment loss from already-computed logits."""
+        """Compute CE + (optionally) activation-alignment loss from already-computed logits."""
         loss, alignment_loss = compute_hybrid_cross_entropy_and_alignment_loss(
             logits=logits,
             input_ids=input_ids,
@@ -184,18 +186,7 @@ class BaseTrainer:
         return build_optimizer_and_scheduler(self.args, parameters, num_training_steps, num_processes)
 
     def _build_low_dim_projection_module(self, hidden_size: int, device: torch.device) -> torch.nn.Linear:
-        """Construct ``nn.Linear(low_dim_size -> hidden_size)`` for the low-dim projection.
-
-        Handles two extras consistently with the pre-refactor code path:
-        * warm-start from ``--low_dim_projection_checkpoint`` (accepts the
-          ``{"low_dim_projection": ...}`` / ``{"state_dict": ...}`` / raw
-          state_dict envelopes used historically);
-        * freeze parameters when ``--low_dim_projection_train`` is False.
-
-        Centralizing this here means progressive (global mode) and
-        ``LowDimTrainer`` (full cramming) cannot drift apart on the
-        checkpoint-loading convention.
-        """
+        """Construct ``nn.Linear(low_dim_size -> hidden_size)`` for the low-dim projection."""
         projection = torch.nn.Linear(self.args.low_dim_size, hidden_size).to(device)
 
         checkpoint_path = self.args.low_dim_projection_checkpoint
@@ -211,9 +202,8 @@ class BaseTrainer:
             print(f"Loaded low-dim projection state from {checkpoint_path} (low_dim_size={self.args.low_dim_size})")
 
         if not self.args.low_dim_projection_train:
-            for p in projection.parameters():
-                p.requires_grad = False
-
+            for parameter in projection.parameters():
+                parameter.requires_grad = False
         return projection
 
     def forward_and_compute_loss(
@@ -227,12 +217,16 @@ class BaseTrainer:
         num_compression_tokens: int,
         target_hidden_states: tuple[torch.Tensor, ...] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, list[str] | None, list[str] | None]:
-        """Legacy combined helper: forward + loss + convergence + diagnostics, returning a 5-tuple."""
+        """Forward + loss + convergence + diagnostics, returning a 5-tuple."""
+        # Compute vanilla model hidden states if alignment is required
         loss_type = self.args.loss_type.lower()
         if loss_type != "cross_entropy" and target_hidden_states is None:
             target_hidden_states = self.compute_hidden_states(model, token_embeddings, attention_mask)
 
+        # Forward pass extra kwargs
         forward_extra_kwargs = {}
+        if loss_type != "cross_entropy":
+            forward_extra_kwargs["output_hidden_states"] = True
         if self.args.fix_position_ids:
             position_ids = torch.arange(
                 -num_compression_tokens,
@@ -243,10 +237,10 @@ class BaseTrainer:
             position_ids = position_ids.repeat(token_embeddings.size(0), 1)
             forward_extra_kwargs["position_ids"] = position_ids
 
+        # Compression forward pass and loss calculation
         outputs = model(
             inputs_embeds=united_token_embeddings,
             attention_mask=united_attention_mask,
-            output_hidden_states=(loss_type != "cross_entropy"),
             **forward_extra_kwargs,
         )
         loss, alignment_loss = self.compute_loss(

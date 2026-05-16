@@ -5,14 +5,14 @@ import json
 import os
 
 from datasets import Dataset, load_dataset
-from transformers import AutoTokenizer
+from transformers import PreTrainedTokenizerBase
 
 
 def load_or_create_tokenized_dataset(
     cache_dir: str,
     dataset_name: str,
     split: str,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizerBase,
     max_sequence_length: int,
     model_checkpoint: str,
     no_bos_token: bool = False,
@@ -40,7 +40,7 @@ def load_or_create_tokenized_dataset(
         print(f"Loading tokenized dataset from cache: {cache_path}")
         return Dataset.load_from_disk(cache_path).with_format("torch")
 
-    print("Tokenizing dataset (this may take a while)...")
+    print("Loading and tokenizing dataset (this may take a while)...")
     raw_dataset = _load_raw_dataset(dataset_name, split, num_proc)
     selected_dataset = _select_range(raw_dataset, offset_dataset_items, limit_dataset_items, fallback_length)
     tokenized_dataset = _tokenize_dataset(selected_dataset, tokenizer, max_sequence_length, no_bos_token, num_proc)
@@ -92,7 +92,7 @@ def _select_range(
 
 def _tokenize_dataset(
     dataset: Dataset,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizerBase,
     max_sequence_length: int,
     no_bos_token: bool,
     num_proc: int,

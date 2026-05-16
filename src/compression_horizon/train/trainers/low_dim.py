@@ -1,13 +1,4 @@
-"""Full cramming where the compression embedding lives in a low-rank subspace.
-
-Compression coefficients ``z ∈ R^{batch × num_compression_tokens × low_dim_size}``
-are optimized together with a ``Linear(low_dim_size, hidden_size)`` projection.
-The materialized embedding is ``e = projection(z)``. Everything else — the
-optimization loop, convergence tracking, Information Gain reporting, per-sample
-row schema — is shared with :class:`FullCrammingTrainer`; this class only
-overrides the parametrization construction and the post-training hook that
-persists the projection weights.
-"""
+"""Full cramming where the compression embedding lives in a low-rank subspace."""
 
 from __future__ import annotations
 

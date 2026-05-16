@@ -1,9 +1,4 @@
-"""Clean training entry-point for thesis-reproduction experiments.
-
-Replaces the bloated `scripts/activation_distillation.py` with a thin ~80-LOC
-launcher built on top of the refactored library: it parses
-`MyTrainingArguments`, dispatches to the right trainer class, and runs `train()`.
-"""
+"""Clean training entry-point for thesis-reproduction experiments."""
 
 from __future__ import annotations
 
@@ -21,10 +16,10 @@ from compression_horizon.train import (
     ProgressiveCrammingTrainer,
 )
 from compression_horizon.train.arguments import MyTrainingArguments
-from compression_horizon.utils.launch import resolve_torch_dtype, set_launch_seed
+from compression_horizon.utils.launch import freeze_model_parameters, resolve_torch_dtype, set_launch_seed
 
 
-def _select_trainer_cls(args) -> type:
+def _select_trainer_cls(args: MyTrainingArguments) -> type:
     """Pick the trainer class based on which mode flag is set in args."""
     if getattr(args, "train_compression_head", False):
         return CompressionHeadTrainer
@@ -49,11 +44,12 @@ def _resolve_attn_implementation() -> str:
 
 
 def main() -> None:
+    """Train specified setup."""
     parser = transformers.HfArgumentParser(MyTrainingArguments)
     (args,) = parser.parse_args_into_dataclasses()
 
     if not args.output_dir:
-        raise ValueError("--output_dir must be provided")
+        raise ValueError("--output_dir must be provided!")
     os.makedirs(args.output_dir, exist_ok=True)
     if not args.logging_dir:
         args.logging_dir = args.output_dir
@@ -77,8 +73,7 @@ def main() -> None:
         model = AutoModelForCausalLM.from_pretrained(
             args.model_checkpoint, dtype=torch_dtype, attn_implementation=attn_implementation
         )
-        for p in model.parameters():
-            p.requires_grad = False
+        freeze_model_parameters(model)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_checkpoint)
     tokenizer.pad_token = tokenizer.eos_token

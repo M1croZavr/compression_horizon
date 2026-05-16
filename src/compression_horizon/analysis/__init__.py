@@ -1,8 +1,4 @@
-"""Analysis utilities for compression embeddings.
-
-Reusable metric / probe / intervention code that's shared between trainers,
-evaluation scripts and visualization scripts.
-"""
+"""Analysis utilities for compression embeddings."""
 
 from compression_horizon.analysis.attention_hijacking import (
     compute_attention_mass_profile,
