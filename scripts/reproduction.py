@@ -10,8 +10,8 @@ from transformers import (
     DataCollatorForLanguageModeling,
 )
 
+from compression_horizon.train import MyTrainer
 from compression_horizon.train.arguments import MyTrainingArguments
-from compression_horizon.train.trainer import MyTrainer
 from compression_horizon.utils.exceptions import NvidiaSMIError
 from compression_horizon.utils.launch import resolve_torch_dtype
 
