@@ -285,8 +285,17 @@ class BaseTrainer:
         ground_truth_text: Optional[list[str]] = None,
         *,
         embedding_namespace: str = "compression_token_embeddings",
+        leaf_grad_params: Optional[list[torch.Tensor]] = None,
     ):
-        """Write per-step scalars/text to TensorBoard."""
+        """Write per-step scalars/text to TensorBoard.
+
+        ``compression_token_embeddings`` may be a non-leaf tensor (e.g. the
+        materialized ``projection(z)`` output in LowDim parametrizations) — we
+        only use it for mean/std stats. Pass ``leaf_grad_params`` (e.g.
+        ``parametrization.parameters`` + ``shared_parameters``) to log a real
+        grad-norm; accessing ``.grad`` on a non-leaf tensor produces a
+        UserWarning and yields ``None`` anyway, so we deliberately skip it.
+        """
         if self.writer is None:
             return
 
@@ -303,10 +312,22 @@ class BaseTrainer:
                 self.writer.add_scalar(
                     f"{embedding_namespace}/std", compression_token_embeddings.std().item(), self.global_step
                 )
-            grad_norm = (
-                compression_token_embeddings.grad.norm(2).item() if compression_token_embeddings.grad is not None else 0.0
+
+        grad_norm_source = (
+            leaf_grad_params
+            if leaf_grad_params is not None
+            else (
+                [compression_token_embeddings]
+                if compression_token_embeddings is not None and compression_token_embeddings.is_leaf
+                else None
             )
-            self.writer.add_scalar(f"{embedding_namespace}/grad_norm", grad_norm, self.global_step)
+        )
+        if grad_norm_source:
+            total_sq = 0.0
+            for p in grad_norm_source:
+                if p.grad is not None:
+                    total_sq += float(p.grad.detach().norm(2).item() ** 2)
+            self.writer.add_scalar(f"{embedding_namespace}/grad_norm", total_sq**0.5, self.global_step)
 
         if lr_scheduler is not None:
             self.writer.add_scalar("train/lr", lr_scheduler.get_last_lr()[0], self.global_step)

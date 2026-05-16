@@ -365,6 +365,7 @@ class FullCrammingTrainer(BaseTrainer):
                     convergence_per_sample=convergence_per_sample,
                     lr_scheduler=lr_scheduler,
                     compression_token_embeddings=compression_token_embeddings,
+                    parametrization=parametrization,
                     generated_text=generated_text,
                     ground_truth_text=ground_truth_text,
                 )
@@ -390,6 +391,7 @@ class FullCrammingTrainer(BaseTrainer):
         convergence_per_sample,
         lr_scheduler,
         compression_token_embeddings,
+        parametrization,
         generated_text,
         ground_truth_text,
     ) -> None:
@@ -409,6 +411,7 @@ class FullCrammingTrainer(BaseTrainer):
             lr_scheduler,
             generated_text,
             ground_truth_text,
+            leaf_grad_params=list(parametrization.parameters) + list(parametrization.shared_parameters),
         )
 
     def _collect_batch_rows(

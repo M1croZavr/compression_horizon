@@ -253,8 +253,8 @@ class ProgressiveCrammingTrainer(BaseTrainer):
         * ``--low_dim_projection`` alone: build a **fresh** Linear here per
           batch (warm-started from ``--low_dim_projection_checkpoint`` if
           given, frozen when ``--low_dim_projection_train`` is False). This
-          matches the pre-refactor behaviour where ``_prepare_low_dim_proj``
-          was invoked inside the data loop.
+          matches the pre-refactor behaviour (commit a0d39f6) where the
+          projection constructor was invoked inside the data loop.
         """
         # Coefficient init lives in low-dim space when low-dim is on; otherwise
         # in model hidden space.
@@ -531,6 +531,7 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             active_scheduler,
             generated_text,
             ground_truth_text,
+            leaf_grad_params=list(batch_ctx.parametrization.parameters) + list(batch_ctx.parametrization.shared_parameters),
         )
 
     # ------------------------------------------------------------------
@@ -660,10 +661,10 @@ class ProgressiveCrammingTrainer(BaseTrainer):
             "num_input_tokens": int(sample_attention_mask.sum().item()),
             "num_compression_tokens": int(ctx.num_compression_tokens),
             "hidden_size": int(comp_tokens_cpu.shape[-1]),
-            "loss_type": getattr(self.args, "loss_type", "l2"),
-            "dtype": getattr(self.args, "dtype", "float32"),
-            "model_checkpoint": getattr(self.args, "model_checkpoint", ""),
-            "max_optimization_steps_per_sample": int(getattr(self.args, "max_optimization_steps_per_sample", 0)),
+            "loss_type": self.args.loss_type,
+            "dtype": self.args.dtype,
+            "model_checkpoint": self.args.model_checkpoint,
+            "max_optimization_steps_per_sample": int(self.args.max_optimization_steps_per_sample),
             "convergence_threshold": float(ctx.threshold),
             "steps_taken": int(state.steps_taken[sample_index]),
             "information_gain_bits": float(per_sample_info_gain[sample_index]),

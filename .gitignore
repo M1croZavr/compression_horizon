@@ -30,3 +30,6 @@ supplemetnary.zip
 
 # MacOS system
 .DS_Store
+
+# Paper drafts / under-review PDFs
+*.pdf
