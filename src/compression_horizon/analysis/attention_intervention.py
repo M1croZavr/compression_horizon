@@ -7,8 +7,11 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from compression_horizon.analysis.perplexity import estimate_token_perplexity
-from compression_horizon.train.inputs import build_united_input
 from compression_horizon.utils.launch import get_device
+
+# Note: `from compression_horizon.train.inputs import build_united_input` is
+# imported lazily inside the functions below to avoid a circular import path
+# (analysis → train.inputs → train → trainers/full_cramming → analysis).
 
 # ---------------------------------------------------------------------------
 # Model architecture helpers
@@ -126,6 +129,8 @@ def compute_attention_mass_per_layer(
 
     compression_token_embeddings = compression_token_embeddings.unsqueeze(0)
     compression_attention_mask = torch.ones((1, num_compression_tokens), dtype=attention_mask.dtype, device=device)
+    from compression_horizon.train.inputs import build_united_input  # deferred (circular)
+
     united_token_embeddings, united_attention_mask = build_united_input(
         compression_token_embeddings,
         compression_attention_mask,
@@ -199,6 +204,8 @@ def compute_ppl_with_compression_and_knockout_batch(
         dtype=attention_mask.dtype,
         device=device,
     )
+    from compression_horizon.train.inputs import build_united_input  # deferred (circular)
+
     united_token_embeddings, united_attention_mask = build_united_input(
         batched_compression, compression_attention_mask, token_embeddings, attention_mask
     )
@@ -246,6 +253,8 @@ def compute_reconstruction_accuracy_with_knockout(
 
     token_embeddings = model.get_input_embeddings()(input_ids)  # [1, seq_len, hidden]
     compression_attention_mask = torch.ones((1, num_compression_tokens), dtype=attention_mask.dtype, device=device)
+    from compression_horizon.train.inputs import build_united_input  # deferred (circular)
+
     united_token_embeddings, united_attention_mask = build_united_input(
         compression_token_embeddings.unsqueeze(0), compression_attention_mask, token_embeddings, attention_mask
     )

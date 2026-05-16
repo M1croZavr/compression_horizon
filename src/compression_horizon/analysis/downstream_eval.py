@@ -12,7 +12,10 @@ from compression_horizon.analysis.perplexity import (
     estimate_token_perplexity,
     estimate_token_perplexity_full_labels,
 )
-from compression_horizon.train.inputs import build_united_input
+
+# Note: `build_united_input` is imported lazily inside the function below to
+# avoid a circular import path
+# (analysis → train.inputs → train → trainers/full_cramming → analysis).
 
 PPL_VARIANT_KEYS: tuple[str, ...] = (
     "baseline",
@@ -135,6 +138,8 @@ def compute_ppl_compression_batch(
     # because padding lives at the tail of token_embeddings already.
     batched_compression = compression_token_embeddings.unsqueeze(0).expand(batch_size, -1, -1).to(token_embeddings.dtype)
     compression_attention_mask = torch.ones((batch_size, num_compression_tokens), dtype=attention_mask.dtype, device=device)
+    from compression_horizon.train.inputs import build_united_input  # deferred (circular)
+
     batch_token_embeddings, batch_attention_mask = build_united_input(
         batched_compression, compression_attention_mask, token_embeddings, attention_mask
     )

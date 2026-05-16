@@ -20,14 +20,14 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_scheduler
 
-from compression_horizon.intervention import (
+from compression_horizon.analysis.attention_intervention import (
     build_intervention_result,
     build_intervention_summary,
     evaluate_sample_interventions,
     get_decoder_layers,
     print_intervention_summary,
 )
-from compression_horizon.metric import estimate_token_perplexity, estimate_token_perplexity_full_labels
+from compression_horizon.analysis.perplexity import estimate_token_perplexity, estimate_token_perplexity_full_labels
 from compression_horizon.train.loss import compute_hybrid_cross_entropy_and_alignment_loss
 from compression_horizon.utils.launch import freeze_model_parameters, get_device, resolve_torch_dtype, set_launch_seed
 from compression_horizon.utils.tokens import count_text_characters, count_text_tokens

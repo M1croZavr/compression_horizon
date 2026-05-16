@@ -9,8 +9,11 @@ import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 from compression_horizon.analysis.attention_intervention import EagerAttentionContext
-from compression_horizon.train.inputs import build_united_input
 from compression_horizon.utils.launch import get_device
+
+# Note: `build_united_input` is imported lazily inside the function below to
+# avoid a circular import path
+# (analysis → train.inputs → train → trainers/full_cramming → analysis).
 
 
 def _default_target_prefix_lengths(max_length: int) -> list[int]:
@@ -97,6 +100,8 @@ def compute_sample_profiles(
     # ---- Compression run: prepend ``num_compression_tokens`` learned embeddings.
     compression_token_embeddings = compression_token_embedding.unsqueeze(0)
     compression_attention_mask = torch.ones((1, num_compression_tokens), dtype=attention_mask.dtype, device=device)
+    from compression_horizon.train.inputs import build_united_input  # deferred (circular)
+
     united_token_embeddings, united_attention_mask = build_united_input(
         compression_token_embeddings,
         compression_attention_mask,
