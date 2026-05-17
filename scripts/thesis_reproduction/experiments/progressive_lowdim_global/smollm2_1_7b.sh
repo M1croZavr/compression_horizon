@@ -22,43 +22,47 @@
 #      to test how many cram tokens a *frozen* basis (--no_low_dim_projection_train)
 #      buys on a held-out text set.  Real "compression-basis transfer learning".
 #
-# Why --per_device_train_batch_size 25 here (vs bs=1 in non-global script):
-#   With global=True the optimization target is "find a 256-dim subspace
-#   simultaneously good for ALL 50 texts". The right way to learn that is
-#   mini-batch gradient averaging: ∂L/∂W = (1/N) Σ_j ∂L_j/∂W, which moves
-#   W toward the compromise basis at every step. With bs=1 we'd instead
-#   get sequential per-sample fitting — catastrophic forgetting in pure
-#   form: sample 0 trains W for 10k steps on text #0, then sample 1
-#   pushes W away from that optimum to fit text #1, and so on. Sample 49
-#   would see a much more "trained" W than sample 0, and the metric
-#   becomes a mix of "W after 0 of 49 prior updates" through "W after 49
-#   of 49 prior updates" — uninterpretable as a single number.
+# Why --per_device_train_batch_size 1 here:
+#   With global=True the *ideal* optimization target is "find a 256-dim
+#   subspace simultaneously good for ALL 50 texts" — the right way to do
+#   that is mini-batch gradient averaging at bs > 1. Two earlier attempts
+#   confirmed that the right batch size on A100 80GB for this setup
+#   doesn't exist:
+#     - bs=50 (whole dataset in one batch): OOM at the start (~18 GB short).
+#     - bs=25 (two-batch averaging): ran for 39 hours, OOM on the last
+#       still-active sample at seq_len≈1154 (attention activations on a
+#       25 × 1154² × num_layers tensor + CE forward exceed 80 GB even after
+#       24/25 samples had been marked skipped, because the trainer keeps
+#       running forward on the full batch).
 #
-#   bs=25 is the largest batch that fits in A100 80GB for this setup
-#   (SmolLM2-1.7B + max_seq_len=4096): bs=50 (whole dataset in one batch)
-#   OOMs by ~18 GB — model activations dominate, not the 256x2048 W
-#   parameters themselves. bs=25 = TWO batches per "epoch" (samples
-#   [0,25) then [25,50)), so the cosine LR-scheduler runs continuously
-#   across all 10000 optimization steps but the AdamW gradient on W is
-#   computed as the average across 25 samples in each step. This is
-#   still dramatically closer to "true mini-batch SGD on the corpus"
-#   than bs=1: a 25-sample average is a very low-variance estimate of
-#   the corpus-mean gradient, and the W trajectory through training
-#   isn't biased toward any single text. The two-batch boundary in the
-#   middle of training is the only minor non-ideality vs bs=50, but
-#   it's a small price for fitting on a single GPU.
+#   So we accept the bs=1 trade-off for this *additional* (non-paper)
+#   experiment: ONE Linear lives through the whole run, but it sees
+#   samples sequentially — catastrophic forgetting in pure form. Sample 0
+#   trains W under text #0 for 10k steps, sample 1 then pushes W away to
+#   fit text #1, etc. Sample 49 sees a W trained on 49 prior texts;
+#   sample 0 effectively saw a near-random W. The resulting metrics are
+#   a noisier estimator of the "shared basis" question than bs=N mini-
+#   batches would have been, but the alternative (bs>1) doesn't fit in
+#   memory at the high seq_len's progressive cramming hits on SmolLM2-1.7B.
+#
+#   This is acceptable because the experiment is supplementary to the
+#   paper-faithful row (progressive_lowdim/smollm2_1_7b, bs=1, no global).
+#   If the shared basis is corpus-universal, even a bs=1 sequential run
+#   should land in the same ballpark as the per-sample-basis paper row.
 #
 # All other paper-fidelity parameters (Appendix A) identical to the
 # non-global script: lr=0.1, max_seq_len=4096, 10k steps/sample, 1k steps/
 # token, random0.02 init, single compression token, cross-entropy loss,
 # cosine_with_min_lr.
 #
-# Time on a single A100 80GB: ~2-4 h with bs=25 (vs ~6-10 h had we kept
-# bs=1, which we don't — see the bs reasoning above).
+# Time on a single A100 80GB: ~6-10 h (same order as the non-global
+# variant, since wall time is dominated by per-sample forward passes
+# and bs=1 means each sample is processed in turn).
 #
-# PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True reduces allocator
-# fragmentation (PyTorch's own recommendation in the OOM traceback). It
-# costs nothing in correctness and can shave a couple GB of headroom.
+# PYTORCH_ALLOC_CONF=expandable_segments:True reduces allocator
+# fragmentation. It costs nothing in correctness and can shave a couple
+# GB of headroom. (`PYTORCH_CUDA_ALLOC_CONF` was the old name; recent
+# torch versions emit a deprecation warning.)
 #
 # For closest-possible match to paper, install flash-attn first:
 #   uv pip install flash-attn --no-build-isolation
@@ -74,7 +78,8 @@ mkdir -p "$OUTPUT_DIR"
 
 # Reduces CUDA allocator fragmentation — helps fit large batches without
 # changing semantics. See PyTorch's note in the OOM traceback hint.
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+# (PYTORCH_CUDA_ALLOC_CONF is the deprecated name; both work for now.)
+export PYTORCH_ALLOC_CONF="expandable_segments:True"
 
 # tee duplicates stdout+stderr to ``train.log`` in the output dir so the
 # terminal-output is preserved alongside the shared-basis artifact
@@ -88,7 +93,7 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
     --dataset_name LarryLovestein/pg19_1k \
     --max_sequence_length 4096 \
     --limit_dataset_items 50 \
-    --per_device_train_batch_size 25 \
+    --per_device_train_batch_size 1 \
     --max_optimization_steps_per_sample 10000 \
     --max_optimization_steps_per_token 1000 \
     --learning_rate 0.1 \
